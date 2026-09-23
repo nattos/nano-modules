@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // relinkMedia runs on open; stub the media store so it's a no-op here.
 vi.mock('../workspace/media-store', () => ({
-  openMedia: vi.fn().mockResolvedValue(null),
+  openMediaHandle: vi.fn().mockResolvedValue(null),
   resolveMedia: vi.fn().mockResolvedValue(null),
 }));
 

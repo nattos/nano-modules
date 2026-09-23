@@ -18,10 +18,10 @@ import { renderPlayModeControls, playModeControlsStyles } from './play-mode-cont
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
-import { resolveSourceTransform, isSequenceClip, sequenceInteriorBeats, type MediaDocRef } from '../model/composition';
-import { importVideoFile } from '../media/drop-import';
-import { linkMedia } from '../workspace/media-store';
-import { handlesFromDataTransfer, type PathsFileHandle } from '../../../state/paths';
+import { resolveSourceTransform, isSequenceClip, sequenceInteriorBeats } from '../model/composition';
+import { importMedia } from '../media/drop-import';
+import { linkMedia, type LinkedMedia } from '../workspace/media-store';
+import { handlesFromDataTransfer, mediaSourceFromFile, type PathsFileHandle } from '../../../state/paths';
 import './source-transform-widget';
 import './time-strip';
 import './arr-automation-editor';
@@ -403,18 +403,17 @@ export class ArrClipView extends MobxLitElement {
     e.preventDefault();
     e.stopPropagation();
     this.dropActive = false;
-    let f = file;
-    let sourceKey = '';
-    let docRef: MediaDocRef | null = null;
+    let linked: LinkedMedia | null = null;
     try {
       const h = (await handlesPending).find((x): x is PathsFileHandle => x.kind === 'file');
-      if (h) { ({ sourceKey, docRef } = await linkMedia(h)); f = await h.getFile(); }
+      if (h) linked = await linkMedia(h);
     } catch { /* fall back to the plain File */ }
-    const media = await importVideoFile(f, sourceKey || undefined);
+    const media = await importMedia(linked?.media ?? mediaSourceFromFile(file), linked?.sourceKey);
     store.setClipSource(sel.track.id, sel.clip.id, {
       sourceKey: media.sourceKey, url: media.url, frameCount: media.frameCount,
       fps: media.fps, label: media.label, width: media.width, height: media.height,
-      ...(docRef ? { ref: docRef } : {}),
+      ...(linked?.docRef ? { ref: linked.docRef } : {}),
+      ...(linked?.docFile ? { file: linked.docFile } : {}),
     });
   };
 

@@ -135,3 +135,22 @@ describe('library-paths — bridge mirror', () => {
     expect(pushes[pushes.length - 1]).toEqual([]);
   });
 });
+
+describe('library-paths — adopting a foreign id', () => {
+  it('keeps the document id, so every document from that profile resolves', async () => {
+    const rec = await libraryPaths.adopt('uuid-from-web', fsDir('/Volumes/footage'), 'Footage');
+    expect(rec.id).toBe('uuid-from-web');
+    expect(rec.label).toBe('Footage');
+    expect(rec.absolutePath).toBe('/Volumes/footage');
+    expect(libraryPaths.get('uuid-from-web')?.absolutePath).toBe('/Volumes/footage');
+    expect(idb.get('uuid-from-web')).toBeDefined(); // persisted
+  });
+
+  it('re-adopting repoints the same entry', async () => {
+    await libraryPaths.adopt('L', fsDir('/a'), 'Footage');
+    const again = await libraryPaths.adopt('L', fsDir('/b'));
+    expect(libraryPaths.paths).toHaveLength(1);
+    expect(again.absolutePath).toBe('/b');
+    expect(again.label).toBe('Footage'); // no new label → kept
+  });
+});

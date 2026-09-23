@@ -18,10 +18,11 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <sys/stat.h>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "platform/paths.h"
 
 namespace nano_assets {
 
@@ -68,41 +69,34 @@ class LibraryPaths {
   ///
   /// Falls back to matching by LABEL when the id misses. Library ids are
   /// per-profile UUIDs, so a document authored on another machine carries ids
-  /// this one has never seen; the label is the only bridge we have. (A stable,
-  /// user-assigned id would be the real fix.)
+  /// this one has never seen; the label the document recorded
+  /// (`ref.libraryLabel`) is the only bridge. An id that IS a label also
+  /// matches, for documents from before labels were recorded.
   std::optional<std::string> resolve(const std::string& libraryId,
-                                     const std::vector<std::string>& relPath) const {
+                                     const std::vector<std::string>& relPath,
+                                     const std::string& libraryLabel = std::string()) const {
     std::string base;
     {
       std::lock_guard<std::mutex> lk(mu_);
-      const LibraryRoot* hit = nullptr;
-      for (const auto& r : roots_) {
-        if (r.id == libraryId) { hit = &r; break; }
-      }
-      if (!hit) {
-        for (const auto& r : roots_) {
-          if (!r.label.empty() && r.label == libraryId) { hit = &r; break; }
-        }
-      }
+      const LibraryRoot* hit = findLocked(libraryId, libraryLabel);
       if (!hit) return std::nullopt;
       base = hit->absolutePath;
     }
     std::string full = base;
     for (const auto& seg : relPath) {
       // Never let a document's relative path climb out of its library root.
-      if (seg.empty() || seg == "." || seg == ".." ||
-          seg.find('/') != std::string::npos) {
-        return std::nullopt;
+      if (seg.empty() || seg == "." || seg == "..") return std::nullopt;
+      for (char ch : seg) {
+        if (nano_paths::isSep(ch)) return std::nullopt;
       }
-      full += '/';
-      full += seg;
+      full = nano_paths::joinPath(full, seg);
     }
-    struct stat st {};
-    if (::stat(full.c_str(), &st) != 0) return std::nullopt;
+    if (!nano_paths::fileExists(full) && !nano_paths::dirExists(full)) return std::nullopt;
     return full;
   }
 
-  /// Same, taking the document's ref object verbatim: {libraryId, path:[...]}.
+  /// Same, taking the document's ref object verbatim:
+  /// {libraryId, path:[...], libraryLabel?}.
   std::optional<std::string> resolveRef(const nlohmann::json& ref) const {
     if (!ref.is_object()) return std::nullopt;
     const std::string id = ref.value("libraryId", std::string());
@@ -114,22 +108,40 @@ class LibraryPaths {
         rel.push_back(p.get<std::string>());
       }
     }
-    return resolve(id, rel);
+    std::string label;
+    if (ref.contains("libraryLabel") && ref["libraryLabel"].is_string())
+      label = ref["libraryLabel"].get<std::string>();
+    return resolve(id, rel, label);
   }
 
-  /// Label-by-label match against a library id, for diagnostics/UI.
-  std::optional<LibraryRoot> find(const std::string& libraryId) const {
+  /// The root a ref would resolve against, for diagnostics/UI.
+  std::optional<LibraryRoot> find(const std::string& libraryId,
+                                  const std::string& libraryLabel = std::string()) const {
     std::lock_guard<std::mutex> lk(mu_);
-    for (const auto& r : roots_) if (r.id == libraryId) return r;
-    for (const auto& r : roots_) if (!r.label.empty() && r.label == libraryId) return r;
-    return std::nullopt;
+    const LibraryRoot* hit = findLocked(libraryId, libraryLabel);
+    return hit ? std::optional<LibraryRoot>(*hit) : std::nullopt;
   }
 
  private:
   LibraryPaths() = default;
 
+  /// Id, then the recorded label, then an id that is itself a label.
+  const LibraryRoot* findLocked(const std::string& libraryId,
+                                const std::string& libraryLabel) const {
+    for (const auto& r : roots_) if (r.id == libraryId) return &r;
+    for (const std::string& want : {libraryLabel, libraryId}) {
+      if (want.empty()) continue;
+      for (const auto& r : roots_) if (!r.label.empty() && r.label == want) return &r;
+    }
+    return nullptr;
+  }
+
   static std::string trimTrailingSlash(std::string p) {
-    while (p.size() > 1 && p.back() == '/') p.pop_back();
+    // Keep a bare root ("/", "C:\") intact.
+    while (p.size() > 1 && nano_paths::isSep(p.back()) &&
+           !(p.size() == 3 && p[1] == ':')) {
+      p.pop_back();
+    }
     return p;
   }
 

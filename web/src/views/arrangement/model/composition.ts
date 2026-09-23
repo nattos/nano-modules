@@ -560,6 +560,27 @@ export type ClipKind = 'effect' | 'video' | 'sequence';
 export interface MediaDocRef {
   libraryId: string;
   path: string[];
+  /** The library's name where the document was made. Its id is a per-profile
+   *  UUID, so on any OTHER profile this is all there is to ask the user about
+   *  ("where is 'Footage'?") — and what the native label fallback matches. */
+  libraryLabel?: string;
+}
+
+/**
+ * Where the media file actually is, as stored IN THE DOCUMENT — the desktop
+ * app's binding, which needs no library set up. A browser can't produce one
+ * (it never learns a real path), so web-made documents rely on
+ * {@link MediaDocRef} instead.
+ */
+export interface MediaDocFile {
+  /** Absolute path where it was last seen. */
+  abs: string;
+  /**
+   * The same file relative to the folder holding the `.nano-arr` (may start
+   * with `..`). Computed at save time; checked FIRST, so a project folder
+   * carried to another machine with its media inside still resolves.
+   */
+  rel?: string[];
 }
 
 export interface Clip {
@@ -604,6 +625,9 @@ export interface Clip {
      * simply doesn't resolve natively.
      */
     ref?: MediaDocRef;
+    /** Real file location (desktop app). Tried before `ref` — see
+     *  {@link MediaDocFile}. */
+    file?: MediaDocFile;
     /**
      * Fetchable URL of the media. RUNTIME ONLY — an object URL that dies with
      * the page, rebuilt by `store.relinkMedia()`. Stripped by

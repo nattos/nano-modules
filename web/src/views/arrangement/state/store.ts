@@ -49,7 +49,15 @@ import { clipSourceTimeAt, type ClipTimeCtx } from '../engine/clip-time';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
-import { openMedia, resolveMedia } from '../workspace/media-store';
+import { openMediaHandle, resolveMedia } from '../workspace/media-store';
+import { libraryPaths } from '../../../state/library-paths';
+import {
+  getHandleFromAbsPath,
+  openMediaSource,
+  showDirectoryPicker,
+  type MediaSource,
+  type PathsFileHandle,
+} from '../../../state/paths';
 import { resolveFileRef } from '../../../state/handle-ref';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
 import {
@@ -64,6 +72,7 @@ import {
   sequenceOwnerOf,
   chainsEqual,
   type MediaDocRef,
+  type MediaDocFile,
 } from '../model/composition';
 import {
   laneById as resolveLaneById,
@@ -1106,14 +1115,8 @@ export class ArrangementStore {
     void this.relinkMedia();  // re-resolve video sources (blob URLs die on reload)
   }
 
-  /**
-   * Re-resolve every video clip's `source.url` from its persisted media handle —
-   * the stored blob URL is dead after a reload. Library-relative handles relink
-   * via the library grant; direct handles via their stored handle. Best-effort:
-   * silent when the permission persists, otherwise skipped (clip falls back to
-   * the procedural reel until relinked from a user gesture).
-   */
-  /** sourceKey → library-relative path (only for media stored under a library). */
+  /** sourceKey → where its media is: the real path when known, else the
+   *  library-relative one. Display only. */
   mediaRelPaths: Record<string, string> = {};
   /** sourceKey → true when the media file couldn't be resolved (moved / deleted /
    *  permission revoked) at the last relink. Surfaced in the inspector + timeline. */
@@ -1124,17 +1127,73 @@ export class ArrangementStore {
     return !!sourceKey && this.mediaMissing[sourceKey] === true;
   }
 
+  /**
+   * Libraries the document names that this profile doesn't know, by id → the
+   * label the document recorded (or '' for a document from before labels).
+   * Only those with media still missing after the last relink — the
+   * inspector's "Locate '<label>'…" list.
+   */
+  unknownLibraries: Record<string, string> = {};
+
   /** The document's own library-relative ref for a sourceKey, if it carries one. */
-  private docRefFor(sourceKey: string): { kind: 'lib'; libraryId: string; path: string[] } | null {
+  private docRefFor(sourceKey: string): { kind: 'lib'; libraryId: string; path: string[]; libraryLabel?: string } | null {
     for (const c of mediaClips(this.composition)) {
       const ref = c.source?.ref;
       if (c.source?.sourceKey === sourceKey && ref?.libraryId && Array.isArray(ref.path)) {
-        return { kind: 'lib', libraryId: ref.libraryId, path: ref.path };
+        return { kind: 'lib', libraryId: ref.libraryId, path: ref.path, libraryLabel: ref.libraryLabel };
       }
     }
     return null;
   }
 
+  /** The document's real-location binding for a sourceKey, if it carries one. */
+  private docFileFor(sourceKey: string): MediaDocFile | null {
+    for (const c of mediaClips(this.composition)) {
+      const f = c.source?.file;
+      if (c.source?.sourceKey === sourceKey && typeof f?.abs === 'string') return f;
+    }
+    return null;
+  }
+
+  /**
+   * Find the file behind a sourceKey. Most portable binding first:
+   *   1. `source.file.rel` — beside the document (a project folder carried
+   *      elsewhere, media inside);
+   *   2. `source.file.abs` — where the desktop app last saw it;
+   *   3. `source.ref` — library-relative (how the web binds);
+   *   4. the per-profile IndexedDB record (directly-picked web media, and
+   *      documents older than any of the above).
+   */
+  private async findMediaHandle(
+    key: string,
+    docFile: MediaDocFile | null,
+    libRef: { kind: 'lib'; libraryId: string; path: string[] } | null,
+  ): Promise<PathsFileHandle | null> {
+    try {
+      if (docFile?.rel?.length && this.backend?.resolveRelative && this.currentName) {
+        const h = await this.backend.resolveRelative(this.currentName, docFile.rel);
+        if (h) return h;
+      }
+      if (docFile?.abs) {
+        const h = await getHandleFromAbsPath(docFile.abs);
+        if (h?.kind === 'file') return h as PathsFileHandle;
+      }
+      if (libRef) {
+        const h = await resolveFileRef(libRef, { prompt: true, mode: 'read' });
+        if (h) return h;
+      }
+      return await openMediaHandle(key);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Re-resolve every video clip's `source.url` — the url is runtime-only and
+   * dead after a reload (see findMediaHandle for the binding order).
+   * Best-effort: silent when the permission persists, otherwise skipped (the
+   * clip shows missing until relinked from a user gesture).
+   */
   async relinkMedia() {
     const keys = new Set<string>();
     // allLanes: a sequence clip's INTERIOR sub-clips hold media too. Missing
@@ -1142,52 +1201,85 @@ export class ArrangementStore {
     // decode service could never open them — the clip rendered TRANSPARENT with
     // no "missing media" warning either (the key never entered `mediaMissing`).
     for (const k of mediaSourceKeys(this.composition)) keys.add(k);
+    await libraryPaths.ensureLoaded();
+    const unknown: Record<string, string> = {};
     for (const key of keys) {
-      // The DOCUMENT's own ref comes first: it's the only binding that survives
-      // arriving from another machine, where the IDB media table is empty.
+      const docFile = this.docFileFor(key);
+      // The DOCUMENT's own ref comes before the IDB record: it's the only
+      // library binding that survives arriving from another machine.
       const docRef = this.docRefFor(key);
-      // The IDB record is a per-profile CACHE — it also covers directly-picked
-      // media, which can't be expressed in the document.
       const rec = await resolveMedia(key);
       const libRef = docRef ?? (rec?.ref?.kind === 'lib' ? rec.ref : null);
-      // Record the library-relative path (no permission needed) so the inspector
-      // can show it even if the file itself can't be resolved yet.
-      if (libRef && Array.isArray(libRef.path)) {
-        const rel = libRef.path.join('/');
-        runInAction(() => { this.mediaRelPaths[key] = rel; });
-      }
-      // Learned a portable ref from IDB that the document lacks → write it in,
-      // so opening and re-saving upgrades the file in place.
-      if (!docRef && libRef) {
+      const lib = libRef ? libraryPaths.get(libRef.libraryId) : undefined;
+      // Learned a portable ref from IDB that the document lacks, or know the
+      // label the document didn't record → write it in, so opening and
+      // re-saving upgrades the file in place.
+      if (libRef && (!docRef || (lib && !docRef.libraryLabel))) {
         runInAction(() => {
           for (const c of mediaClips(this.composition)) {
             if (c.source!.sourceKey === key) {
-              c.source!.ref = { libraryId: libRef.libraryId, path: [...libRef.path] };
+              c.source!.ref = {
+                libraryId: libRef.libraryId,
+                path: [...libRef.path],
+                ...(lib?.label ? { libraryLabel: lib.label } : docRef?.libraryLabel ? { libraryLabel: docRef.libraryLabel } : {}),
+              };
             }
           }
         });
       }
-      let file: File | null = null;
+
+      const handle = await this.findMediaHandle(key, docFile, libRef);
+      let media: MediaSource | null = null;
       try {
-        // Resolve through the document ref when we have one; openMedia (IDB) is
-        // the fallback for direct handles and pre-ref documents.
-        const fh = docRef ? await resolveFileRef(docRef, { prompt: true, mode: 'read' }) : null;
-        file = fh ? await fh.getFile() : await openMedia(key);
-      } catch { file = null; }
-      runInAction(() => { this.mediaMissing[key] = !file; });
-      if (!file) continue;
-      const url = URL.createObjectURL(file);
+        media = handle ? await openMediaSource(handle) : null;
+      } catch { media = null; }
+
+      // What the inspector shows: the real path when there is one, else the
+      // library-relative path (known even while the file can't be reached).
+      const shown = media?.absPath ?? (libRef ? libRef.path.join('/') : undefined);
+      runInAction(() => {
+        if (shown) this.mediaRelPaths[key] = shown;
+        this.mediaMissing[key] = !media;
+      });
+      if (!media) {
+        if (libRef && !lib) unknown[libRef.libraryId] = docRef?.libraryLabel ?? '';
+        continue;
+      }
+      const url = media.url;
+      const abs = media.absPath;
       runInAction(() => {
         for (const c of mediaClips(this.composition)) {
-          if (c.source!.sourceKey === key) c.source!.url = url;
+          if (c.source!.sourceKey !== key) continue;
+          c.source!.url = url;
+          // Found it through some other binding (or it moved): record where it
+          // really is, so the document stops needing a library in this app.
+          if (abs && c.source!.file?.abs !== abs) {
+            c.source!.file = { abs, ...(c.source!.file?.rel ? { rel: c.source!.file.rel } : {}) };
+          }
         }
-        // Deliberately NOT an undoable mutate() â but the comp-mode document
+        // Deliberately NOT an undoable mutate() — but the comp-mode document
         // MIRROR must still refresh, or it keeps serving the dead pre-reload
         // blob URL to the decode pump (video decodes fine in previews yet
         // never shows in the composite). docRev is the mirror key, not history.
         this.docRev++;
       });
     }
+    runInAction(() => { this.unknownLibraries = unknown; });
+  }
+
+  /**
+   * Point a library the document names — but this profile has never seen —
+   * at a folder, then relink. The entry ADOPTS the document's id, so every
+   * other document from the same profile resolves too, with no further asks.
+   * Must run from a user gesture (it opens the folder picker).
+   */
+  async locateLibrary(libraryId: string): Promise<boolean> {
+    const dir = await showDirectoryPicker();
+    if (!dir) return false;
+    const label = this.unknownLibraries[libraryId] || undefined;
+    await libraryPaths.adopt(libraryId, dir, label);
+    await this.relinkMedia();
+    return true;
   }
 
   /** Guarantee the master/main-bus track exists (it's the one mandatory track and
@@ -4219,7 +4311,7 @@ export class ArrangementStore {
   addVideoClip(
     trackId: string,
     startBeat: number,
-    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number; ref?: MediaDocRef },
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number; ref?: MediaDocRef; file?: MediaDocFile },
     lengthBeat = 8,
   ): string | null {
     const track = this.trackById(trackId);
@@ -4243,6 +4335,7 @@ export class ArrangementStore {
         durationFrames: media.frameCount,
         sourceKey: media.sourceKey,
         ...(media.ref ? { ref: media.ref } : {}),
+        ...(media.file ? { file: media.file } : {}),
         url: media.url,
         fps: media.fps,
         width: media.width,
@@ -4325,7 +4418,7 @@ export class ArrangementStore {
    */
   setClipSource(
     trackId: string, clipId: string,
-    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number; ref?: MediaDocRef },
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number; ref?: MediaDocRef; file?: MediaDocFile },
     lengthBeat?: number,
   ) {
     this.mutate('set clip source', (d) => {
@@ -4342,6 +4435,7 @@ export class ArrangementStore {
         // Deliberately NOT carried over from the old source — a swap points at
         // different media, so a stale ref would resolve to the wrong file.
         ...(media.ref ? { ref: media.ref } : {}),
+        ...(media.file ? { file: media.file } : {}),
         url: media.url,
         fps: media.fps,
         width: media.width,

@@ -180,3 +180,45 @@ TEST_CASE("an unknown library id resolves to nothing", "[comp_media_ref]") {
   const json other = json{{"libraryId", "L-other"}, {"path", json::array({"footage", "a.mov"})}};
   CHECK(h.descs(mkDoc(mkVideoClip("v1", refSource(other)))).empty());
 }
+
+TEST_CASE("source.file.abs resolves with no library at all", "[comp_media_ref]") {
+  // The desktop app's binding: the real location, recorded when the clip was
+  // made. No roots, no ids — what a desktop document carries by default.
+  TempLibrary lib;
+  nano_assets::LibraryPaths::instance().setRoots(json::array());
+  ResolverGuard guard;
+  Harness h;
+
+  json src = {{"label", "a.mov"}, {"durationFrames", 300}, {"sourceKey", "k1"}, {"fps", 30},
+              {"file", {{"abs", lib.media()}, {"rel", json::array({"footage", "a.mov"})}}}};
+  const json descs = h.descs(mkDoc(mkVideoClip("v1", std::move(src))));
+  REQUIRE(descs.size() == 1);
+  CHECK(descs[0]["url"] == lib.media());
+}
+
+TEST_CASE("a stale source.file falls back to the library ref", "[comp_media_ref]") {
+  // Opened on another machine: the recorded path is gone, but the ref's
+  // library is known here.
+  TempLibrary lib;
+  ResolverGuard guard;
+  Harness h;
+
+  json src = refSource(libRef());
+  src["file"] = {{"abs", "/nonexistent/elsewhere/a.mov"}};
+  const json descs = h.descs(mkDoc(mkVideoClip("v1", std::move(src))));
+  REQUIRE(descs.size() == 1);
+  CHECK(descs[0]["url"] == lib.media());
+}
+
+TEST_CASE("a foreign library id resolves through the recorded label", "[comp_media_ref]") {
+  TempLibrary lib;  // registers L1 labelled "Footage"
+  ResolverGuard guard;
+  Harness h;
+
+  const json foreign = json{{"libraryId", "uuid-from-another-profile"},
+                            {"libraryLabel", "Footage"},
+                            {"path", json::array({"footage", "a.mov"})}};
+  const json descs = h.descs(mkDoc(mkVideoClip("v1", refSource(foreign))));
+  REQUIRE(descs.size() == 1);
+  CHECK(descs[0]["url"] == lib.media());
+}

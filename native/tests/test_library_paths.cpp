@@ -8,12 +8,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <cstdio>
-#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 
@@ -24,22 +21,23 @@ using nano_assets::LibraryPaths;
 
 namespace {
 
-/// A throwaway directory tree: <tmp>/nano_libtest_<pid>/footage/a.mov
+/// A throwaway directory tree: <tmp>/nano_libtest_<n>/footage/a.mov.
+/// std::filesystem so the same test runs on the Windows build.
 struct TempTree {
   std::string root;
   TempTree() {
-    const char* tmp = getenv("TMPDIR");
-    root = std::string(tmp ? tmp : "/tmp");
-    if (!root.empty() && root.back() == '/') root.pop_back();
-    root += "/nano_libtest_" + std::to_string(::getpid());
-    ::mkdir(root.c_str(), 0755);
-    ::mkdir((root + "/footage").c_str(), 0755);
-    std::ofstream(root + "/footage/a.mov") << "x";
+    namespace fs = std::filesystem;
+    static int n = 0;
+    const fs::path dir = fs::temp_directory_path() /
+        ("nano_libtest_" + std::to_string(reinterpret_cast<uintptr_t>(&n) & 0xffff) + "_" +
+         std::to_string(++n));
+    fs::create_directories(dir / "footage");
+    std::ofstream(dir / "footage" / "a.mov") << "x";
+    root = dir.generic_string();
   }
   ~TempTree() {
-    ::remove((root + "/footage/a.mov").c_str());
-    ::rmdir((root + "/footage").c_str());
-    ::rmdir(root.c_str());
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
   }
 };
 
@@ -131,3 +129,35 @@ TEST_CASE("a malformed ref resolves to nothing", "[library_paths]") {
   // A ref with no path array at all IS the library root.
   REQUIRE(lp.resolveRef(json{{"libraryId", "L1"}}) == tree.root);
 }
+
+TEST_CASE("a foreign id resolves through the ref's recorded label", "[library_paths]") {
+  // A document from another profile: its id means nothing here, but it
+  // recorded the library's label alongside.
+  TempTree tree;
+  auto& lp = LibraryPaths::instance();
+  lp.setRoots(rows(tree.root));
+
+  const json ref = {{"libraryId", "uuid-elsewhere"}, {"libraryLabel", "Footage"},
+                    {"path", json::array({"footage", "a.mov"})}};
+  REQUIRE(lp.resolveRef(ref) == tree.root + "/footage/a.mov");
+  // The id still wins over the label when both could match.
+  REQUIRE(lp.find("L1", "Other").has_value());
+  REQUIRE_FALSE(lp.find("uuid-elsewhere", "Other").has_value());
+}
+
+#ifdef _WIN32
+TEST_CASE("Windows separators are separators", "[library_paths]") {
+  TempTree tree;
+  auto& lp = LibraryPaths::instance();
+  lp.setRoots(json::array({
+      {{"id", "L1"}, {"label", "Footage"}, {"absolutePath", tree.root + "\\"}},
+  }));
+  REQUIRE(lp.roots()[0].absolutePath == tree.root);  // trailing '\' trimmed
+  REQUIRE(lp.resolve("L1", {"footage", "a.mov"}).has_value());
+  // An embedded backslash is a separator here: it must not smuggle a climb.
+  REQUIRE_FALSE(lp.resolve("L1", {"footage\\..\\.."}).has_value());
+
+  lp.setRoots(json::array({{{"id", "R"}, {"label", "root"}, {"absolutePath", "C:\\"}}}));
+  REQUIRE(lp.roots()[0].absolutePath == "C:\\");  // a drive root stays a root
+}
+#endif

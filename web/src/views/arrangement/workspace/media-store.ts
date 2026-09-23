@@ -9,10 +9,15 @@
  */
 
 import { idbGet, idbPut, idbGetAll, idbDelete, STORE_MEDIA } from '../../../state/idb-store';
-import { deriveSourceKey } from '../../../video/profile-store';
 import { HandleRef, makeHandleRef, resolveFileRef } from '../../../state/handle-ref';
-import { deserializeHandle, type PathsFileHandle } from '../../../state/paths';
-import type { MediaDocRef } from '../model/composition';
+import { libraryPaths } from '../../../state/library-paths';
+import {
+  deserializeHandle,
+  openMediaSource,
+  type MediaSource,
+  type PathsFileHandle,
+} from '../../../state/paths';
+import type { MediaDocFile, MediaDocRef } from '../model/composition';
 
 export interface MediaHandleRecord {
   sourceKey: string; // 'name|size|lastModified'
@@ -24,30 +29,50 @@ export interface MediaHandleRecord {
   linkedAt: number;
 }
 
+/** What {@link linkMedia} hands back for the clip it's about to create. */
+export interface LinkedMedia {
+  /** The stable key an arrangement stores (`name|size|lastModified`). */
+  sourceKey: string;
+  /** Library-relative ref for `clip.source.ref` — null when the file isn't
+   *  under any library path. */
+  docRef: MediaDocRef | null;
+  /** Real location for `clip.source.file` — null on the web, which never
+   *  learns one. */
+  docFile: MediaDocFile | null;
+  /** The file, opened for ranged reads (import it with `importMedia`). */
+  media: MediaSource;
+}
+
 /**
- * Link a media file handle. Returns the stable `sourceKey` an arrangement
- * stores, plus the portable `docRef` to write into `clip.source.ref` — null
- * when the file isn't under any library path, in which case only this
- * per-profile record can find it again. Idempotent: relinking the same file
+ * Link a media file handle: persist the per-profile record and work out every
+ * binding the document can carry. Idempotent: relinking the same file
  * overwrites the record.
  */
-export async function linkMedia(
-  handle: PathsFileHandle,
-): Promise<{ sourceKey: string; docRef: MediaDocRef | null }> {
-  const { sourceKey, file } = await deriveSourceKey(handle);
+export async function linkMedia(handle: PathsFileHandle): Promise<LinkedMedia> {
+  // openMediaSource, not getFile(): under Electron a File means reading the
+  // whole (possibly multi-GB) file into memory.
+  const media = await openMediaSource(handle);
+  const sourceKey = `${media.name}|${media.size}|${media.lastModified}`;
   const ref = await makeHandleRef(handle);
   const rec: MediaHandleRecord = {
     sourceKey,
     ref,
-    name: file.name,
-    size: file.size,
-    lastModified: file.lastModified,
+    name: media.name,
+    size: media.size,
+    lastModified: media.lastModified,
     linkedAt: Date.now(),
   };
   await idbPut(STORE_MEDIA, rec);
+  let docRef: MediaDocRef | null = null;
+  if (ref.kind === 'lib') {
+    const label = libraryPaths.get(ref.libraryId)?.label;
+    docRef = { libraryId: ref.libraryId, path: ref.path, ...(label ? { libraryLabel: label } : {}) };
+  }
   return {
     sourceKey,
-    docRef: ref.kind === 'lib' ? { libraryId: ref.libraryId, path: ref.path } : null,
+    docRef,
+    docFile: media.absPath ? { abs: media.absPath } : null,
+    media,
   };
 }
 
@@ -65,15 +90,20 @@ export async function resolveMedia(sourceKey: string): Promise<MediaHandleRecord
 }
 
 /**
- * Resolve a sourceKey to a readable `File`, re-granting permission if needed.
- * Returns null when the handle is missing or permission is declined (the UI
- * surfaces a "relink media" affordance in that case). Must run from a user
+ * Resolve a sourceKey to its file handle, re-granting permission if needed.
+ * Null when the record is missing, the file is gone, or permission is declined
+ * (the UI surfaces a "relink media" affordance then). Must run from a user
  * gesture if a permission prompt may appear.
  */
-export async function openMedia(sourceKey: string): Promise<File | null> {
+export async function openMediaHandle(sourceKey: string): Promise<PathsFileHandle | null> {
   const rec = await resolveMedia(sourceKey);
   if (!rec) return null;
-  const fh = await resolveFileRef(rec.ref, { prompt: true, mode: 'read' });
+  return resolveFileRef(rec.ref, { prompt: true, mode: 'read' });
+}
+
+/** Resolve a sourceKey to a readable `File` (see {@link openMediaHandle}). */
+export async function openMedia(sourceKey: string): Promise<File | null> {
+  const fh = await openMediaHandle(sourceKey);
   if (!fh) return null;
   try {
     return await fh.getFile();

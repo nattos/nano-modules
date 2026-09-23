@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { createRequire } from 'node:module';
 import { DirectoryBackend, serializeComposition, deserializeComposition } from './backend';
 import { emptyComposition, type Clip } from '../model/composition';
 
@@ -165,5 +166,70 @@ describe('composition (de)serialization', () => {
     comp.tracks[0].clips.push(videoClip('a'));
     serializeComposition(comp);
     expect(comp.tracks[0].clips[0].source!.url).toBe('blob:a');
+  });
+
+  // ── source.file: real locations, relative to where the file lands ──
+  // `rel` is computed from `abs` only with a real node `path` (the desktop
+  // app); give this test one the way Electron's renderer has it.
+  const g = globalThis as { require?: unknown };
+  afterEach(() => { delete g.require; });
+
+  function fileClip(id: string, abs: string): Clip {
+    const c = videoClip(id, false);
+    c.source!.file = { abs };
+    return c;
+  }
+
+  it('writes file.rel relative to the document folder, interiors included', () => {
+    g.require = createRequire(import.meta.url);
+    const comp = emptyComposition();
+    const outer = videoClip('outer', false);
+    outer.kind = 'sequence';
+    outer.sequence = {
+      id: 'lane1', name: 'Sequence', kind: 'track', parentId: null,
+      sketch: { devices: [] }, automation: [], clips: [fileClip('inner', '/proj/media/in.mov')],
+    };
+    comp.tracks[0].clips.push(fileClip('a', '/proj/media/a.mov'), fileClip('b', '/elsewhere/b.mov'), outer);
+    const back = deserializeComposition(serializeComposition(comp, { docDir: '/proj/acts' }));
+    const [a, b, seq] = back.tracks[0].clips;
+    expect(a.source!.file).toEqual({ abs: '/proj/media/a.mov', rel: ['..', 'media', 'a.mov'] });
+    expect(b.source!.file!.rel).toEqual(['..', '..', 'elsewhere', 'b.mov']);
+    expect(seq.sequence!.clips[0].source!.file!.rel).toEqual(['..', 'media', 'in.mov']);
+    // The live document is untouched — rel belongs to the saved file only.
+    expect(comp.tracks[0].clips[0].source!.file!.rel).toBeUndefined();
+  });
+
+  it('keeps an existing rel when there is no real folder to recompute it from', () => {
+    // A browser workspace: no absolute paths anywhere.
+    const comp = emptyComposition();
+    const c = fileClip('a', '/proj/media/a.mov');
+    c.source!.file!.rel = ['media', 'a.mov'];
+    comp.tracks[0].clips.push(c);
+    const back = deserializeComposition(serializeComposition(comp));
+    expect(back.tracks[0].clips[0].source!.file!.rel).toEqual(['media', 'a.mov']);
+  });
+});
+
+describe('DirectoryBackend.resolveRelative (browser workspace)', () => {
+  function tree(): MemDir {
+    const root = new MemDir('proj');
+    const media = new MemDir('media');
+    media.children.set('a.mov', new MemFile('a.mov'));
+    root.children.set('media', media);
+    root.children.set('acts', new MemDir('acts'));
+    return root;
+  }
+
+  it('walks from the workspace root, honouring the document folder and ..', async () => {
+    const be = new DirectoryBackend(tree() as any, 'proj');
+    expect((await be.resolveRelative('acts/one', ['..', 'media', 'a.mov']))?.name).toBe('a.mov');
+    expect((await be.resolveRelative('top', ['media', 'a.mov']))?.name).toBe('a.mov');
+  });
+
+  it('is null for a missing file or a path above the workspace', async () => {
+    const be = new DirectoryBackend(tree() as any, 'proj');
+    expect(await be.resolveRelative('top', ['media', 'gone.mov'])).toBeNull();
+    // The only grant a browser holds is the workspace folder itself.
+    expect(await be.resolveRelative('top', ['..', 'proj', 'media', 'a.mov'])).toBeNull();
   });
 });

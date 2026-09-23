@@ -388,8 +388,10 @@ app.whenReady().then(async () => {
       app.quit();
       return;
     }
-    appProtocol.serve(resourceRoot);
   }
+  // Always installed: the media route (local clips streamed from disk) is
+  // needed on the dev server too; the app routes only when packaged.
+  appProtocol.serve(loadMode === 'packaged' ? resourceRoot : null);
 
   // Tell a copied-out FFGL plugin where we are. Packaged builds only, and
   // deliberately ranked LAST on the native side — see resources.cjs.

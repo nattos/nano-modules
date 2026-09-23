@@ -19,6 +19,7 @@ export interface DroppedMedia {
 }
 
 import { fourcc, parseMoov, type ContainerMeta } from '../../../video/bmff-meta';
+import { mediaSourceFromFile, type MediaSource } from '../../../state/paths';
 
 const ASSUMED_FPS = 30;
 const DEFAULT_DURATION = 4;
@@ -41,7 +42,13 @@ export function isImageFile(file: { type: string; name: string }): boolean {
  *   relinked after reload; otherwise a session-only `drop:` key is derived.
  */
 export async function importVideoFile(file: File, sourceKey?: string): Promise<DroppedMedia> {
-  const url = URL.createObjectURL(file);
+  return importMedia(mediaSourceFromFile(file), sourceKey);
+}
+
+/** {@link importVideoFile} over an opened {@link MediaSource} — the desktop
+ *  app's path, which reads from disk instead of holding the file in memory. */
+export async function importMedia(file: MediaSource, sourceKey?: string): Promise<DroppedMedia> {
+  const url = file.url;
   sourceKey ??= `drop:${file.name}:${file.size}:${file.lastModified}`;
 
   // A still image is a one-frame, one-second source — probe its pixel size too.
@@ -101,13 +108,19 @@ export async function importVideoFile(file: File, sourceKey?: string): Promise<D
 /** Cap for the in-memory moov parse — a sane moov is KBs..MBs. */
 const MOOV_MAX_BYTES = 64 * 1024 * 1024;
 
-export async function probeContainerMetadata(file: File): Promise<ContainerMeta | null> {
+/** Anything we can read byte ranges out of — a `File` or a {@link MediaSource}. */
+type RangeReadable = File | Pick<MediaSource, 'size' | 'read'>;
+
+export async function probeContainerMetadata(src: RangeReadable): Promise<ContainerMeta | null> {
+  const file = src instanceof File
+    ? { size: src.size, read: (a: number, b: number) => src.slice(a, b).arrayBuffer() }
+    : src;
   // Top-level atom walk: [size u32][type 4cc], size 1 → u64 largesize follows,
   // size 0 → to EOF. Bail unless the first atom is a plausible BMFF type.
   let off = 0;
   let first = true;
   while (off + 8 <= file.size) {
-    const head = new DataView(await file.slice(off, Math.min(off + 16, file.size)).arrayBuffer());
+    const head = new DataView(await file.read(off, Math.min(off + 16, file.size)));
     if (head.byteLength < 8) return null;
     let size = head.getUint32(0);
     const type = fourcc(head, 4);
@@ -128,7 +141,7 @@ export async function probeContainerMetadata(file: File): Promise<ContainerMeta 
     }
     if (type === 'moov') {
       if (size - headerLen > MOOV_MAX_BYTES) return null;
-      const body = new DataView(await file.slice(off + headerLen, off + size).arrayBuffer());
+      const body = new DataView(await file.read(off + headerLen, off + size));
       return parseMoov(body);
     }
     off += size;

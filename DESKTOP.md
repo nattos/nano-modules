@@ -243,6 +243,50 @@ IndexedDB, module workers and `wasm-host.ts`'s synchronous XHR each require.
 `http://localhost:5173`. Sketches authored against the dev server do not carry
 over, and `appMode` is unset, so a first launch lands in the effect IDE.
 
+### Local media: `nano://app/__media/`
+
+A clip's media is served from disk at `nano://app/__media/<encoded absolute
+path>` with Range support (`electron/app-protocol.cjs`), so the arrangement's
+decoders read only the bytes they need. A `blob:` URL would be the browser's
+answer, but an fs-backed file handle can only build a `File` by reading the
+whole file into memory. This route is installed in dev mode too, with CORS
+open, because the page is then on the dev server's origin. It serves any
+absolute path, which grants nothing new: the renderer already has
+`nodeIntegration`.
+
+---
+
+## Media files and library paths
+
+**The desktop app needs no library paths.** A clip records where its file
+really is, in the document itself: `clip.source.file = { abs, rel }`, where
+`rel` is relative to the `.nano-arr`'s folder and is recomputed on every save.
+Reopening tries, in order:
+
+1. `rel`, so a project folder moved or copied with its media inside still works;
+2. `abs`;
+3. the library ref;
+4. the browser's per-profile cache.
+
+Whichever one finds the file, `abs` is updated to match.
+
+**Library paths remain for browser documents.** A browser can't learn a real
+path, so the web app binds media relative to a library folder,
+`clip.source.ref = { libraryId, path, libraryLabel }`. The id is a per-profile
+UUID the desktop app has never seen. A missing clip then offers
+**Locate '<label>'…**. The folder you pick is kept under the document's own
+id, so every document from that browser profile resolves from then on, and
+each one gains `file.abs` the first time it opens.
+
+The native comp resolver (`bridge/comp_media_resolver.h`) reads `file.abs`
+first and then the library ref, matching on the recorded label when the id is
+unknown. It can't use `rel`, because the executor receives JSON and has no
+folder to resolve against.
+
+Remote Control no longer mirrors its library list to the barrel. It has no
+library UI, and its storage is separate from the arrangement app's, so the
+list was always empty and would have wiped roots pushed by a browser tab.
+
 ---
 
 ## Shaders

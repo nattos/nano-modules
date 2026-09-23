@@ -258,6 +258,40 @@ class LibraryController {
     return true;
   }
 
+  /**
+   * Point a library id this profile has never seen — named by a document
+   * from another profile — at a folder. The entry keeps THAT id, so every
+   * document from the same profile resolves against it with no further asks.
+   * (Ids are per-profile UUIDs; adding the folder normally would mint a new
+   * one and match nothing.) Re-adopting an id repoints it.
+   */
+  async adopt(id: string, handle: PathsDirectoryHandle, label?: string): Promise<LibraryPath> {
+    await this.ensureLoaded();
+    const absolutePath = absPathOf(handle);
+    const existing = this.get(id);
+    if (existing) {
+      runInAction(() => {
+        existing.handle = handle;
+        existing.absolutePath = absolutePath;
+        if (label) existing.label = label;
+      });
+      await this.persist(existing);
+      this.mirror();
+      return existing;
+    }
+    const rec: LibraryPath = {
+      id,
+      handle,
+      ...(absolutePath ? { absolutePath } : {}),
+      label: label || handle.name || 'library',
+      addedAt: Date.now(),
+    };
+    await this.persist(rec);
+    runInAction(() => { this.paths = [...this.paths, rec]; });
+    this.mirror();
+    return rec;
+  }
+
   /** Remove a library path. Invalidates any references relative to it. */
   async remove(id: string): Promise<void> {
     await idbDelete(STORE_LIBRARY, id);

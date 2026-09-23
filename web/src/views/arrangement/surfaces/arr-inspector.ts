@@ -1143,7 +1143,8 @@ export class ArrInspector extends MobxLitElement {
               <label>Source</label>
               <span class="val">
                 ${store.sourceMissing(clip.source.sourceKey)
-                  ? html`<span class="src-missing" title="The source file could not be found or accessed (moved, deleted, or permission revoked).">⚠ missing / inaccessible</span>`
+                  ? html`<span class="src-missing" title="The source file could not be found or accessed (moved, deleted, or permission revoked).">⚠ missing / inaccessible</span>
+                    ${this.renderLocateLibrary(clip.source.ref?.libraryId)}`
                   : clip.source.label}
               </span>
             </div>
@@ -1619,6 +1620,73 @@ export class ArrInspector extends MobxLitElement {
         <div class="row"><label>Snap to grid</label><span class="val"><span class="tag">¼ beat</span></span></div>
         <div class="row"><label>Default play mode</label><span class="val">${store.composition.playMode.defaultMode}</span></div>
 
+        ${isElectron() ? this.renderDesktopLibraries() : this.renderWebLibraries()}
+      </div>
+    `;
+  }
+
+  /**
+   * The desktop app records each clip's real file location, so it needs no
+   * library paths of its own. What's left is interop: a document made in a
+   * browser names ITS libraries (per-profile ids), and each one located here
+   * is kept under that id. Nothing to show until that happens.
+   */
+  /** "Locate '<label>'…" for a missing clip whose library this profile has
+   *  never seen (a document from another browser profile, or the web app). */
+  private renderLocateLibrary(libraryId?: string): TemplateResult | typeof nothing {
+    if (!libraryId || !(libraryId in store.unknownLibraries)) return nothing;
+    const label = store.unknownLibraries[libraryId] || `library ${libraryId.slice(0, 8)}`;
+    return html`<button class="btn" style="margin-left:6px"
+      title="This document's media lives in a library folder this app doesn't know yet. Pick that folder once and every document using it resolves."
+      @click=${() => void store.locateLibrary(libraryId)}>Locate '${label}'…</button>`;
+  }
+
+  private renderDesktopLibraries(): TemplateResult | typeof nothing {
+    if (libraryPaths.paths.length === 0) return nothing;
+    return html`
+      <div class="group-title">Libraries from browser documents</div>
+      <div class="lib-hint">
+        Folders you located for documents made in the web app. The desktop app
+        stores real file paths and doesn't need these for its own documents.
+      </div>
+      <div class="ws-list">
+        ${libraryPaths.paths.map((p) => html`<div class="lib-row">
+          <div class="ws-file">
+            <ui-icon icon="la-folder"></ui-icon>
+            <span class="ws-name" title=${p.absolutePath ?? p.label}>${p.label}</span>
+            <button class="btn" title="Point this library at a different folder"
+              @click=${() => this.relocateLibrary(p)}>Locate…</button>
+            <button
+              class="ws-del"
+              title="Forget this library"
+              @click=${(ev: PointerEvent) =>
+                this.openConfirm(ev, {
+                  message: `Forget "${p.label}"? Browser documents that use it will ask for it again.`,
+                  confirmLabel: 'Forget',
+                  onYes: () => libraryPaths.remove(p.id),
+                })}
+            ><ui-icon icon="la-trash"></ui-icon></button>
+          </div>
+          ${p.absolutePath
+            ? html`<div class="lib-abs"><span class="val" style="opacity:0.7">${p.absolutePath}</span></div>`
+            : nothing}
+        </div>`)}
+      </div>`;
+  }
+
+  private async relocateLibrary(p: LibraryPath) {
+    try {
+      const dir = await showDirectoryPicker();
+      if (!dir) return;
+      await libraryPaths.adopt(p.id, dir);
+      await store.relinkMedia();
+    } catch (err) {
+      console.warn('[library-paths] locate failed', err);
+    }
+  }
+
+  private renderWebLibraries(): TemplateResult {
+    return html`
         <div class="group-title">Library paths</div>
         <div
           class="lib-drop ${this.libDragOver ? 'over' : ''}"
@@ -1648,7 +1716,6 @@ export class ArrInspector extends MobxLitElement {
             </button>
           </div>
         </div>
-      </div>
     `;
   }
 

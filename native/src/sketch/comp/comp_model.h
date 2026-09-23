@@ -422,12 +422,14 @@ inline std::vector<const TrackM*> allLanes(const CompositionM& comp) {
 // ── Media resolution (host hook) ────────────────────────────────────────────
 
 /**
- * Turns a document's `clip.source.ref` ({libraryId, path[]}) into something the
- * HOST can open, or "" when it can't locate it.
+ * Turns a document's `clip.source` — its `file` ({abs, rel?}, the desktop
+ * app's real location) or `ref` ({libraryId, path[]}, the web's
+ * library-relative binding) — into something the HOST can open, or "" when it
+ * can't locate it.
  *
  * Why a hook and not a direct call: `source.url` is RUNTIME-ONLY (an object URL
  * the web store rebuilds via `relinkMedia`, stripped by `serializeComposition`),
- * so a `.nano-arr` read straight off disk carries only `ref`. Resolving that
+ * so a `.nano-arr` read straight off disk carries only `file` / `ref`. Resolving that
  * means touching the filesystem — and this header is dual-compiled into
  * `executor.wasm`, which has none. So the host installs a resolver
  * (`nano_assets::LibraryPaths` natively; none on web, where the store has
@@ -437,7 +439,7 @@ inline std::vector<const TrackM*> allLanes(const CompositionM& comp) {
  * Install ONCE at startup, before any document is parsed — it is read from
  * whichever thread parses, with no synchronization.
  */
-using MediaRefResolver = std::function<std::string(const nlohmann::json& ref)>;
+using MediaRefResolver = std::function<std::string(const nlohmann::json& source)>;
 
 inline MediaRefResolver& mediaRefResolver() {
   static MediaRefResolver resolver;
@@ -549,9 +551,9 @@ inline ClipM parseClip(const nlohmann::json& j, int depth = 0) {
     c.sourceJson = src;
     if (src.contains("url") && src["url"].is_string()) c.sourceUrl = src["url"].get<std::string>();
     // No runtime url (a document read from disk — it is stripped at save):
-    // ask the host to locate the portable `ref` binding instead.
-    if (c.sourceUrl.empty() && src.contains("ref")) {
-      if (const auto& resolve = mediaRefResolver()) c.sourceUrl = resolve(src["ref"]);
+    // ask the host to locate the persistent `file` / `ref` bindings instead.
+    if (c.sourceUrl.empty() && (src.contains("file") || src.contains("ref"))) {
+      if (const auto& resolve = mediaRefResolver()) c.sourceUrl = resolve(src);
     }
     c.hasLocatableSource = !c.sourceUrl.empty();
   }

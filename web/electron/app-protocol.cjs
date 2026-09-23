@@ -23,6 +23,7 @@ const { protocol, net } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { Readable } = require('stream');
 const moduleDirs = require('./module-dirs.cjs');
 
 const SCHEME = 'nano';
@@ -71,8 +72,97 @@ function resolveRequestPath(root, urlPath) {
   return file;
 }
 
+/** `/__media/<encoded absolute path>` — see serveMedia. */
+const MEDIA_PREFIX = '/__media/';
+
+const MEDIA_TYPES = {
+  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.bmp': 'image/bmp', '.avif': 'image/avif', '.svg': 'image/svg+xml',
+};
+
 /**
- * Serve from `root`. Call after `app.whenReady()`.
+ * Parse a single-range `Range` header against a file of `size` bytes:
+ * `[start, end]` inclusive, `null` for no/unsupported range (serve it all),
+ * or `'unsatisfiable'`.
+ */
+function parseRange(header, size) {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === '' && m[2] === '')) return null;  // multi-range etc.: whole file
+  let start;
+  let end;
+  if (m[1] === '') {
+    // Suffix: the last N bytes.
+    const n = Number(m[2]);
+    if (n === 0) return 'unsatisfiable';
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
+  }
+  if (start >= size || start > end) return 'unsatisfiable';
+  return [start, end];
+}
+
+/**
+ * Local media, streamed from disk with Range support — how the arrangement's
+ * decoders read a clip in the desktop app (src/state/paths.ts
+ * `openMediaSource`). A `blob:` URL would need the whole file in memory first,
+ * because an fs-backed file handle can't produce a disk-backed `File`.
+ *
+ * Any absolute path is servable. That grants nothing new: the renderer runs
+ * with nodeIntegration and can already read any file the user can. CORS is
+ * open because in development the page is on the vite dev server's origin,
+ * not nano://app.
+ */
+async function serveMedia(request, pathname) {
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Range',
+    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+  };
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+  let file;
+  try {
+    file = decodeURIComponent(pathname.slice(MEDIA_PREFIX.length));
+  } catch {
+    return new Response('bad path', { status: 400, headers: cors });
+  }
+  if (!path.isAbsolute(file)) return new Response('bad path', { status: 400, headers: cors });
+  let stat;
+  try {
+    stat = await fs.promises.stat(file);
+  } catch {
+    return new Response('not found', { status: 404, headers: cors });
+  }
+  if (!stat.isFile()) return new Response('not found', { status: 404, headers: cors });
+
+  const size = stat.size;
+  const headers = {
+    ...cors,
+    'Content-Type': MEDIA_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
+    'Accept-Ranges': 'bytes',
+  };
+  const range = parseRange(request.headers.get('range'), size);
+  if (range === 'unsatisfiable') {
+    return new Response(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${size}` } });
+  }
+  const [start, end] = range ?? [0, size - 1];
+  const length = size === 0 ? 0 : end - start + 1;
+  headers['Content-Length'] = String(length);
+  if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+  const body = request.method === 'HEAD' || length === 0
+    ? null
+    : Readable.toWeb(fs.createReadStream(file, { start, end }));
+  return new Response(body, { status: range ? 206 : 200, headers });
+}
+
+/**
+ * Serve from `root`. Call after `app.whenReady()`. `root` is null when the
+ * page comes from the dev server: then only the media route answers.
  *
  * `nano://app/` and a bare directory fall back to `index.html`. A request for a
  * named FILE that isn't there 404s instead — falling back for those too would
@@ -87,6 +177,8 @@ function serve(root) {
     if (url.hostname !== HOST) {
       return new Response('not found', { status: 404 });
     }
+    if (url.pathname.startsWith(MEDIA_PREFIX)) return serveMedia(request, url.pathname);
+    if (!root) return new Response('not found', { status: 404 });
     // `/modules/<n>/<file>.wasm` — an effect bundle from the per-user or a
     // mapped module directory (module-dirs.cjs), which live OUTSIDE the root.
     // Resolved against the config on every request, so a newly mapped
@@ -119,4 +211,4 @@ function serve(root) {
   });
 }
 
-module.exports = { registerScheme, serve, ORIGIN, SCHEME, resolveRequestPath };
+module.exports = { registerScheme, serve, ORIGIN, SCHEME, resolveRequestPath, parseRange };

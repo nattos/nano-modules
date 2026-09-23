@@ -17,6 +17,8 @@ import * as workspaceBackend from './views/arrangement/workspace/backend';
 import { libraryPaths } from './state/library-paths';
 import * as handleRef from './state/handle-ref';
 import * as mediaStore from './views/arrangement/workspace/media-store';
+import * as dropImport from './views/arrangement/media/drop-import';
+import * as paths from './state/paths';
 import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
 import { debugPerf } from './views/arrangement/state/debug-perf';
 
@@ -30,6 +32,8 @@ import { debugPerf } from './views/arrangement/state/debug-perf';
 (window as any).__libraryPaths = libraryPaths;
 (window as any).__handleRef = handleRef;
 (window as any).__mediaStore = mediaStore;
+(window as any).__dropImport = dropImport;
+(window as any).__paths = paths;
 (window as any).__export = { exportComposition, canExport };
 // Per-clip provider telemetry bus (cache hit rate, seeks, notReady, decode path).
 // Producers only collect while `active` — the stall benchmark flips it on.

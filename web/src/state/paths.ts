@@ -450,3 +450,130 @@ export async function revealInFolder(absPath: string): Promise<void> {
   if (!ipc) return;
   try { await ipc.invoke('paths.showItemInFolder', absPath); } catch { /* ignore */ }
 }
+
+// ── Media: reading without materialising the file ───────────────────────────
+
+/**
+ * A media file opened for RANGED reads, plus a URL the decoders can fetch.
+ *
+ * On the web this is a thin wrapper over a `File`: Chromium's `File` is
+ * disk-backed, so `slice()` reads only the bytes asked for and a `blob:` URL
+ * serves Range requests (dxv-sniff.ts, the <video> cursor). An fs-backed
+ * `getFile()` has no such luck — it must read the WHOLE file into memory to
+ * build a `File` — so under Electron the media is instead read with positioned
+ * `fs` reads and served to the decoders from disk over `nano://app/__media/`
+ * (electron/app-protocol.cjs), which answers Range requests the same way.
+ */
+export interface MediaSource {
+  name: string;
+  /** MIME type ('' when unknown). */
+  type: string;
+  size: number;
+  /** Epoch ms, truncated like `File.lastModified` so source keys agree. */
+  lastModified: number;
+  /** Bytes [start, end). */
+  read(start: number, end: number): Promise<ArrayBuffer>;
+  /** A fetchable URL for the whole file (Range-capable). */
+  url: string;
+  /** The file's real location, when there is one (Electron). */
+  absPath?: string;
+}
+
+const MEDIA_TYPES: Record<string, string> = {
+  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
+  mkv: 'video/x-matroska', avi: 'video/x-msvideo',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', svg: 'image/svg+xml',
+};
+
+/** The MIME type for a media file name, by extension ('' when unknown). */
+export function mediaTypeFor(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot < 0 ? '' : MEDIA_TYPES[name.slice(dot + 1).toLowerCase()] ?? '';
+}
+
+/** The route electron/app-protocol.cjs serves local media on. */
+export const MEDIA_URL_PREFIX = 'nano://app/__media/';
+
+/** The disk-streaming URL for an absolute path (Electron only). */
+export function mediaUrlForPath(absPath: string): string {
+  return MEDIA_URL_PREFIX + encodeURIComponent(absPath);
+}
+
+/** Wrap a `File` we already hold. */
+export function mediaSourceFromFile(file: File): MediaSource {
+  return {
+    name: file.name,
+    type: file.type || mediaTypeFor(file.name),
+    size: file.size,
+    lastModified: file.lastModified,
+    read: (start, end) => file.slice(start, end).arrayBuffer(),
+    url: URL.createObjectURL(file),
+  };
+}
+
+/** Open a file handle as a {@link MediaSource} — from disk under Electron,
+ *  through the (disk-backed) `File` on the web. Throws when it's gone. */
+export async function openMediaSource(handle: PathsFileHandle): Promise<MediaSource> {
+  const abs = absPathOf(handle);
+  if (!abs) return mediaSourceFromFile(await handle.getFile());
+  const fs = fsMod();
+  const st = await fs.promises.stat(abs);
+  return {
+    name: handle.name,
+    type: mediaTypeFor(handle.name),
+    size: st.size,
+    lastModified: Math.trunc(st.mtimeMs),
+    async read(start: number, end: number): Promise<ArrayBuffer> {
+      const len = Math.max(0, Math.min(end, st.size) - start);
+      const out = new Uint8Array(len);
+      if (len === 0) return out.buffer;
+      const fh = await fs.promises.open(abs, 'r');
+      try {
+        let got = 0;
+        while (got < len) {
+          const { bytesRead } = await fh.read(out, got, len - got, start + got);
+          if (bytesRead <= 0) break;
+          got += bytesRead;
+        }
+        return got === len ? out.buffer : out.slice(0, got).buffer;
+      } finally {
+        await fh.close();
+      }
+    },
+    url: mediaUrlForPath(abs),
+    absPath: abs,
+  };
+}
+
+/**
+ * `toFile` relative to the directory `fromDir`, as path components (may start
+ * with `..`). Undefined outside Electron, or when there is no relative route
+ * (different Windows drives).
+ */
+export function relativePathParts(fromDir: string, toFile: string): string[] | undefined {
+  const path = nodeRequire<any>('path');
+  if (!path || !fromDir || !toFile) return undefined;
+  const rel: string = path.relative(fromDir, toFile);
+  if (!rel || path.isAbsolute(rel)) return undefined;
+  return rel.split(/[\\/]/).filter((s: string) => s.length > 0);
+}
+
+/** The inverse: `parts` applied to the directory `fromDir` (Electron only). */
+export function resolvePathParts(fromDir: string, parts: string[]): string | undefined {
+  const path = nodeRequire<any>('path');
+  if (!path || !fromDir) return undefined;
+  return path.resolve(fromDir, ...parts);
+}
+
+/** The directory portion of an absolute path. */
+export function dirNameOf(absPath: string): string {
+  const p = normalizeAbsPath(absPath);
+  const i = lastSeparator(p);
+  return i <= 0 ? p.slice(0, i + 1) || p : p.slice(0, i);
+}
+
+/** Join path components onto an absolute directory (Electron-style paths). */
+export function joinAbsPath(base: string, ...parts: string[]): string {
+  return parts.reduce((acc, p) => joinPath(acc, p), base);
+}

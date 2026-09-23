@@ -19,6 +19,11 @@
 
 import { toJS } from 'mobx';
 import {
+  absPathOf,
+  getHandleFromAbsPath,
+  joinAbsPath,
+  relativePathParts,
+  resolvePathParts,
   showDirectoryPicker,
   type PathsDirectoryHandle,
   type PathsFileHandle,
@@ -68,6 +73,12 @@ export interface WorkspaceBackend {
   rename(from: string, to: string): Promise<void>;
   /** Delete one arrangement file. */
   remove(name: string): Promise<void>;
+  /**
+   * The file at `rel` (components, may start with `..`) relative to the folder
+   * holding arrangement `name` — how a clip's `source.file.rel` resolves.
+   * Null when it isn't there or can't be reached.
+   */
+  resolveRelative?(name: string, rel: string[]): Promise<PathsFileHandle | null>;
 }
 
 function fileNameFor(name: string): string {
@@ -78,13 +89,29 @@ function fileNameFor(name: string): string {
  * Sanitize MobX proxies out (the serialization-boundary rule) and wrap the
  * composition in the versioned envelope. Mirrors `project-store.saveProject`.
  */
-export function serializeComposition(comp: Composition): string {
+export interface SerializeOpts {
+  /** Absolute path of the folder the file is being written to. When given,
+   *  every `source.file` gets its `rel` recomputed against it. */
+  docDir?: string;
+}
+
+export function serializeComposition(comp: Composition, opts: SerializeOpts = {}): string {
   const safe = JSON.parse(JSON.stringify(toJS(comp))) as Composition;
   // `source.url` is an object URL scoped to this page — persisting it wrote a
   // dead pointer into every saved file. What actually locates the media is
-  // `source.ref`. Must reach INTERIOR sub-clips too (mediaClips recurses), or a
-  // consolidated sequence keeps shipping dead urls.
-  for (const c of mediaClips(safe)) delete c.source!.url;
+  // `source.file` / `source.ref`. Must reach INTERIOR sub-clips too
+  // (mediaClips recurses), or a consolidated sequence keeps shipping dead urls.
+  for (const c of mediaClips(safe)) {
+    const src = c.source!;
+    delete src.url;
+    // `rel` is relative to where THIS file lands, so it's only ever written
+    // here. Without a docDir (a browser workspace) an existing one is kept.
+    if (opts.docDir && src.file?.abs) {
+      const rel = relativePathParts(opts.docDir, src.file.abs);
+      if (rel) src.file.rel = rel;
+      else delete src.file.rel;
+    }
+  }
   const file: ArrangementFile = {
     format: 'nano-arr',
     engineVersion: ENGINE_VERSION,
@@ -198,7 +225,7 @@ export class DirectoryBackend implements WorkspaceBackend {
   async write(name: string, comp: Composition): Promise<void> {
     const fh = await this.fileHandle(name, true);
     const writable = await fh.createWritable();
-    await writable.write(serializeComposition(comp));
+    await writable.write(serializeComposition(comp, { docDir: this.docDirPath(name) }));
     await writable.close();
   }
 
@@ -226,6 +253,48 @@ export class DirectoryBackend implements WorkspaceBackend {
       dir = await dir.getDirectoryHandle(parts[i]);
     }
     await dir.removeEntry(parts[parts.length - 1]);
+  }
+
+  /** Components of the folder holding arrangement `name`, from the root. */
+  private docSubdir(name: string): string[] {
+    return fileNameFor(name).split('/').filter(Boolean).slice(0, -1);
+  }
+
+  /** Absolute path of the folder holding arrangement `name` — only for a
+   *  workspace with a real location (the desktop app). */
+  docDirPath(name: string): string | undefined {
+    const root = absPathOf(this.dir);
+    return root ? joinAbsPath(root, ...this.docSubdir(name)) : undefined;
+  }
+
+  async resolveRelative(name: string, rel: string[]): Promise<PathsFileHandle | null> {
+    const docDir = this.docDirPath(name);
+    if (docDir) {
+      // Real paths: plain resolution, and free to leave the workspace (media
+      // kept beside the project folder is common).
+      const abs = resolvePathParts(docDir, rel);
+      const h = abs ? await getHandleFromAbsPath(abs) : undefined;
+      return h?.kind === 'file' ? (h as PathsFileHandle) : null;
+    }
+    // A browser workspace: walk from its root — the only grant we hold — so
+    // media inside the workspace resolves with no library set up at all.
+    const parts = this.docSubdir(name);
+    for (const seg of rel) {
+      if (seg === '..') {
+        if (parts.length === 0) return null; // above the workspace: unreachable
+        parts.pop();
+      } else if (seg && seg !== '.') {
+        parts.push(seg);
+      }
+    }
+    if (parts.length === 0) return null;
+    try {
+      let dir = this.dir;
+      for (let i = 0; i < parts.length - 1; i++) dir = await dir.getDirectoryHandle(parts[i]);
+      return await dir.getFileHandle(parts[parts.length - 1]);
+    } catch {
+      return null;
+    }
   }
 
   /** Walk a `/`-separated relative path to its file handle. */

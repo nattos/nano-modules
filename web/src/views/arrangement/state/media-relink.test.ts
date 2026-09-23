@@ -2,22 +2,35 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the media handle store: relinkMedia re-resolves source URLs + lib paths.
 vi.mock('../workspace/media-store', () => ({
-  openMedia: vi.fn(),
+  openMediaHandle: vi.fn(),
   resolveMedia: vi.fn(),
 }));
 // The document-ref path resolves through handle-ref, not the media table.
 vi.mock('../../../state/handle-ref', () => ({
   resolveFileRef: vi.fn(),
 }));
+// source.file.abs resolves through the real filesystem under Electron; here a
+// stub decides which absolute paths "exist".
+vi.mock('../../../state/paths', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../../state/paths')>();
+  return { ...orig, getHandleFromAbsPath: vi.fn(), openMediaSource: vi.fn(orig.openMediaSource) };
+});
 
 import { store } from './store';
 import * as media from '../workspace/media-store';
 import * as handleRef from '../../../state/handle-ref';
+import * as paths from '../../../state/paths';
+
+/** A browser-style file handle (no absolute path) over a tiny File. */
+const fh = (name: string) =>
+  ({ kind: 'file', name, getFile: async () => new File(['x'], name) }) as never;
 
 describe('relinkMedia (video sources survive reload)', () => {
   beforeEach(() => {
     (globalThis as unknown as { URL: { createObjectURL: () => string } }).URL.createObjectURL = () => 'blob:relinked';
-    vi.mocked(media.openMedia).mockReset();
+    vi.mocked(media.openMediaHandle).mockReset();
+    vi.mocked(paths.getHandleFromAbsPath).mockReset();
+    vi.mocked(paths.getHandleFromAbsPath).mockResolvedValue(undefined);
     vi.mocked(media.resolveMedia).mockReset();
     vi.mocked(handleRef.resolveFileRef).mockReset();
     vi.mocked(handleRef.resolveFileRef).mockResolvedValue(null);
@@ -33,7 +46,7 @@ describe('relinkMedia (video sources survive reload)', () => {
       sourceKey: 'k1', ref: { kind: 'lib', libraryId: 'L', path: ['vids', 'a.mp4'] },
       name: 'a.mp4', size: 1, lastModified: 0, linkedAt: 0,
     } as never);
-    vi.mocked(media.openMedia).mockResolvedValue(new File(['x'], 'a.mp4') as never);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(fh('a.mp4'));
 
     await store.relinkMedia();
 
@@ -50,7 +63,7 @@ describe('relinkMedia (video sources survive reload)', () => {
     vi.mocked(media.resolveMedia).mockResolvedValue({
       sourceKey: 'k2', ref: { kind: 'direct', handle: {} }, name: 'b.mp4', size: 1, lastModified: 0, linkedAt: 0,
     } as never);
-    vi.mocked(media.openMedia).mockResolvedValue(new File(['x'], 'b.mp4') as never);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(fh('b.mp4'));
 
     await store.relinkMedia();
 
@@ -63,7 +76,7 @@ describe('relinkMedia (video sources survive reload)', () => {
     const trk = store.addTrack();
     store.addVideoClip(trk, 0, { sourceKey: 'gone', url: 'blob:dead', frameCount: 30, fps: 30, label: 'gone.mp4' }, 4);
     vi.mocked(media.resolveMedia).mockResolvedValue(null);
-    vi.mocked(media.openMedia).mockResolvedValue(null as never);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(null);
 
     await store.relinkMedia();
 
@@ -85,10 +98,8 @@ describe('relinkMedia (video sources survive reload)', () => {
     const clipId = path.split('/')[2];
 
     vi.mocked(media.resolveMedia).mockResolvedValue(null); // nothing cached
-    vi.mocked(media.openMedia).mockResolvedValue(null as never);
-    vi.mocked(handleRef.resolveFileRef).mockResolvedValue({
-      getFile: async () => new File(['x'], 'c.mp4'),
-    } as never);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(null);
+    vi.mocked(handleRef.resolveFileRef).mockResolvedValue(fh('c.mp4'));
 
     await store.relinkMedia();
 
@@ -113,7 +124,7 @@ describe('relinkMedia (video sources survive reload)', () => {
       sourceKey: 'k4', ref: { kind: 'lib', libraryId: 'L9', path: ['vids', 'd.mp4'] },
       name: 'd.mp4', size: 1, lastModified: 0, linkedAt: 0,
     } as never);
-    vi.mocked(media.openMedia).mockResolvedValue(new File(['x'], 'd.mp4') as never);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(fh('d.mp4'));
 
     await store.relinkMedia();
 
@@ -129,10 +140,109 @@ describe('relinkMedia (video sources survive reload)', () => {
     vi.mocked(media.resolveMedia).mockResolvedValue({
       sourceKey: 'k5', ref: { kind: 'direct', handle: {} }, name: 'e.mp4', size: 1, lastModified: 0, linkedAt: 0,
     } as never);
-    vi.mocked(media.openMedia).mockResolvedValue(new File(['x'], 'e.mp4') as never);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(fh('e.mp4'));
 
     await store.relinkMedia();
 
     expect(store.trackById(trk)!.clips.find((c) => c.id === clipId)!.source!.ref).toBeUndefined();
+  });
+
+  // ── source.file: the desktop app's binding, which needs no library ──────
+
+  const clipOf = (trk: string, path: string) =>
+    store.trackById(trk)!.clips.find((c) => c.id === path.split('/')[2])!;
+
+  it('resolves source.file.rel beside the document before file.abs and ref', async () => {
+    const trk = store.addTrack();
+    const path = store.addVideoClip(trk, 0, {
+      sourceKey: 'f1', url: 'blob:dead', frameCount: 30, fps: 30, label: 'f.mp4',
+      file: { abs: '/old/machine/f.mp4', rel: ['media', 'f.mp4'] },
+      ref: { libraryId: 'L', path: ['f.mp4'] },
+    }, 4)!;
+    const resolveRelative = vi.fn(async (_name: string, rel: string[]) =>
+      rel.join('/') === 'media/f.mp4' ? fh('f.mp4') : null);
+    const s = store as unknown as { backend: unknown; currentName: string | null };
+    const [prevBackend, prevName] = [s.backend, s.currentName];
+    s.backend = { resolveRelative };
+    s.currentName = 'show';
+    vi.mocked(media.resolveMedia).mockResolvedValue(null);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(null);
+    try {
+      await store.relinkMedia();
+    } finally {
+      s.backend = prevBackend;
+      s.currentName = prevName;
+    }
+    expect(resolveRelative).toHaveBeenCalledWith('show', ['media', 'f.mp4']);
+    // Found beside the document: neither the stale abs nor the library was consulted.
+    expect(vi.mocked(paths.getHandleFromAbsPath)).not.toHaveBeenCalledWith('/old/machine/f.mp4');
+    expect(vi.mocked(handleRef.resolveFileRef).mock.calls.map((c) => c[0]))
+      .not.toContainEqual(expect.objectContaining({ libraryId: 'L', path: ['f.mp4'] }));
+    expect(clipOf(trk, path).source!.url).toBe('blob:relinked');
+    expect(store.sourceMissing('f1')).toBe(false);
+  });
+
+  it('falls back from a missing file.rel to file.abs, then to the ref', async () => {
+    const trk = store.addTrack();
+    const path = store.addVideoClip(trk, 0, {
+      sourceKey: 'f2', url: 'blob:dead', frameCount: 30, fps: 30, label: 'g.mp4',
+      file: { abs: '/Volumes/footage/g.mp4' },
+    }, 4)!;
+    vi.mocked(media.resolveMedia).mockResolvedValue(null);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(null);
+    vi.mocked(paths.getHandleFromAbsPath).mockImplementation(async (p: string) =>
+      p === '/Volumes/footage/g.mp4' ? fh('g.mp4') : undefined);
+
+    await store.relinkMedia();
+
+    expect(clipOf(trk, path).source!.url).toBe('blob:relinked');
+    expect(store.sourceMissing('f2')).toBe(false);
+  });
+
+  it('records where the file really is once found (desktop upgrade in place)', async () => {
+    // A web document opened in the desktop app: found through its library, and
+    // from then on it carries the real path — no library needed next time.
+    const trk = store.addTrack();
+    const path = store.addVideoClip(trk, 0, {
+      sourceKey: 'f3', url: 'blob:dead', frameCount: 30, fps: 30, label: 'h.mov',
+      ref: { libraryId: 'L', path: ['h.mov'] },
+    }, 4)!;
+    vi.mocked(media.resolveMedia).mockResolvedValue(null);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(null);
+    vi.mocked(handleRef.resolveFileRef).mockResolvedValue(fh('h.mov'));
+    vi.mocked(paths.openMediaSource).mockImplementation(async (h) =>
+      (h as { name: string }).name === 'h.mov'
+        ? { name: 'h.mov', type: 'video/quicktime', size: 1, lastModified: 0,
+            read: async () => new ArrayBuffer(0),
+            url: 'nano://app/__media/%2Fdisk%2Fh.mov', absPath: '/disk/h.mov' }
+        : paths.mediaSourceFromFile(await (h as { getFile(): Promise<File> }).getFile()));
+    try {
+      await store.relinkMedia();
+    } finally {
+      vi.mocked(paths.openMediaSource).mockReset();
+      vi.mocked(paths.openMediaSource).mockImplementation(async (h) =>
+        paths.mediaSourceFromFile(await (h as { getFile(): Promise<File> }).getFile()));
+    }
+
+    const src = clipOf(trk, path).source!;
+    expect(src.url).toBe('nano://app/__media/%2Fdisk%2Fh.mov'); // streamed, not a blob
+    expect(src.file).toEqual({ abs: '/disk/h.mov' });
+    expect(store.mediaRelPaths['f3']).toBe('/disk/h.mov');
+  });
+
+  it('reports a library this profile has never seen, with the recorded label', async () => {
+    const trk = store.addTrack();
+    store.addVideoClip(trk, 0, {
+      sourceKey: 'f4', url: 'blob:dead', frameCount: 30, fps: 30, label: 'i.mp4',
+      ref: { libraryId: 'uuid-web-profile', path: ['i.mp4'], libraryLabel: 'Footage' },
+    }, 4);
+    vi.mocked(media.resolveMedia).mockResolvedValue(null);
+    vi.mocked(media.openMediaHandle).mockResolvedValue(null);
+    vi.mocked(handleRef.resolveFileRef).mockResolvedValue(null);
+
+    await store.relinkMedia();
+
+    expect(store.sourceMissing('f4')).toBe(true);
+    expect(store.unknownLibraries['uuid-web-profile']).toBe('Footage');
   });
 });

@@ -29,6 +29,7 @@ import { installModeOffers } from './live-offers';
 import { installDeviceDefineOffers } from './views/devices/define-offer';
 import { midiController } from './state/midi-controller';
 import { libraryPaths } from './state/library-paths';
+import { isElectron } from './state/paths';
 import { traceController } from './state/trace-controller';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
@@ -1187,7 +1188,14 @@ function connectBarrel(url: string) {
   // empty push is recoverable (the barrel keeps its sidecar until a real list
   // arrives, and re-locating a folder is a two-click repair), whereas a wiped
   // MIDI library silently kills every wire in the show.
+  //
+  // WEB ONLY. In the desktop apps the arrangement editor and Remote Control
+  // are separate apps with separate storage, and this one has no library UI:
+  // its list is always empty, and pushing it would wipe the roots a browser
+  // tab had supplied. (Desktop documents carry real file paths —
+  // `clip.source.file` — and need no roots.)
   const bindLibraryBridge = () => {
+    if (isElectron()) return;
     void libraryPaths.ensureLoaded().then(() => {
       libraryPaths.bindBridge(rows => barrel.setGlobal('/global/library_paths', rows));
     });

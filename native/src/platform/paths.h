@@ -76,10 +76,24 @@ inline std::string joinPath(const std::string& a, const std::string& b) {
   return out + '/' + (isSep(b.front()) ? b.substr(1) : b);
 }
 
+#ifdef _WIN32
+/// UTF-8 → the wide string the W APIs take. Our paths are UTF-8 everywhere;
+/// the A APIs would read them in the ANSI code page and miss any non-ASCII
+/// name (a user's footage folder is exactly where those turn up).
+inline std::wstring widen(const std::string& s) {
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  if (n <= 0) return std::wstring();
+  std::wstring w(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+  w.resize(static_cast<size_t>(n - 1));
+  return w;
+}
+#endif
+
 inline bool fileExists(const std::string& p) {
   if (p.empty()) return false;
 #ifdef _WIN32
-  const DWORD a = GetFileAttributesA(p.c_str());
+  const DWORD a = GetFileAttributesW(widen(p).c_str());
   return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 #else
   struct stat st;
@@ -90,7 +104,7 @@ inline bool fileExists(const std::string& p) {
 inline bool dirExists(const std::string& p) {
   if (p.empty()) return false;
 #ifdef _WIN32
-  const DWORD a = GetFileAttributesA(p.c_str());
+  const DWORD a = GetFileAttributesW(widen(p).c_str());
   return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 #else
   struct stat st;
