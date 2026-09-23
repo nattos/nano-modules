@@ -1867,6 +1867,15 @@ if(NANO_HAS_GPU_BACKEND)
       NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
     target_compile_options(test_module_dirs PRIVATE -Wno-attributes)
     catch_discover_tests(test_module_dirs)
+
+    # The effect SDK builds OUTSIDE this repo: stage it, copy its template to a
+    # temp dir, build with NANO_SDK as the only link back, then load the result
+    # from a mapped module folder and check it renders (native/sdk/).
+    add_test(NAME sdk_template_builds
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/sdk/test_sdk_template.sh
+              $<TARGET_FILE:test_module_dirs>)
+    set_tests_properties(sdk_template_builds PROPERTIES
+      LABELS "integration" SKIP_RETURN_CODE 77 TIMEOUT 300)
   endif()
 
   # --- NanoBarrel.dll (Windows) ---

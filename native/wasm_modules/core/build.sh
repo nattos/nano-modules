@@ -77,7 +77,7 @@ WASM_COMMON_EXPORTS=(
 
 wasm_build \
   -I"$TMP_DIR" \
-  -I../include \
+  -I"$NANO_INCLUDE_DIR" \
   -I../../src \
   main.cpp \
   ../brightness_contrast/main.cpp \

@@ -203,3 +203,53 @@ TEST_CASE("a bundle in a mapped directory loads and renders; without it the effe
   CHECK((int)out[2] == 90);
 }
 #endif
+
+// Driven by native/sdk/test_sdk_template.sh, which builds the SDK template
+// OUTSIDE the repo and points NANO_TEMPLATE_WASM at the result. Hidden ([.]):
+// without that build there is nothing to load.
+TEST_CASE("the SDK template, built outside the repo, loads from a mapped folder and tints",
+          "[.sdk_template]") {
+  const char* built = getenv("NANO_TEMPLATE_WASM");
+  if (!built || !*built) FAIL("NANO_TEMPLATE_WASM is not set");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
+
+  const std::string dir = nano_paths::parentDir(built);
+  const auto sources = resolveBundles("", "", {dir});
+  REQUIRE(sources.size() == 1);
+  CHECK(sources[0].origin == Origin::Mapped);
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  effect_runtime::EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(sources[0].path, registry, backend.get(), nullptr) == 1);
+  REQUIRE(registry.find("example.color.tint") != nullptr);
+
+  // Pure red at full amount over mid grey: red survives, green and blue go.
+  const std::string sketch = R"JSON({
+    "chain": [ { "type": "module", "module_type": "example.color.tint", "instance_key": "k0" } ],
+    "instances": { "k0": { "module_type": "example.color.tint",
+                           "state": { "color": [1.0, 0.0, 0.0], "amount": 1.0 } } },
+    "wires": []
+  })JSON";
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> inPix(W * H * 4, 128);
+  for (size_t i = 3; i < inPix.size(); i += 4) inPix[i] = 255;
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  sketch_executor::SketchExecutor ex(&rt, &registry, backend.get());
+  auto j = nlohmann::json::parse(sketch);
+  int32_t h = ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  REQUIRE(h > 0);
+  const auto out = backend->readbackTexture(h, W, H);
+  REQUIRE(out.size() == W * H * 4);
+  const size_t mid = ((H / 2) * W + W / 2) * 4;
+  INFO("rgb " << (int)out[mid] << "," << (int)out[mid + 1] << "," << (int)out[mid + 2]);
+  CHECK(std::abs((int)out[mid] - 128) <= 2);
+  CHECK((int)out[mid + 1] <= 2);
+  CHECK((int)out[mid + 2] <= 2);
+}

@@ -39,8 +39,10 @@
 #endif
 #else
 #include <dirent.h>
-#include <dlfcn.h>
 #include <sys/stat.h>
+#ifndef __wasi__
+#include <dlfcn.h>
+#endif
 #endif
 
 namespace nano_paths {
@@ -169,6 +171,10 @@ inline std::string imagePathContaining(const void* addr) {
   WideCharToMultiByte(CP_UTF8, 0, wide, static_cast<int>(n), out.data(), need,
                       nullptr, nullptr);
   return out;
+#elif defined(__wasi__)
+  // bridge_core.wasm reaches this header through trig_log.h. A wasm module is
+  // not a loaded image with a path; "can't be determined" is the answer.
+  return {};
 #else
   Dl_info info;
   if (!dladdr(addr, &info) || !info.dli_fname) return {};

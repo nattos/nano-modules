@@ -119,6 +119,13 @@ npm run build:stage              # vite build + assemble the shared resource roo
 npm run package:remote:mac       # or :win (cross-builds from a Mac); package:arrangement:* for NanoModules
 ```
 
+### Effects outside this repo
+
+`native/sdk/stage_sdk.sh` assembles an SDK (headers, shader includes, the build
+env) with a forkable one-effect template — see [native/sdk/README.md](native/sdk/README.md)
+and the template's own README. The apps load third-party bundles from module
+folders (Settings → Modules; [DESKTOP.md](DESKTOP.md#effect-modules)).
+
 ### Toolchain overrides
 
 `native/wasm_modules/wasm_build_env.sh` defaults to the Homebrew layout but

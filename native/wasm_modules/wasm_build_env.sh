@@ -1,6 +1,27 @@
 #!/bin/bash
 # Shared WASM C++ build environment.
 # Source this from module build scripts: source ../wasm_build_env.sh
+#
+# RELOCATABLE: the same file is the Nano effect SDK's build env
+# (native/sdk/stage_sdk.sh copies it to <sdk>/scripts/). Everything it needs is
+# found relative to itself, in either layout:
+#
+#   repo  native/wasm_modules/{wasm_build_env.sh, _emit_spv_header.py,
+#                              include/, shaders_common/}
+#   SDK   <sdk>/scripts/{wasm_build_env.sh, _emit_spv_header.py}
+#         <sdk>/include/  <sdk>/shaders/common/
+#
+# and effects are found under NANO_EFFECTS_ROOT (default `..`: in the repo a
+# bundle's build.sh runs from its own directory, a sibling of every effect's).
+# After sourcing, NANO_INCLUDE_DIR is the -I for <module_api.h>, <gpu.h>, ...
+
+_NANO_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$_NANO_ENV_DIR/include" ]; then
+  NANO_INCLUDE_DIR="$_NANO_ENV_DIR/include"
+else
+  NANO_INCLUDE_DIR="$(cd "$_NANO_ENV_DIR/../include" && pwd)"
+fi
+NANO_EFFECTS_ROOT="${NANO_EFFECTS_ROOT:-..}"
 
 # ---------------------------------------------------------------------------
 # Toolchain discovery.
@@ -160,7 +181,9 @@ WASM_COMMON_EXPORTS=(
 wasm_build() {
   local SOURCES=("$@")
   echo "  clang++: ${SOURCES[*]}"
-  "$CLANG" "${WASM_CXXFLAGS[@]}" "${WASM_LDFLAGS[@]}" "${WASM_EXPORTS[@]}" "${WASM_COMMON_EXPORTS[@]}" "${SOURCES[@]}" -o "$OUT_DIR/$MODULE_NAME.wasm"
+  # WASM_EXPORTS is optional (a bundle sets it only for extra exports); the
+  # ${a[@]+...} form keeps an unset array legal under `set -u`.
+  "$CLANG" "${WASM_CXXFLAGS[@]}" "${WASM_LDFLAGS[@]}" ${WASM_EXPORTS[@]+"${WASM_EXPORTS[@]}"} "${WASM_COMMON_EXPORTS[@]}" "${SOURCES[@]}" -o "$OUT_DIR/$MODULE_NAME.wasm"
 }
 
 # ----------------------------------------------------------------------
@@ -201,7 +224,11 @@ _emit_shader_header() {
 
 # Shared HLSL include directory. Effects can `#include "nano_coords.hlsl"`
 # (etc.) — see wasm_modules/shaders_common/.
-SHADERS_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/shaders_common" && pwd)"
+if [ -d "$_NANO_ENV_DIR/shaders_common" ]; then
+  SHADERS_COMMON_DIR="$_NANO_ENV_DIR/shaders_common"
+else
+  SHADERS_COMMON_DIR="$(cd "$_NANO_ENV_DIR/../shaders/common" && pwd)"
+fi
 
 # --- Shader hygiene gate ------------------------------------------------
 # Fail the build if any shader uses the isnan()/isinf() intrinsics. They
@@ -210,8 +237,7 @@ SHADERS_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/shaders_common" && pwd)
 # Use `x != x` for NaN + clamp() for +/-Inf (shaders_common/nano_sanitize.hlsl).
 # Crude but comprehensive: scans every effect shader on each build. The regex
 # requires a "(" so prose like "isnan / isinf" in comments doesn't trip it.
-_WASM_MODULES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_forbidden_intrinsics="$(grep -rnE '\bis(nan|inf)[[:space:]]*\(' "$_WASM_MODULES_DIR" --include='*.hlsl' 2>/dev/null || true)"
+_forbidden_intrinsics="$(grep -rnE '\bis(nan|inf)[[:space:]]*\(' "$(cd "$NANO_EFFECTS_ROOT" && pwd)" --include='*.hlsl' 2>/dev/null || true)"
 if [ -n "$_forbidden_intrinsics" ]; then
   echo "ERROR: forbidden shader intrinsic isnan()/isinf() — these break PSO" >&2
   echo "       compilation (the effect silently fails to initialize). Use" >&2
@@ -241,7 +267,7 @@ compile_shaders_compute_var() {
   local src="${5:-compute}"
   glslc -fshader-stage=compute -x hlsl \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/${src}.hlsl" -o "$TMP_DIR/${effect}_${variant}.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/${src}.hlsl" -o "$TMP_DIR/${effect}_${variant}.spv"
   naga "$TMP_DIR/${effect}_${variant}.spv" "$TMP_DIR/${effect}_${variant}.wgsl"
   _nano_sed_i "s/rgba32float,read_write/${fmt},${access}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
   _nano_sed_i "s/rgba32float/${fmt}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
@@ -277,7 +303,7 @@ compile_shaders_compute_spv() {
   fi
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${src}.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${src}.spv"
   "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
     "${src}=${TMP_DIR}/${effect}_${src}.spv"
@@ -301,13 +327,13 @@ compile_shaders_full_spv() {
   fi
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/compute.hlsl"  -Fo "$TMP_DIR/${effect}_compute.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/compute.hlsl"  -Fo "$TMP_DIR/${effect}_compute.spv"
   dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/vertex.hlsl"   -Fo "$TMP_DIR/${effect}_vertex.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/vertex.hlsl"   -Fo "$TMP_DIR/${effect}_vertex.spv"
   dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/fragment.hlsl" -Fo "$TMP_DIR/${effect}_fragment.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/fragment.hlsl" -Fo "$TMP_DIR/${effect}_fragment.spv"
   "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
     "compute=${TMP_DIR}/${effect}_compute.spv" \
@@ -338,7 +364,7 @@ compile_shaders_compute_var_spv() {
   fi
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${variant}.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${variant}.spv"
 }
 
 # _emit_spv_header_var <effect> <variant1> [<variant2> ...]
@@ -364,7 +390,7 @@ _emit_spv_header_var() {
 compile_shaders_compute_fused_spv() {
   local effect="$1"
   local effect_dir
-  effect_dir="$(cd ../${effect} && pwd)"
+  effect_dir="$(cd "${NANO_EFFECTS_ROOT}/${effect}" && pwd)"
   local pixel="${effect_dir}/pixel.hlsl"
   if [ ! -f "$pixel" ]; then
     echo "ERROR: ${effect}/pixel.hlsl not found (required for fusion build)"
@@ -378,7 +404,7 @@ compile_shaders_compute_fused_spv() {
   # 1. Standalone compute shader.
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
-    "../${effect}/compute.hlsl" -Fo "$TMP_DIR/${effect}_compute.spv"
+    "${NANO_EFFECTS_ROOT}/${effect}/compute.hlsl" -Fo "$TMP_DIR/${effect}_compute.spv"
 
   # 2. Fragment SPV — synthetic wrapper around pixel.hlsl (same trick
   # as compile_shaders_compute_fused: gives DXC a main() to hang the
@@ -433,7 +459,7 @@ EOF
 compile_shaders_compute_fused() {
   local effect="$1"
   local effect_dir
-  effect_dir="$(cd ../${effect} && pwd)"
+  effect_dir="$(cd "${NANO_EFFECTS_ROOT}/${effect}" && pwd)"
   local pixel="${effect_dir}/pixel.hlsl"
   if [ ! -f "$pixel" ]; then
     echo "ERROR: ${effect}/pixel.hlsl not found (required for fusion build)"
@@ -498,7 +524,7 @@ compile_shaders_full() {
   for stage in compute vertex fragment; do
     glslc -fshader-stage=${stage} -x hlsl \
       -I "$SHADERS_COMMON_DIR" \
-      "../${effect}/${stage}.hlsl" -o "$TMP_DIR/${effect}_${stage}.spv"
+      "${NANO_EFFECTS_ROOT}/${effect}/${stage}.hlsl" -o "$TMP_DIR/${effect}_${stage}.spv"
     naga "$TMP_DIR/${effect}_${stage}.spv" "$TMP_DIR/${effect}_${stage}.wgsl"
     # Same storage-texture format fixup compile_shaders_compute applies.
     # naga emits rgba32float,read_write for HLSL `RWTexture2D<float4>`,
