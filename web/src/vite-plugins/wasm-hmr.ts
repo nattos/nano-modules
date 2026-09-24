@@ -39,15 +39,12 @@ const moduleDirs = createRequire(import.meta.url)('../../electron/module-dirs.cj
  */
 export const SHIPPED_WASM = [
   // Effect bundles the app loads from its own wasm/ — SHIPPED_EFFECT_BUNDLES in
-  // src/effect-bundles.ts. (nano, lights and legacy ride along as
-  // extra-modules/ for seeding the per-user modules directory; see
-  // electron-builder.config.cjs.)
+  // src/effect-bundles.ts. (The extras — nano, lights, legacy, from
+  // nano-modules-extras — are not part of the web build: a package carries
+  // them as extra-modules/ only when scripts/package.sh is given them.)
   'core.wasm',
   'text.wasm',
   'richtext.wasm',
-  'nano.wasm',
-  'lights.wasm',
-  'legacy.wasm',
   // Hosts + services.
   'executor.wasm',
   'bridge_core.wasm',
@@ -60,8 +57,8 @@ export const SHIPPED_WASM = [
 
 /** Ones whose absence is fatal to a packaged build, so the copy must shout. */
 const REQUIRED_WASM = new Set([
-  'core.wasm', 'nano.wasm', 'lights.wasm', 'text.wasm', 'richtext.wasm',
-  'legacy.wasm', 'executor.wasm', 'bridge_core.wasm', 'text_engine.wasm',
+  'core.wasm', 'text.wasm', 'richtext.wasm',
+  'executor.wasm', 'bridge_core.wasm', 'text_engine.wasm',
   'naga_spv.wasm',
 ]);
 

@@ -31,6 +31,21 @@ ctest --test-dir build           # run Catch2 tests
 cd wasm_modules && ./build_all.sh # rebuild ALL effect .wasm bundles (or `cd <bundle> && ./build.sh` for one)
 ```
 
+**The extras live in another repo.** The `nano`, `lights` and `legacy` bundles (and `control.nanolooper`
++ the NanoLooper FFGL plugin) are in [nano-modules-extras](https://github.com/nattos/nano-modules-extras),
+checked out beside this repo. Nothing here finds it implicitly — pass it explicitly:
+
+```bash
+native/wasm_modules/build_all.sh --extras ../nano-modules-extras        # builds them via the SDK into build/wasm
+cmake -S native -B native/build -DNANO_EXTRAS_DIR=../nano-modules-extras  # NanoLooper + their native tests (path: absolute or repo-root-relative)
+NANO_EXTRAS_DIR=../../nano-modules-extras npx jest <name>                # their web suites, on this harness (from web/)
+npm run package:remote:mac -- --extras ../../nano-modules-extras          # packaging REQUIRES --extras or --no-extras
+```
+
+Our own coverage must never depend on them: every host import any bundle calls must be exercised by
+an in-repo bundle — `native/tools/abi_coverage.py` checks, and `debug.raster_test` /
+`debug.compute_probe` / `debug.trigger_probe` (testonly) exist for the paths only the extras used.
+
 VCS is **jj** (Jujutsu), not plain git: `jj commit -m "<msg>"`. Multiple workspaces share one repo
 (`default`, `text`, etc.), each with its own working-copy commit (`@`).
 
@@ -98,7 +113,7 @@ back to the sketch input) and never advances the column's texture cursor. See `c
 
 One C++ source (`sketch_executor.cpp`) builds into **both** the native barrel/FFGL lib **and**
 `executor.wasm` (web), driving effects through the `effrt` host ABI. Effects compile to per-bundle
-`.wasm` files (core/lights/nano/testonly/text/richtext) loaded via WAMR on native and in-browser on
+`.wasm` files (core/testonly/text/richtext here; nano/lights/legacy from the extras) loaded via WAMR on native and in-browser on
 web. The web build serves the **same** `build/wasm/*.wasm` files, so rebuild bundles
 (`native/wasm_modules/build_all.sh`) before running web e2e — a stale bundle is a common false failure.
 
@@ -116,9 +131,9 @@ auto mod = gpu::Device::createShaderModuleByName("my_shader");
 ```
 
 There is **no inline-WGSL effect path** — the raw `gpu::Device::createShaderModule(source)` effect ABI
-was retired (the executor keeps its own raw-MSL path for blend/fusion; that's separate). See the
-`flash_particles/` and `flow_swarm/` bundles for the canonical instanced-quad-reading-a-storage-buffer
-template.
+was retired (the executor keeps its own raw-MSL path for blend/fusion; that's separate). See
+testonly's `particles_renderer/` (and the extras' `flash_particles/` / `flow_swarm/`) for the canonical
+instanced-quad-reading-a-storage-buffer template.
 
 Key rules:
 - **Binding indices are register numbers.** DXC maps HLSL `register(t1/b0/u2)` directly to the SPIR-V
@@ -194,3 +209,5 @@ Schema conventions that the host depends on:
 - Native auto-connect (`sketch_augment`) **skips** chain entries lacking `"type":"module"` — a test sketch missing it silently generates no struct/texture rails (effect reads nothing). Web sketches already include it
 - After editing effect logic or shaders, rebuild the bundle before testing — both native and web load the built `.wasm`. The barrel loads a COPY inside `NanoBarrel.bundle/Contents/Resources/wasm` — `build_all.sh`/`build_aot.sh` refresh it automatically, but a lone `cd <bundle> && ./build.sh` does not: run `wasm_modules/refresh_barrel.sh` (or `cmake --build build`) before testing in Resolume
 - Rewriting a GPU **buffer** a dispatch already read this frame is safe on both platforms (the backend versions the backing buffer; each dispatch sees the latest write preceding its encode) — but rewriting a **texture** in that position is last-write-wins and only logs a warning: upload to a fresh texture instead. Never rely on effect-called `gpu::Device::submit()` for ordering — it's a no-op inside the native frame batch (a real flush on web)
+- Host imports with more than 7 integer params get their tail args on the stack, and WAMR's 8-byte stack slots disagree with Apple arm64's packed 4-byte ones: declare params 8+ as `int64_t` in `host_functions.cpp` (see the comment there; `register_host_functions()` refuses an unaudited wide import). It failed SILENTLY before — every native blend PSO was alpha-over
+- A cbuffer `uint3`/`float3` after a scalar (e.g. `uint count; uint3 _pad;`) isn't 16-byte aligned: naga rejects the shader on web and the effect never initializes. Pad with scalars

@@ -149,23 +149,24 @@ TEST_CASE("module_paths.json: enabled directories in order, and junk is 'none ma
   CHECK(nano_modules::readMappedDirs(nano_paths::joinPath(d.path, "missing.json")).empty());
 }
 
-#ifdef NANO_WASM_PATH
+#ifdef TESTONLY_WASM_PATH
 TEST_CASE("a bundle in a mapped directory loads and renders; without it the effect passes through",
           "[module_dirs][gpu]") {
   auto backend = gpu::createBackend();
   if (!backend) SKIP("No GPU device available");
 
   const std::string sketch = R"JSON({
-    "chain": [ { "type": "module", "module_type": "motion.peak_decay", "instance_key": "k0" } ],
-    "instances": { "k0": { "module_type": "motion.peak_decay", "state": {} } },
+    "chain": [ { "type": "module", "module_type": "debug.clear_copy_test", "instance_key": "k0" } ],
+    "instances": { "k0": { "module_type": "debug.clear_copy_test", "state": {} } },
     "wires": []
   })JSON";
 
   TempDir mapped("mapped");
-  mapped.copyFrom(kNanoWasm, "nano.wasm");
+  // testonly under a stem no built-in bundle has, like any third-party bundle.
+  mapped.copyFrom(kTestonlyWasm, "my_effects.wasm");
   const auto sources = resolveBundles("", "", {mapped.path});
   REQUIRE(sources.size() == 1);
-  CHECK(sources[0].stem == "nano");
+  CHECK(sources[0].stem == "my_effects");
 
   {
     sketch_executor::WasmEffectBundles bundles;
@@ -173,7 +174,7 @@ TEST_CASE("a bundle in a mapped directory loads and renders; without it the effe
     effect_runtime::EffectRuntime rt(backend.get());
     sketch_executor::ModuleRegistry registry(&rt);
     CHECK(bundles.loadBundleFile(sources[0].path, registry, backend.get(), nullptr) > 1);
-    CHECK(registry.find("motion.peak_decay") != nullptr);
+    CHECK(registry.find("debug.clear_copy_test") != nullptr);
   }
 
   // The directory is unmapped: the same sketch must still execute, the missing
@@ -183,7 +184,7 @@ TEST_CASE("a bundle in a mapped directory loads and renders; without it the effe
 
   effect_runtime::EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  CHECK(registry.find("motion.peak_decay") == nullptr);
+  CHECK(registry.find("debug.clear_copy_test") == nullptr);
 
   const uint32_t W = 16, H = 16, RGBA8 = 1;
   int inTex = backend->createTexture(W, H, RGBA8);

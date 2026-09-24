@@ -31,8 +31,10 @@ tree does not configure *on* Windows; see `WINDOWS.md`.
 
 ```bash
 # 1. Effect bundles + the shader translator. (Also fetches fonts, once.)
+#    The extras (nano, lights, legacy) come from a nano-modules-extras checkout
+#    beside this repo — optional for a dev tree; see "The extras" below.
 SERVED_ONLY=1 bash web/scripts/fetch_fonts.sh
-bash native/wasm_modules/build_all.sh
+bash native/wasm_modules/build_all.sh --extras ../nano-modules-extras
 
 # 2. The native plugin. Both are built from macOS; the Windows one needs
 #    NANO_BUILD_FFGL explicitly, because the option's value is cached.
@@ -46,13 +48,35 @@ cmake --build native/build-win --target NanoBarrel bridge_server
 cd web
 npm run build:stage
 
-# 4. The installers.
-npm run package:remote:mac         # dmg + zip, arm64
-npm run package:remote:win         # nsis + portable, x64 — cross-builds from a Mac
-npm run package:arrangement:mac    # likewise for NanoModules
-npm run package:arrangement:win
-npm run package                    # both products, both platforms
+# 4. The installers. Each REQUIRES --extras <checkout> or --no-extras.
+X=--extras=../../nano-modules-extras   # relative to web/
+npm run package:remote:mac -- $X        # dmg + zip, arm64
+npm run package:remote:win -- $X        # nsis + portable, x64 — cross-builds from a Mac
+npm run package:arrangement:mac -- $X   # likewise for NanoModules
+npm run package:arrangement:win -- $X
+npm run package -- $X                   # both products, both platforms
 ```
+
+### The extras
+
+The `nano`, `lights` and `legacy` bundles — and the NanoLooper FFGL plugin —
+live in [nano-modules-extras](https://github.com/nattos/nano-modules-extras).
+This repo never finds a checkout on its own; every step that uses one is told
+where it is:
+
+| Step | Takes | Does |
+|---|---|---|
+| `build_all.sh --extras <dir>` (or `NANO_EXTRAS_DIR`) | the checkout | stages the SDK (`native/sdk/stage_sdk.sh` → `build/sdk`), runs the checkout's `build.sh` against it into `build/wasm/`, records the stems in `build/wasm/extras.json`, refreshes their AOT sidecars |
+| `web/scripts/package.sh … --extras <dir>` (what `npm run package:*` runs) | the checkout | the same fresh build, then carries the bundles as `extra-modules/`; `--no-extras` packages without them, and neither refuses to run |
+| `cmake … -DNANO_EXTRAS_DIR=<dir>` | the checkout | adds its `native/`: the NanoLooper plugin and the extras' Catch2 tests |
+| `NANO_EXTRAS_DIR=<dir> npx jest` (from `web/`) | the checkout | adds its `tests/web` suites to this harness; they import our helpers as `@nano/web/...` |
+
+The extras build ONLY through the SDK, like anyone's bundles — a thing they
+need that the SDK lacks fails their build rather than reaching into this tree.
+A tree built without them just lacks their effects; the test runners and the
+AOT step load or build whatever `extras.json` lists. Our own test coverage
+never depends on them: `native/tools/abi_coverage.py` fails if any bundle calls
+a host import no in-repo bundle calls.
 
 Artifacts land in `web/release/<product>/`.
 
@@ -74,7 +98,7 @@ One directory serves the Electron renderer *and* the native FFGL plugin:
 <root>/nano-resources.json     marker; both halves look for it
 <root>/app/                    the built web app
 <root>/wasm/*.wasm             core, text, richtext + services (both)
-<root>/extra-modules/          nano, lights, legacy — seeded into the modules folder
+<root>/extra-modules/          the extras (nano, lights, legacy) — seeded into the modules folder
 <root>/wasm/*-<arch>.aot       AOT sidecars            (native only)
 <root>/fonts/default.ttf       primary text face       (native only)
 <root>/ffgl/NanoBarrel.bundle        the plugin        (macOS Remote Control)
@@ -100,7 +124,7 @@ a folder the app, the dev server and the native plugin all scan the same way —
 
 | Folder | What it holds | Precedence |
 |---|---|---|
-| `<root>/wasm/` | the built-ins (a dev tree: all six repo bundles) | lowest |
+| `<root>/wasm/` | the built-ins (a dev tree: core, text, richtext, testonly, plus the extras when built with `--extras`) | lowest |
 | **Modules folder** — `~/Library/Application Support/Nano Modules/Modules`, `%APPDATA%\Nano Modules\Modules` | nano, lights, legacy, copied from `extra-modules/` on first launch of each new app version | fills in only what `wasm/` lacks, so a seeded release copy never shadows a dev tree's build |
 | Folders added in **Settings → Modules** (`Settings/module-paths.json`) | your own bundles | replaces the same name from anywhere below; later folders win |
 

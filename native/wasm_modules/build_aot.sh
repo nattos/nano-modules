@@ -16,7 +16,8 @@
 # fast path: regenerate sidecars without a full .wasm rebuild (e.g. at CMake
 # configure time, or after a wamrc update).
 #
-# Usage:  build_aot.sh [bundle...]      # default: the shipped effect bundles
+# Usage:  build_aot.sh [bundle...]      # default: the in-repo effect bundles
+#                                         # plus the extras build_extras.sh built
 #   OUT_DIR=...  ARCHES="aarch64 x86_64"  WAMRC=/path/to/wamrc  build_aot.sh
 set -e
 cd "$(dirname "$0")"
@@ -27,7 +28,16 @@ BUNDLES=("$@")
 # testonly is in the default set because the Catch2 GPU tests load its AOT
 # sidecar when present — a stale testonly.aot renders black and reads as a
 # fake regression.
-[ ${#BUNDLES[@]} -eq 0 ] && BUNDLES=(core lights nano text richtext legacy testonly)
+if [ ${#BUNDLES[@]} -eq 0 ]; then
+  BUNDLES=(core text richtext testonly)
+  # The extras (nano, lights, legacy) when this tree was built with them —
+  # build_extras.sh records their stems; nothing here names them.
+  if [ -f "$OUT_DIR/extras.json" ]; then
+    while IFS= read -r s; do [ -n "$s" ] && BUNDLES+=("$s"); done < <(
+      "${PYTHON:-python3}" -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["stems"]))' \
+        "$OUT_DIR/extras.json")
+  fi
+fi
 
 if [ ! -x "$WAMRC" ] && ! command -v "$WAMRC" >/dev/null 2>&1; then
   echo "ERROR: wamrc not found at '$WAMRC' (see native/tools/wamrc/README.md)."

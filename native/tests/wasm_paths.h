@@ -51,6 +51,8 @@ inline const char* const kCoreWasm = nanoWasmPath(CORE_WASM_PATH);
 #ifdef TESTONLY_WASM_PATH
 inline const char* const kTestonlyWasm = nanoWasmPath(TESTONLY_WASM_PATH);
 #endif
+// The extras' bundles (nano-modules-extras): defined only by its test targets,
+// which nano-modules' CMake adds when NANO_EXTRAS_DIR names a checkout.
 #ifdef NANO_WASM_PATH
 inline const char* const kNanoWasm = nanoWasmPath(NANO_WASM_PATH);
 #endif
@@ -65,9 +67,6 @@ inline const char* const kTextWasm = nanoWasmPath(TEXT_WASM_PATH);
 #endif
 #ifdef EXECUTOR_WASM_PATH
 inline const char* const kExecutorWasm = nanoWasmPath(EXECUTOR_WASM_PATH);
-#endif
-#ifdef NANOLOOPER_WASM_PATH
-inline const char* const kNanolooperWasm = nanoWasmPath(NANOLOOPER_WASM_PATH);
 #endif
 
 // The shared bridge runtime the barrel loads at startup. Same redirect, its own

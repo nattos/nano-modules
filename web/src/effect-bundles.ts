@@ -6,7 +6,8 @@
  * directory (electron/module-dirs.cjs, native/src/bridge/module_dirs.h):
  *
  *   - the app's own `wasm/` — a package ships core, text and richtext there;
- *   - the per-user modules directory the installer seeds (nano, lights, legacy);
+ *   - the per-user modules directory the installer seeds (the extras from
+ *     nano-modules-extras: nano, lights, legacy);
  *   - directories the user maps (Settings → Modules), e.g. their own effects.
  *
  * `discoverEffectBundles()` asks whoever knows — the Electron main process, or
@@ -20,20 +21,11 @@ import { electronIpc } from './state/paths';
 
 /** What a package carries in its own wasm/. Keep in step with
  *  builtinBundleStems() in native/src/bridge/module_dirs.h (whose longer list
- *  also names the bundles a DEV TREE carries there). */
+ *  also names the extras a dev tree built with `--extras` carries there). */
 export const SHIPPED_EFFECT_BUNDLES = [
   'com.nano.core',
   'com.nano.text', // source.text.plain
   'com.nano.richtext', // source.text.rich (Blitz HTML/CSS)
-] as const;
-
-/** Every bundle this repo builds into build/wasm. Only for dev-server-only
- *  pages (testbeds, the comp test runner) that want the lot without asking. */
-export const REPO_EFFECT_BUNDLES = [
-  ...SHIPPED_EFFECT_BUNDLES,
-  'com.nano.nano',
-  'com.nano.lights',
-  'com.nano.legacy', // ports of shipped NanoGraph effects
 ] as const;
 
 /** Human-readable label for a bundle id, e.g. for the smart-input's "browse by

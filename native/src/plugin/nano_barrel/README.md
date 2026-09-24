@@ -139,8 +139,10 @@ loads those bundles at startup through WAMR.
 2. `sketch_executor::WasmEffectBundles` — `init()` brings up the (refcounted,
    process-global) WAMR runtime + registers the host-import namespaces, then
    `loadBundleFile(...)` loads each bundle from the **shared resource root**'s
-   `wasm/` (see below): **`core`, `lights`, `nano`, `text`, `richtext`,
-   `legacy`**. Each bundle's
+   `wasm/` (see below) and the module folders (`bridge/module_dirs.h`):
+   **`core`, `text`, `richtext`** built in, plus the extras — **`nano`,
+   `lights`, `legacy`**, from nano-modules-extras — from the per-user Modules
+   folder (or a dev tree's `build/wasm` when built with `--extras`). Each bundle's
    `nano_module_main` runs, registering every effect it carries into the
    `ModuleRegistry` (schema publish + SPV -> MSL/HLSL translation + PSO build,
    on the real backend). There is **no static fallback** — a load failure means

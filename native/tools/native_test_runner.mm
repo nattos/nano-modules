@@ -45,6 +45,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "extras_bundles.h"
+
 #ifndef NANO_WASM_DIR
 #error "NANO_WASM_DIR must be defined"
 #endif
@@ -215,11 +217,8 @@ int main(int argc, char** argv) {
     sketch_executor::WasmEffectBundles bundles;
     int loaded = bundles.init()
         ? bundles.loadBundleFile(NANO_WASM_DIR "/core.wasm",     registry, gpu.get(), nullptr)
-        + bundles.loadBundleFile(NANO_WASM_DIR "/lights.wasm",   registry, gpu.get(), nullptr)
-        + bundles.loadBundleFile(NANO_WASM_DIR "/nano.wasm",     registry, gpu.get(), nullptr)
         + bundles.loadBundleFile(NANO_WASM_DIR "/text.wasm",     registry, gpu.get(), nullptr)
         + bundles.loadBundleFile(NANO_WASM_DIR "/richtext.wasm", registry, gpu.get(), nullptr)
-        + bundles.loadBundleFile(NANO_WASM_DIR "/legacy.wasm",   registry, gpu.get(), nullptr)
         // testonly holds the debug.* fixtures the fusion suites and a few chain
         // tests build on (fuse_add/fuse_mul/fuse_solid, spinningtris). It is the
         // helpers' DEFAULT bundle, so leaving it out meant any suite that didn't
@@ -227,6 +226,10 @@ int main(int argc, char** argv) {
         // that looks like a missing effect rather than a missing bundle.
         + bundles.loadBundleFile(NANO_WASM_DIR "/testonly.wasm", registry, gpu.get(), nullptr)
         : 0;
+    // The extras (nano, lights, legacy), when this tree was built with them.
+    for (const auto& stem : extrasBundleStems(NANO_WASM_DIR))
+      loaded += bundles.loadBundleFile(std::string(NANO_WASM_DIR) + "/" + stem + ".wasm",
+                                       registry, gpu.get(), nullptr);
     if (loaded < 1) {
       std::fprintf(stderr, "failed to load effect bundles from %s\n", NANO_WASM_DIR);
       return 1;

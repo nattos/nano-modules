@@ -39,18 +39,18 @@ describe('effect type-change swaps the custom inspector (no reload)', () => {
     await page.evaluate(`window.appController.addEffectToChain('proj_tc', 0, 0, 'color.tone.brightness_contrast')`);
     await new Promise(r => setTimeout(r, 1200));
     expect(await hasTag('ENVELOPE-GRAPH')).toBe(false);
-    expect(await hasTag('MOD-SPECTRAL-INSPECTOR')).toBe(false);
+    expect(await hasTag('ADSR-INSPECTOR')).toBe(false);
 
     // Change the type to mod.shaper.envelope (same instanceKey) → its custom graph mounts.
     await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.shaper.envelope')`);
     await new Promise(r => setTimeout(r, 1500));
     expect(await hasTag('ENVELOPE-GRAPH')).toBe(true);
 
-    // Change again to mod.shaper.spectral — a custom→custom swap, the exact cache bug:
-    // the envelope graph must go out and the spectral inspector come in.
-    await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.shaper.spectral')`);
+    // Change again to mod.source.adsr — a custom→custom swap, the exact cache bug:
+    // the envelope graph must go out and the ADSR inspector come in.
+    await page.evaluate(`window.appController.changeEffectType('proj_tc', 0, 0, 'mod.source.adsr')`);
     await new Promise(r => setTimeout(r, 1800));
-    expect(await hasTag('MOD-SPECTRAL-INSPECTOR')).toBe(true);
+    expect(await hasTag('ADSR-INSPECTOR')).toBe(true);
     expect(await hasTag('ENVELOPE-GRAPH')).toBe(false);
   });
 });

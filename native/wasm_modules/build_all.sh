@@ -12,6 +12,16 @@
 # Output goes to ../../build/wasm/, which the dev server serves as /wasm/,
 # so the dev server's wasm-hmr plugin will pick the change up live.
 #
+# The nano, lights and legacy bundles live in their own repository
+# (nano-modules-extras) and are built only when this is told where a checkout
+# is — never found implicitly:
+#
+#   build_all.sh --extras ../nano-modules-extras    (or NANO_EXTRAS_DIR=...)
+#
+# They build through a staged SDK like any outside bundle (build_extras.sh).
+# Without them, a dev tree simply lacks those effects; packaging refuses to run
+# without either the extras or an explicit --no-extras (web/scripts/package.sh).
+#
 # After the .wasm bundles, this also runs ./build_aot.sh to regenerate the
 # `<bundle>-<arch>.aot` sidecars, because the native barrel/tests prefer a stale
 # .aot over a freshly rebuilt .wasm (see the AOT note near the bottom). The web
@@ -20,14 +30,40 @@
 set -e
 cd "$(dirname "$0")"
 
+EXTRAS_DIR="${NANO_EXTRAS_DIR:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --extras) EXTRAS_DIR="${2:?--extras needs a directory}"; shift 2 ;;
+    --extras=*) EXTRAS_DIR="${1#--extras=}"; shift ;;
+    *) echo "usage: $0 [--extras <nano-modules-extras dir>]" >&2; exit 2 ;;
+  esac
+done
+
 # Bundles in dependency order (bridge_core first since the others may
 # reference shared bridge state at load time). `text_engine` is the shared
 # host text service (FreeType+msdfgen → text_engine.wasm); `text` is the
 # source.text.plain effect bundle that drives it.
-for bundle in bridge_core executor core testonly nano lights dxv_decoder text_engine text richtext legacy; do
+for bundle in bridge_core executor core testonly dxv_decoder text_engine text richtext; do
   echo "--- Building $bundle ---"
   ( cd "$bundle" && ./build.sh )
 done
+
+# The extras, through the SDK the bundles above just made complete (it ships
+# shader headers their builds generate).
+if [ -n "$EXTRAS_DIR" ]; then
+  ./build_extras.sh "$EXTRAS_DIR"
+else
+  echo "--- No extras (nano, lights, legacy): pass --extras <nano-modules-extras dir> to build them ---"
+  # A previous --extras build left its bundles here; they are NOT rebuilt now,
+  # so say so — the dev tree still loads them — and drop the record that
+  # vouched for them.
+  if [ -f ../../build/wasm/extras.json ]; then
+    echo "!!! build/wasm still holds extras from an earlier --extras build; they are now stale:"
+    "${PYTHON:-python3}" -c 'import json,sys; print("!!!   " + " ".join(s + ".wasm" for s in json.load(open(sys.argv[1]))["stems"]))' \
+      ../../build/wasm/extras.json || true
+    rm -f ../../build/wasm/extras.json
+  fi
+fi
 
 # naga_spv.wasm — SPIR-V -> WGSL in process (native/naga_spv/, Rust). Not a C++
 # effect bundle, so it sits outside the loop above.

@@ -264,7 +264,9 @@ async function main() {
 
   // Determine module from URL or selector
   const urlParams = new URLSearchParams(window.location.search);
-  const initialModule = urlParams.get('module') || 'nanolooper';
+  // Defaults to a core effect: nanolooper lives in the extras' nano bundle,
+  // which a tree built without --extras doesn't have.
+  const initialModule = urlParams.get('module') || 'paramlinker';
   moduleSelect.value = initialModule;
 
   // Map a selector value (legacy standalone module name) to (effectId, bundle).

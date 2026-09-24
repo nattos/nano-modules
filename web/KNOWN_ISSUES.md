@@ -25,7 +25,7 @@ When a module is dragged out of a column, the empty column (just `texture_input`
 
 An effect that keeps its simulation in a **storage buffer** and advances it in place each frame (read `buf[i]` → integrate → write `buf[i]`) does not integrate on the native Metal path. The same effect's persistent **textures** — ping-pong render targets read one frame and written the next — integrate correctly and match WebGPU exactly. Both live in the same `render()`, so this is a buffer-vs-texture split, not "native sim state is broken".
 
-**Where it shows.** Three pinned dual-backend gaps: `double-chamber-interactions` (density buffer reads back all zeros), legacy `double_chamber`'s `boundary_death` case, and `d-wave`'s dampening. Each is skipped or thresholded per-backend at its call site with a pointer here. `source.legacy.double_chamber` and `warp.legacy.d_wave` are the only two effects with `BufferUsage::Storage` sim state in these suites, and both are affected.
+**Where it shows.** Three pinned dual-backend gaps (all in nano-modules-extras' suites now): `double-chamber-interactions` (density buffer reads back all zeros), legacy `double_chamber`'s `boundary_death` case, and `d-wave`'s dampening. Each is skipped or thresholded per-backend at its call site with a pointer here. `source.legacy.double_chamber` and `warp.legacy.d_wave` are the only two effects with `BufferUsage::Storage` sim state in these suites, and both are affected.
 
 The other two pinned gaps, `pixel_descent` and `pixel_ocean`, are **not** this — both allocate only a uniform buffer. Theirs is a step-clock divergence (the row/step progression lands elsewhere on Metal despite both runners stepping host time, dt and barPhase identically) and is separately undiagnosed.
 
@@ -51,10 +51,11 @@ WebGPU scales monotonically with particle count. Metal **plateaus at ~256 partic
 - `writeBuffer`'s version-on-write-after-bind copies old contents into the new backing buffer, and only fires for CPU writes — the particle buffer is GPU-written only.
 
 **D3D11 settles where the fault is (2026-09-20).** Running the same sweep on the
-native D3D11 backend under CrossOver — `./build-win/test_effect_render "probe:
-d_wave*"`, the hidden instrument now living at the bottom of
-`native/tests/test_effect_render.cpp` — gives, at 40 ticks, ratios of the
-field-alone baseline:
+native D3D11 backend under CrossOver — `test_extras_render "probe: d_wave*"`,
+the hidden instrument at the bottom of nano-modules-extras'
+`tests/native/test_extras_render.cpp` (it moved there with `d_wave`; built into
+`native/build/extras/` when CMake is given `-DNANO_EXTRAS_DIR`) — gives, at 40
+ticks, ratios of the field-alone baseline:
 
 | `damp_count` | 64 | 128 | 256 | 400 | 1500 | 4096 |
 |---|---|---|---|---|---|---|

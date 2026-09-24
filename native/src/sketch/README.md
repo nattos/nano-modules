@@ -128,7 +128,7 @@ auto registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
 
 sketch_executor::WasmEffectBundles bundles;
 bundles.init();   // bring up WAMR + register host-import namespaces
-for (auto name : {"core", "lights", "nano", "text", "richtext"})
+for (auto name : {"core", "text", "richtext"})   // + the extras, when present
   bundles.loadBundleFile(resourceWasmPath(name), *registry, gpuBackend.get(),
                          /*stateDoc=*/nullptr);
 ```

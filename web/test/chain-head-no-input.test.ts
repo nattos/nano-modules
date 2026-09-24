@@ -1,5 +1,4 @@
 import { runEngineTest } from './engine-test-helpers';
-import type { Frame } from './gpu-test-helpers';
 
 /**
  * A generator at the TOP of a chain, with nothing above it.
@@ -14,15 +13,16 @@ import type { Frame } from './gpu-test-helpers';
  * fully transparent intermediate for a missing chain input, which is what an
  * explicit "clear" stage above would have produced.
  *
- * source.mesh.three_planes is the instrument: it carries that guard and paints
- * a busy, unmistakable picture.
+ * debug.compute_probe (testonly) is the instrument: it carries that guard, and
+ * its case 0 paints the whole frame an opaque green — unmistakable against the
+ * checkerboard a transparent or missing frame composites to.
  */
 describe('chain head with no input', () => {
   jest.setTimeout(60000);
 
   const run = (id: string, chain: any[]) => runEngineTest({
     width: 64, height: 64,
-    modules: ['com.nano.core', 'com.nano.lights'],
+    modules: ['com.nano.testonly'],
     commands: [{ type: 'createSketch', sketchId: id,
                  sketch: { anchor: null, chain, wires: [] } as any }],
     tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
@@ -31,29 +31,21 @@ describe('chain head with no input', () => {
     dumpName: id,
   });
 
-  const TP = { type: 'module', module_type: 'source.mesh.three_planes',
-               instance_key: 'tp@0' };
+  const PROBE = { type: 'module', module_type: 'debug.compute_probe',
+                  instance_key: 'probe@0', params: { case: 0 } };
   const SOLID = { type: 'module', module_type: 'source.solid_color',
                   instance_key: 'src@0', params: { color: [0, 0, 0] } };
 
-  /** Distinct colours in the frame — a blank (checkerboard-composited) trace
-   *  has exactly the two checker greys. */
-  const variety = (f: Frame) => {
-    const seen = new Set<string>();
-    f.forEachPixel(p => seen.add(`${p.r},${p.g},${p.b}`));
-    return seen.size;
-  };
-
-  it('renders a generator dropped at the head of an otherwise empty chain', async () => {
-    const r = await run('head_alone', [TP]);
+  it('renders an effect dropped at the head of an otherwise empty chain', async () => {
+    const r = await run('head_alone', [PROBE]);
     expect(r.success).toBe(true);
-    // Was 2 (the bare checkerboard) before the executor cleared the head input.
-    expect(variety(r.trace('out'))).toBeGreaterThan(100);
+    // Was the bare checkerboard before the executor cleared the head input.
+    r.trace('out').expectUniformColor({ r: 0, g: 255, b: 0 }, 2);
   });
 
   it('matches what the same effect draws with a black card above it', async () => {
-    const r = await run('head_below_solid', [SOLID, TP]);
+    const r = await run('head_below_solid', [SOLID, PROBE]);
     expect(r.success).toBe(true);
-    expect(variety(r.trace('out'))).toBeGreaterThan(100);
+    r.trace('out').expectUniformColor({ r: 0, g: 255, b: 0 }, 2);
   });
 });

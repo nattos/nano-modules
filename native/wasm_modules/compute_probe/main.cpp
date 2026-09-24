@@ -162,8 +162,12 @@ static void fill(State* s, gpu::Texture out, int w, int h,
 void render(void* self, int w, int h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || w <= 0 || h <= 0) return;
+  // The guard nearly every effect opens render() with — kept here on purpose:
+  // chain-head-no-input.test.ts drops this probe at the head of an empty chain
+  // to pin that the executor hands it a (cleared) input instead of nothing.
+  auto in_guard = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
-  if (!out.valid()) return;
+  if (!in_guard.valid() || !out.valid()) return;
 
   switch (s->mode) {
     case 0: {

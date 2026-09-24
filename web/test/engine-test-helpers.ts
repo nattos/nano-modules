@@ -207,9 +207,8 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
 // --- Single-phase test ---
 
 /**
- * Effects are split across three bundles:
+ * Effects are split across bundles:
  *   - `core`     — shipping effects (brightness/contrast, blend, etc.)
- *   - `nano`     — shipping "weirder" effects (currently just nanolooper)
  *   - `testonly` — effects the integration tests rely on, including
  *     test-only forks (e.g. LFO) and effects whose pixel output we want
  *     locked for assertion stability.
@@ -218,7 +217,8 @@ async function runRawEngineTest(runnerConfig: any): Promise<any> {
  * use the `testonly` bundle so their output stays stable as the shipping
  * implementations evolve. Per-effect e2e tests should pass the matching
  * `com.nano.<bundle>` directly via `modules:` so they run against the
- * actual shipping code.
+ * actual shipping code — including the extras' suites (nano-modules-extras'
+ * tests/web), which name `com.nano.nano` / `lights` / `legacy`.
  *
  * Legacy aliases (`com.nano.<short>` and bare effect ids) are still
  * accepted and resolved against `testonly` for backwards compat with the
@@ -231,7 +231,6 @@ const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'com.nano.solid_color': 'source.solid_color',
   'com.nano.env_lfo': 'mod.source.lfo',
   'com.nano.video_blend': 'composite.blend',
-  'com.nano.nanolooper': 'control.nanolooper',
   'com.nano.paramlinker': 'control.paramlinker',
   // Also accept the effect IDs themselves so new-style tests work.
   'debug.spinningtris': 'debug.spinningtris',
@@ -244,7 +243,6 @@ const LEGACY_MODULE_TO_EFFECT_ID: Record<string, string> = {
   'mod.shaper.delay': 'mod.shaper.delay',
   'mod.shaper.envelope': 'mod.shaper.envelope',
   'composite.blend': 'composite.blend',
-  'control.nanolooper': 'control.nanolooper',
   'control.paramlinker': 'control.paramlinker',
 };
 /** Default bundle for legacy/effect-id entries — locked against testonly. */

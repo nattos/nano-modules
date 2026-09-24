@@ -294,8 +294,9 @@ describe('packaged app (no dev server)', () => {
     if (!STAGED) return;
     expect(probe.tag).toBe('SKETCH-APP');
     // The real assertion: module_init ran for every bundle, which means the
-    // wasm loaded AND its shaders translated.
-    expect(probe.effects).toBeGreaterThan(100);
+    // wasm loaded AND its shaders translated. core + text + richtext alone
+    // register ~89; a tree built with --extras adds the extras' ~62 on top.
+    expect(probe.effects).toBeGreaterThan(80);
     expect(probe.bad).toEqual([]);
   });
 });

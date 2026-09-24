@@ -549,7 +549,7 @@ struct BeatCore {
 ///   HOW FAST it moves → glints, over in three_planes. Those are thrown by
 ///                  the GESTURE rather than by a level, so what goes out is
 ///                  the knob itself; the particles live over there and read
-///                  its motion themselves. See three_planes_glints.h.
+///                  its motion themselves. See three_planes_glints.h (nano-modules-extras).
 ///
 /// The rate estimate is knob_rate.h's boxcar, shared with the glints — see
 /// there for why a MIDI knob cannot simply be differenced per frame.
@@ -654,7 +654,7 @@ struct SweepCore {
     }
     // The knob itself goes out too: three_planes' glints are thrown by the
     // GESTURE, not by a level, so what they need is the position and its
-    // motion — not this envelope. See three_planes_glints.h.
+    // motion — not this envelope. See three_planes_glints.h (nano-modules-extras).
     o.sweep_out = clamp01(p.sweep);
 
     // --- 2. Position, and the flicker that lives inside the fade.
@@ -742,7 +742,8 @@ struct SweepCore {
     const float mag = magnitudeOf(o.sweep_out);
     // In the band, or clean through it between two samples — which shows up as
     // the knob changing sides without ever being seen inside. Same rule, and
-    // the same reason, as the glint launcher's over in three_planes_glints.h.
+    // the same reason, as the glint launcher's over in three_planes_glints.h
+    // (nano-modules-extras).
     const bool crossed = ((last - kSweepCenter) < 0.0f) !=
                          ((o.sweep_out - kSweepCenter) < 0.0f);
     last = o.sweep_out;

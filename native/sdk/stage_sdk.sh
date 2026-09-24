@@ -3,7 +3,7 @@
 # effect bundle OUTSIDE this repo, and nothing that reaches back into it.
 #
 #   <out>/VERSION                  ABI version (module_api.h) + repo revision
-#   <out>/include/                 module_api.h, gpu.h, host.h, ... + the three
+#   <out>/include/                 module_api.h, gpu.h, host.h, ... + the two
 #                                  pre-built helper shader headers + the shared
 #                                  native utilities (sketch/, json/)
 #   <out>/shaders/common/          the shared HLSL includes (nano_*.hlsl)
@@ -40,9 +40,9 @@ rm -rf "$out"
 mkdir -p "$out/include" "$out/shaders/common" "$out/scripts" "$out/template"
 
 cp "$wm"/include/*.h "$out/include/"
-# Helper toolboxes in include/ (effect_blur.h, effect_fast_blur.h, overlay.h)
-# #include shader headers a bundle build generates. Ship them pre-built.
-for h in blur_shaders.h fast_blur_shaders.h overlay_shaders.h; do
+# Helper toolboxes in include/ (effect_blur.h, effect_fast_blur.h) #include
+# shader headers the core bundle build generates. Ship them pre-built.
+for h in blur_shaders.h fast_blur_shaders.h; do
   if [ ! -f "$gen/$h" ]; then
     echo "error: $gen/$h missing — run native/wasm_modules/build_all.sh first" >&2
     exit 1

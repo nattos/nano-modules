@@ -9,13 +9,13 @@ import type { Sketch } from '../src/sketch-types';
 //
 // Every case here feeds the three panels flat colours, so "which panel got
 // which input, and where does it start and stop" is readable straight off a
-// pixel. The one case that uses a real picture is the three_walls layout at the
-// bottom, which is what the card exists for.
+// pixel. (The case with a real picture — a Three Walls room, which is what the
+// card exists for — lives with three_walls in nano-modules-extras.)
 describe('Triptych E2E', () => {
   jest.setTimeout(120000);
 
   const W = 300, H = 100;
-  const MODULES = ['com.nano.core', 'com.nano.lights'];
+  const MODULES = ['com.nano.core'];
 
   // Solid colours through two sidechannel buses into the side inputs, and a
   // third straight down the chain into the middle.
@@ -133,57 +133,6 @@ describe('Triptych E2E', () => {
     f.expectPixelAt(Math.round(W / 2), y, { r: 0, g: 255, b: 0 }, 12);
     f.expectPixelAt(Math.round(5 * W / 6), y, { r: 0, g: 0, b: 255 }, 12);
   });
-
-  // What the card is for. Three Walls' three outputs are three walls of one
-  // room; laid out in this order they are the room, flat.
-  it('lays out a Three Walls room', async () => {
-    const sketch: Sketch = {
-      anchor: null,
-      wires: [
-        { id: 'wl', src: { instanceKey: 'tw@0', field: 'left_out' },
-          dest: { instanceKey: 'tp@0', field: 'left_in' } },
-        { id: 'wr', src: { instanceKey: 'tw@0', field: 'right_out' },
-          dest: { instanceKey: 'tp@0', field: 'right_in' } },
-      ],
-      chain: [
-        { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
-          params: { color: [0, 0, 0] } },
-        { type: 'module', module_type: 'source.mesh.three_walls', instance_key: 'tw@0',
-          params: { grain: 0, scanline: 0, chroma_bleed: 0,
-                    // Frozen pose, and a size that puts the nearest frame onto
-                    // the side walls while the others are still on the back.
-                    resonate: 1, resonate_f0: 0, resonate_f1: 0, quad_size: 1.3 } },
-        { type: 'module', module_type: 'util.triptych', instance_key: 'tp@0',
-          params: STRETCH },
-      ],
-    } as Sketch;
-
-    const r = await runEngineTest({
-      width: 600, height: 200, modules: MODULES,
-      commands: [
-        { type: 'createSketch', sketchId: 'trip_room', sketch },
-        { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: 'trip_room' } }]},
-      ],
-      waitFrames: 25, captureTraceIds: ['out'], dumpName: 'trip_room',
-    });
-    expect(r.success).toBe(true);
-
-    // All three panels carry light, and the two side ones are mirror images —
-    // which is the check that they arrived in the right slots and neither got
-    // dropped.
-    const f = r.trace('out');
-    const third = 600 / 3;
-    const lit = [0, 0, 0];
-    f.forEachPixel((p, x) => {
-      const col = Math.min(2, Math.floor(x / third));
-      if ((p.r + p.g + p.b) / 3 > 40) lit[col]++;
-    });
-    expect(lit[0]).toBeGreaterThan(50);
-    expect(lit[1]).toBeGreaterThan(50);
-    expect(lit[2]).toBeGreaterThan(50);
-    expect(Math.abs(lit[0] - lit[2])).toBeLessThan(Math.max(lit[0], lit[2]) * 0.25);
-  });
 });
 
 // The LED strip: a fourth input, UNDER the middle third rather than beside it.
@@ -197,7 +146,7 @@ describe('Triptych LED strip', () => {
   jest.setTimeout(120000);
 
   const W = 300, H = 100;
-  const MODULES = ['com.nano.core', 'com.nano.lights'];
+  const MODULES = ['com.nano.core'];
 
   const RED: [number, number, number] = [1, 0, 0];
   const GREEN: [number, number, number] = [0, 1, 0];
@@ -315,7 +264,7 @@ describe('Triptych room', () => {
   jest.setTimeout(120000);
 
   const W = 300, H = 100;
-  const MODULES = ['com.nano.core', 'com.nano.lights'];
+  const MODULES = ['com.nano.core'];
 
   const RED: [number, number, number] = [1, 0, 0];
   const GREEN: [number, number, number] = [0, 1, 0];
@@ -460,7 +409,7 @@ describe('Triptych Room mode', () => {
   jest.setTimeout(120000);
 
   const W = 300, H = 100;
-  const MODULES = ['com.nano.core', 'com.nano.lights'];
+  const MODULES = ['com.nano.core'];
   const ROOM = 3;
 
   const isEmpty = (p: { r: number; g: number; b: number }) =>

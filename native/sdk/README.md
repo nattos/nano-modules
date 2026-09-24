@@ -9,11 +9,11 @@ native/sdk/stage_sdk.sh --zip      # ...and build/sdk.zip, to hand out
 ```
 
 (Run a bundle build first — `native/wasm_modules/build_all.sh` — the SDK ships
-three helper shader headers that build generates.)
+two helper shader headers that build generates.)
 
 | In the SDK | From |
 |---|---|
-| `include/` | `native/wasm_modules/include/` + generated `blur_shaders.h`, `fast_blur_shaders.h`, `overlay_shaders.h` |
+| `include/` | `native/wasm_modules/include/` + generated `blur_shaders.h`, `fast_blur_shaders.h` |
 | `include/sketch/`, `include/json/` | the self-contained `native/src` utilities effects share with the host: `envelope.h`, `knob_rate.h`, `fft_bass_sim.h`, `json_doc_client.h` (`SHARED_SRC_HEADERS` in `stage_sdk.sh`) |
 | `shaders/common/` | `native/wasm_modules/shaders_common/` |
 | `scripts/` | `native/wasm_modules/wasm_build_env.sh` (relocatable — the SAME file the repo's bundles source) + `_emit_spv_header.py`, `_fragment_strip.py` |

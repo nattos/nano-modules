@@ -120,11 +120,9 @@ echo "PASS: GL_TEXTURE_2D host == GL_TEXTURE_RECTANGLE host, with no Resolume"
 timesketch="$tmp/time.json"
 cat > "$timesketch" <<'JSON'
 { "chain": [
-    { "type": "module", "module_type": "source.solid_color", "instance_key": "s" },
-    { "type": "module", "module_type": "filter.glow.vcr_halo", "instance_key": "h" } ],
+    { "type": "module", "module_type": "source.noise", "instance_key": "n" } ],
   "instances": {
-    "s": { "module_type": "source.solid_color", "state": { "color": [0.5, 0.3, 0.7, 1.0] } },
-    "h": { "module_type": "filter.glow.vcr_halo", "state": {} } },
+    "n": { "module_type": "source.noise", "state": { "algorithm": 2, "speed": 1.0 } } },
   "wires": [] }
 JSON
 

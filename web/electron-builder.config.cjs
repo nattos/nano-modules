@@ -14,7 +14,14 @@
  * guesswork.
  *
  *   npm run build:stage                 # vite build + scripts/stage_resources.sh
- *   npm run package:remote:mac          # etc. — see package.json
+ *   npm run package:remote:mac -- --extras ../../nano-modules-extras
+ *   npm run package:remote:mac -- --no-extras
+ *
+ * Packaging goes through scripts/package.sh, which REQUIRES one of those two:
+ * the co-packaged effect bundles (nano, lights, legacy) live in the
+ * nano-modules-extras repository, and a package either carries a fresh build
+ * of a named checkout or says explicitly that it carries none. This config
+ * enforces the same thing on a direct electron-builder run (NANO_PACKAGE_EXTRAS).
  *
  * WHAT SHIPS
  *
@@ -75,8 +82,35 @@ const SHIPPED_WASM = [
  * (module-dirs.cjs seedDefaultModules), where both apps and the native barrel
  * find them — and where a user can delete or replace them. Both products carry
  * the same set, since whichever launches first seeds it.
+ *
+ * They are the extras (nano-modules-extras), and which ones is whatever
+ * build_extras.sh recorded in build/wasm/extras.json — scripts/package.sh
+ * builds them fresh from the checkout it was given and sets
+ * NANO_PACKAGE_EXTRAS=built. NANO_PACKAGE_EXTRAS=none packages without them.
+ * Anything else refuses, so a package never picks up whatever stale extras
+ * happen to be lying in build/wasm.
  */
-const EXTRA_BUNDLES = ['nano', 'lights', 'legacy'];
+function extraBundles() {
+  const mode = process.env.NANO_PACKAGE_EXTRAS;
+  if (mode === 'none') return [];
+  if (mode !== 'built') {
+    throw new Error(
+      'package through scripts/package.sh with --extras <nano-modules-extras dir> '
+      + 'or --no-extras (NANO_PACKAGE_EXTRAS must be "built" or "none")');
+  }
+  const record = require('path').resolve(__dirname, '..', 'build', 'wasm', 'extras.json');
+  let stems;
+  try {
+    stems = JSON.parse(require('fs').readFileSync(record, 'utf8')).stems;
+  } catch (err) {
+    throw new Error(`NANO_PACKAGE_EXTRAS=built but ${record} is unreadable: ${err.message}`);
+  }
+  if (!Array.isArray(stems) || stems.length === 0) {
+    throw new Error(`${record} names no bundles`);
+  }
+  return stems;
+}
+const EXTRA_BUNDLES = extraBundles();
 
 /** AOT sidecars the native barrel prefers over a .wasm beside them. Only this
  *  slice's arch — the other would never be selected, and costs 20 MB. */
@@ -107,11 +141,12 @@ module.exports = {
       to: 'nano',
       filter: ['nano-resources.json', 'app/**/*', 'fonts/**/*', ...SHIPPED_WASM],
     },
-    {
+    // (An empty filter would mean "everything", so no extras means no entry.)
+    ...(EXTRA_BUNDLES.length ? [{
       from: '../build/wasm',
       to: 'nano/extra-modules',
       filter: EXTRA_BUNDLES.map((n) => `${n}.wasm`),
-    },
+    }] : []),
   ],
 
   mac: {
@@ -131,7 +166,9 @@ module.exports = {
     hardenedRuntime: false,
     extraResources: [
       // Seeded beside their .wasm, for the barrel — whichever app seeds.
-      { from: '../build/wasm', to: 'nano/extra-modules', filter: aot(EXTRA_BUNDLES) },
+      ...(EXTRA_BUNDLES.length
+        ? [{ from: '../build/wasm', to: 'nano/extra-modules', filter: aot(EXTRA_BUNDLES) }]
+        : []),
       ...(product.plugin ? [
         // libbridge_server.dylib MUST stay a direct sibling of the bundle:
         // dlopen shares one image only for the same path, so two copies means

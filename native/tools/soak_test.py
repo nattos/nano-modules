@@ -20,6 +20,10 @@ catch, e.g. the val-handle leak that froze the executor — is obvious.
 
 Pure stdlib; no pip deps. macOS only (footprint/ps/vmmap).
 
+The bundled soak sketches (soak_sketch.json, soak_wires_sketch.json) drive
+control.nanolooper and other effects from nano-modules-extras: build with
+`build_all.sh --extras <checkout>` first, or pass a sketch of your own.
+
 Example:
   python3 native/tools/soak_test.py --duration 600 --hz 60 \
       --bundle build/NanoBarrel.bundle --sketch native/tools/soak_sketch.json
