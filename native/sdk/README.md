@@ -14,6 +14,7 @@ three helper shader headers that build generates.)
 | In the SDK | From |
 |---|---|
 | `include/` | `native/wasm_modules/include/` + generated `blur_shaders.h`, `fast_blur_shaders.h`, `overlay_shaders.h` |
+| `include/sketch/`, `include/json/` | the self-contained `native/src` utilities effects share with the host: `envelope.h`, `knob_rate.h`, `fft_bass_sim.h`, `json_doc_client.h` (`SHARED_SRC_HEADERS` in `stage_sdk.sh`) |
 | `shaders/common/` | `native/wasm_modules/shaders_common/` |
 | `scripts/` | `native/wasm_modules/wasm_build_env.sh` (relocatable — the SAME file the repo's bundles source) + `_emit_spv_header.py`, `_fragment_strip.py` |
 | `template/` | `native/sdk/template/` — a one-effect bundle and the forking guide (its `README.md`) |
@@ -37,7 +38,14 @@ the SDK layout breaks a real bundle build too.
 
 ## Not in it yet
 
-The `native/src/sketch/` utilities some in-repo effects use (envelopes, delay
-lines, tap modulation) — they would need to be made self-contained first. The
-dedicated Effect Dev app, which would bundle the toolchain itself, is separate
-work.
+Most of `native/src/sketch/` — the utilities are shipped one at a time, as an
+out-of-repo bundle needs them, and only once they're self-contained (the
+closure check enforces that). The dedicated Effect Dev app, which would bundle
+the toolchain itself, is separate work.
+
+## Who builds against it
+
+[nano-modules-extras](https://github.com/nattos/nano-modules-extras) — the
+`nano`, `lights` and `legacy` bundles — builds ONLY through a staged SDK
+(`native/wasm_modules/build_extras.sh`), so anything they need and the SDK
+lacks fails that build rather than quietly reaching into this repo.

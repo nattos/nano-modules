@@ -63,6 +63,14 @@ adding a folder or installing a new bundle.
 What else `build.sh` can call — several compute shaders in one effect,
 vertex + fragment pairs, fusable per-pixel kernels — is documented at the top of
 each function in `<nano-sdk>/scripts/wasm_build_env.sh`.
+
+Shared code across your effects: C++ headers go anywhere you add to the
+`wasm_build` `-I` list; HLSL includes go in a folder you name in
+`NANO_SHADER_INCLUDE_DIRS` (colon-separated, set before sourcing the build env),
+which every shader helper passes to dxc after `shaders/common`. A `dxc` line of
+your own passes `"${NANO_SHADER_INCLUDES[@]}"` to get the same list. The SDK's
+own shared native utilities are `<sketch/envelope.h>`, `<sketch/knob_rate.h>`,
+`<sketch/fft_bass_sim.h>` and `<json/json_doc_client.h>`.
 `<nano-sdk>/EFFECTS_STYLE_GUIDE.md` covers the schema conventions the editor
 depends on (parameter ranges, modulation channels, primary ports, help text).
 
@@ -74,8 +82,9 @@ depends on (parameter ranges, modulation channels, primary ports, help text).
 - **No `isnan()` / `isinf()` in shaders.** They compile, then silently break
   the pipeline on some backends. Use `x != x`, or `nano_sanitize.hlsl` from
   `shaders/common`. The build refuses to proceed if it finds them.
-- **A `float3` in a constant buffer must be 16-byte aligned**, or the web
-  backend rejects the shader and the effect does nothing.
+- **A `float3` (or `uint3`) in a constant buffer must be 16-byte aligned**, or
+  the web backend rejects the shader and the effect does nothing. Pad with
+  scalars, not a trailing `float3 _pad`.
 - **Nothing per-instance goes in the schema.** A schema is published once per
   effect *type*; anything that varies per card is a parameter value.
 

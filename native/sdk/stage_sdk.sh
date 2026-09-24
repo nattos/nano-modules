@@ -4,7 +4,8 @@
 #
 #   <out>/VERSION                  ABI version (module_api.h) + repo revision
 #   <out>/include/                 module_api.h, gpu.h, host.h, ... + the three
-#                                  pre-built helper shader headers
+#                                  pre-built helper shader headers + the shared
+#                                  native utilities (sketch/, json/)
 #   <out>/shaders/common/          the shared HLSL includes (nano_*.hlsl)
 #   <out>/scripts/                 wasm_build_env.sh (relocatable) + helpers
 #   <out>/template/                a forkable one-effect bundle (see its README)
@@ -49,6 +50,21 @@ for h in blur_shaders.h fast_blur_shaders.h overlay_shaders.h; do
   cp "$gen/$h" "$out/include/"
 done
 
+# Native utilities effects share with the host, where the effect side needs
+# them too. Self-contained (standard headers only) — the closure check below
+# holds them to that. Included as <sketch/...> / <json/...>, the same spelling
+# the repo's own bundles use against native/src.
+SHARED_SRC_HEADERS=(
+  sketch/envelope.h        # ADSR/AR envelopes (core effects, the executor)
+  sketch/knob_rate.h       # knob → rate curves
+  sketch/fft_bass_sim.h    # simulated FFT bass band
+  json/json_doc_client.h   # reading a published JSON state doc
+)
+for h in "${SHARED_SRC_HEADERS[@]}"; do
+  mkdir -p "$out/include/$(dirname "$h")"
+  cp "$native/src/$h" "$out/include/$h"
+done
+
 cp "$wm"/shaders_common/*.hlsl "$out/shaders/common/"
 cp "$wm/wasm_build_env.sh" "$wm/_emit_spv_header.py" "$wm/_fragment_strip.py" "$out/scripts/"
 cp "$repo/EFFECTS_STYLE_GUIDE.md" "$out/"
@@ -68,6 +84,8 @@ printf 'nano-effect-sdk\nabi %s\nrevision %s\n' "$abi" "$rev" > "$out/VERSION"
 project_headers="$(cd "$native" && find src wasm_modules build/tmp -name '*.h' 2>/dev/null \
   | sed 's|.*/||' | sort -u)"
 sdk_headers="$(cd "$out" && find include template -name '*.h' | sed 's|.*/||' | sort -u)"
+# Path-qualified spellings the SDK itself provides (<sketch/envelope.h>).
+sdk_paths="$(cd "$out/include" && find . -name '*.h' | sed 's|^\./||' | sort -u)"
 missing=""
 while IFS= read -r line; do
   file="${line%%:*}"
@@ -77,9 +95,10 @@ while IFS= read -r line; do
   case "$base" in *_shaders.h) [ "${file#*template/}" != "$file" ] && continue ;; esac
   if echo "$project_headers" | grep -qx "$base" && ! echo "$sdk_headers" | grep -qx "$base"; then
     missing="$missing\n  $file: #include $inc"
-  elif [ "$inc" != "$base" ] && echo "$project_headers" | grep -qx "$base"; then
-    # A path-qualified project include (<sketch/x.h>) resolves against the
-    # repo's src/, which the SDK doesn't have.
+  elif [ "$inc" != "$base" ] && echo "$project_headers" | grep -qx "$base" \
+       && ! echo "$sdk_paths" | grep -qx "$inc"; then
+    # A path-qualified project include (<sketch/x.h>) the SDK doesn't carry
+    # would resolve against the repo's src/, which the SDK doesn't have.
     missing="$missing\n  $file: #include $inc"
   fi
 done < <(cd "$out" && grep -rnE '^[[:space:]]*#[[:space:]]*include' include template \

@@ -14,6 +14,9 @@
 # and effects are found under NANO_EFFECTS_ROOT (default `..`: in the repo a
 # bundle's build.sh runs from its own directory, a sibling of every effect's).
 # After sourcing, NANO_INCLUDE_DIR is the -I for <module_api.h>, <gpu.h>, ...
+# (and, in the SDK, <sketch/envelope.h> and the other shared utilities), and
+# NANO_SHADER_INCLUDES the dxc -I list: the shared HLSL includes plus any
+# folders in NANO_SHADER_INCLUDE_DIRS (colon-separated).
 
 _NANO_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -d "$_NANO_ENV_DIR/include" ]; then
@@ -230,6 +233,19 @@ else
   SHADERS_COMMON_DIR="$(cd "$_NANO_ENV_DIR/../shaders/common" && pwd)"
 fi
 
+# The HLSL include path every shader helper below passes to dxc: the shared
+# includes, then NANO_SHADER_INCLUDE_DIRS (colon-separated) — a bundle outside
+# this repo adds its own shader includes there. A bundle script that calls dxc
+# directly passes "${NANO_SHADER_INCLUDES[@]}" the same way.
+NANO_SHADER_INCLUDES=(-I "$SHADERS_COMMON_DIR")
+if [ -n "${NANO_SHADER_INCLUDE_DIRS:-}" ]; then
+  IFS=':' read -r -a _nano_extra_shader_dirs <<< "$NANO_SHADER_INCLUDE_DIRS"
+  for _d in "${_nano_extra_shader_dirs[@]}"; do
+    [ -n "$_d" ] && NANO_SHADER_INCLUDES+=(-I "$_d")
+  done
+  unset _d _nano_extra_shader_dirs
+fi
+
 # --- Shader hygiene gate ------------------------------------------------
 # Fail the build if any shader uses the isnan()/isinf() intrinsics. They
 # compile to SPIR-V but make the downstream PSO build fail SILENTLY at
@@ -266,7 +282,7 @@ compile_shaders_compute_var() {
   local access="${4:-write}"
   local src="${5:-compute}"
   glslc -fshader-stage=compute -x hlsl \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/${src}.hlsl" -o "$TMP_DIR/${effect}_${variant}.spv"
   naga "$TMP_DIR/${effect}_${variant}.spv" "$TMP_DIR/${effect}_${variant}.wgsl"
   _nano_sed_i "s/rgba32float,read_write/${fmt},${access}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
@@ -302,7 +318,7 @@ compile_shaders_compute_spv() {
     return 1
   fi
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${src}.spv"
   "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
@@ -326,13 +342,13 @@ compile_shaders_full_spv() {
     return 1
   fi
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/compute.hlsl"  -Fo "$TMP_DIR/${effect}_compute.spv"
   dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/vertex.hlsl"   -Fo "$TMP_DIR/${effect}_vertex.spv"
   dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/fragment.hlsl" -Fo "$TMP_DIR/${effect}_fragment.spv"
   "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
@@ -363,7 +379,7 @@ compile_shaders_compute_var_spv() {
     return 1
   fi
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${variant}.spv"
 }
 
@@ -403,7 +419,7 @@ compile_shaders_compute_fused_spv() {
 
   # 1. Standalone compute shader.
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "${NANO_EFFECTS_ROOT}/${effect}/compute.hlsl" -Fo "$TMP_DIR/${effect}_compute.spv"
 
   # 2. Fragment SPV — synthetic wrapper around pixel.hlsl (same trick
@@ -428,7 +444,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 }
 EOF
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "$wrapper" -Fo "$TMP_DIR/${effect}_pixel.spv"
 
   "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
@@ -503,7 +519,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 }
 EOF
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
-    -I "$SHADERS_COMMON_DIR" \
+    "${NANO_SHADER_INCLUDES[@]}" \
     "$wrapper" -Fo "$TMP_DIR/${effect}_pixel.spv"
   naga "$TMP_DIR/${effect}_pixel.spv" "$TMP_DIR/${effect}_pixel_raw.wgsl"
   naga --metal-version 2.0 "$TMP_DIR/${effect}_pixel.spv" \
@@ -523,7 +539,7 @@ compile_shaders_full() {
   local effect="$1"
   for stage in compute vertex fragment; do
     glslc -fshader-stage=${stage} -x hlsl \
-      -I "$SHADERS_COMMON_DIR" \
+      "${NANO_SHADER_INCLUDES[@]}" \
       "${NANO_EFFECTS_ROOT}/${effect}/${stage}.hlsl" -o "$TMP_DIR/${effect}_${stage}.spv"
     naga "$TMP_DIR/${effect}_${stage}.spv" "$TMP_DIR/${effect}_${stage}.wgsl"
     # Same storage-texture format fixup compile_shaders_compute applies.
