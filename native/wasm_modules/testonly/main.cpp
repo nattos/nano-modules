@@ -95,6 +95,9 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_swarm)
 NANO_DECLARE_INSTANCE_EFFECT(motion_static)
 
 // Deliberately traps in module_init — verifies aux-stack trap containment.
+NANO_DECLARE_INSTANCE_EFFECT(raster_test)
+NANO_DECLARE_INSTANCE_EFFECT(compute_probe)
+NANO_DECLARE_INSTANCE_EFFECT(trigger_probe)
 NANO_DECLARE_INSTANCE_EFFECT(trap_test)
 
 // Seekable-streams ABI probe: republishes what streams.* answered as seen_*
@@ -534,6 +537,39 @@ void nano_module_main() {
         "test,any,wire,polymorphic",
         "la-vial",
         NANO_INSTANCE_LIFECYCLE(any_probe),
+    });
+
+    nano::registerEffect({
+        2,
+        "debug.raster_test",
+        "Raster Test",
+        "Load-pass blending (alpha/additive/replace), fragment discard, and indirect draws (test only)",
+        "debug",
+        "test,blend,indirect,raster",
+        "la-th-large",
+        NANO_INSTANCE_LIFECYCLE(raster_test),
+    });
+
+    nano::registerEffect({
+        2,
+        "debug.compute_probe",
+        "Compute Probe",
+        "Workgroup memory, sampler address modes, f32/sRGB formats, host frame values, readback (test only)",
+        "debug",
+        "test,compute,groupshared,sampler,readback",
+        "la-microchip",
+        NANO_INSTANCE_LIFECYCLE(compute_probe),
+    });
+
+    nano::registerEffect({
+        2,
+        "debug.trigger_probe",
+        "Trigger Probe",
+        "Fires trigger_audio, trigger_clip and a structured log on a rising edge (test only)",
+        "debug",
+        "test,trigger,audio,clip",
+        "la-bell",
+        NANO_INSTANCE_LIFECYCLE(trigger_probe),
     });
 
     // Registered LAST: trap_test's module_init deliberately traps. A trapped

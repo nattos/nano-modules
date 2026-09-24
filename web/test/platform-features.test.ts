@@ -211,6 +211,159 @@ describe(`Platform features (${backend})`, () => {
     });
   });
 
+  describe('raster: load pass, blend equations, discard (raster_test case 0)', () => {
+    // Grey clear in one pass, then a LOADING pass draws three quads, one PSO
+    // per BlendMode, in the first three of four 16px columns. Each quad's
+    // right quarter is discarded, so grey survives there. Columns only —
+    // independent of either backend's raster y direction.
+    it('blends each column by its own equation over the loaded target', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'debug.raster_test',
+        inputColor: [0, 0, 0, 1],
+        params: [['case', 0]],
+        dumpName: 'raster_test_blend',
+      });
+      expect(frame.success).toBe(true);
+      expect(frame.consoleLog).toContain('raster_test: initialized');
+      expect(frame.gpuErrors).toEqual([]);
+      // AlphaOver (1,0,0,.5) over .5 grey → (.75,.25,.25)
+      frame.expectPixelAt(6, 32, { r: 191, g: 64, b: 64 }, 3);
+      // Additive (0,0,1,.5) + .5 grey → (.5,.5,1)
+      frame.expectPixelAt(22, 32, { r: 128, g: 128, b: 255 }, 3);
+      // Replace (0,1,0,.25) → written verbatim, alpha included
+      frame.expectPixelAt(38, 32, { r: 0, g: 255, b: 0, a: 64 }, 3);
+      // Untouched column, and the discarded strips of all three quads.
+      for (const x of [56, 14, 30, 46]) {
+        frame.expectPixelAt(x, 32, { r: 128, g: 128, b: 128, a: 255 }, 3);
+      }
+    });
+  });
+
+  describe('raster: indirect draw sized on the GPU (raster_test case 1)', () => {
+    // A compute pass writes {6, count, 0, 0}; the draw reads its instance
+    // count from that buffer. Instance i fills column i of 8 (8px each).
+    for (const count of [3, 6]) {
+      it(`draws exactly ${count} of 8 columns`, async () => {
+        const frame = await runGpuEffectTest({
+          module: 'debug.raster_test',
+          inputColor: [0, 0, 0, 1],
+          params: [['case', 1], ['count', count]],
+          dumpName: `raster_test_indirect_${count}`,
+        });
+        expect(frame.success).toBe(true);
+        expect(frame.gpuErrors).toEqual([]);
+        for (let col = 0; col < 8; col++) {
+          const v = col < count ? 255 : 0;
+          frame.expectPixelAt(col * 8 + 4, 32, { r: v, g: v, b: v }, 2);
+        }
+      });
+    }
+  });
+
+  describe('raster: per-target MRT blend equations (raster_test cases 2/3)', () => {
+    // One (0,0,1,.5) quad in column 1 into two grey attachments with their
+    // own blends. Case 2 shows target 0 ({Additive, Replace}); case 3 copies
+    // target 1 out ({Replace, Additive}). Both must read Additive: (.5,.5,1).
+    for (const [c, which] of [[2, 'first'], [3, 'second']] as const) {
+      it(`honours the ${which} target's blend`, async () => {
+        const frame = await runGpuEffectTest({
+          module: 'debug.raster_test',
+          inputColor: [0, 0, 0, 1],
+          params: [['case', c]],
+          dumpName: `raster_test_mrt_${which}`,
+        });
+        expect(frame.success).toBe(true);
+        expect(frame.gpuErrors).toEqual([]);
+        frame.expectPixelAt(22, 32, { r: 128, g: 128, b: 255 }, 3);
+        frame.expectPixelAt(6, 32, { r: 128, g: 128, b: 128 }, 3);
+      });
+    }
+  });
+
+  describe('compute: workgroup memory (compute_probe case 0)', () => {
+    // groupshared + barriers + InterlockedOr in a 32x4 group. A backend that
+    // ran the kernel with any other group shape leaves slots unwritten (red)
+    // or pixels uncovered (black).
+    it('every pixel of a 32x4 group sees the whole group', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'debug.compute_probe',
+        inputColor: [0, 0, 0, 1],
+        params: [['case', 0]],
+        dumpName: 'compute_probe_groupshared',
+      });
+      expect(frame.success).toBe(true);
+      expect(frame.consoleLog).toContain('compute_probe: initialized');
+      expect(frame.gpuErrors).toEqual([]);
+      frame.expectUniformColor({ r: 0, g: 255, b: 0, a: 255 }, 1);
+    });
+  });
+
+  describe('compute: sampler address modes (compute_probe case 1)', () => {
+    // A 16-texel ramp (i/15) sampled at u = 1 + 4.5/16, nearest.
+    it('Repeat wraps, Mirror reflects, ClampToEdge clamps', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'debug.compute_probe',
+        inputColor: [0, 0, 0, 1],
+        params: [['case', 1]],
+        dumpName: 'compute_probe_samplers',
+      });
+      expect(frame.success).toBe(true);
+      expect(frame.gpuErrors).toEqual([]);
+      frame.expectPixelAt(10, 32, { r: Math.round(4 / 15 * 255), g: 0, b: 0 }, 2);
+      frame.expectPixelAt(32, 32, { r: Math.round(11 / 15 * 255), g: 0, b: 0 }, 2);
+      frame.expectPixelAt(54, 32, { r: 255, g: 0, b: 0 }, 2);
+    });
+  });
+
+  describe('compute: RGBA32F + RGBA8_SRGB textures (compute_probe case 2)', () => {
+    // R: an RGBA32F texel held 70000 (beyond half-float). G: an sRGB target
+    // cleared to linear .5 reads back linear. B: the format queries agree.
+    it('keeps full-float values, round-trips sRGB, reports formats', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'debug.compute_probe',
+        inputColor: [0, 0, 0, 1],
+        params: [['case', 2]],
+        dumpName: 'compute_probe_formats',
+      });
+      expect(frame.success).toBe(true);
+      expect(frame.gpuErrors).toEqual([]);
+      frame.expectUniformColor({ r: 255, g: 128, b: 255, a: 255 }, 2);
+    });
+  });
+
+  describe('host frame values (compute_probe case 3)', () => {
+    it('deltaTime is a sane frame step and the viewport is the render size', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'debug.compute_probe',
+        inputColor: [0, 0, 0, 1],
+        params: [['case', 3]],
+        ticks: 3,
+        renderEachTick: true,
+        dumpName: 'compute_probe_host',
+      });
+      expect(frame.success).toBe(true);
+      frame.expectUniformColor({ r: 255, g: 255, b: 255, a: 255 }, 1);
+    });
+  });
+
+  describe('async GPU readback (compute_probe case 4)', () => {
+    // The input's centre pixel goes to a storage buffer, back to the CPU
+    // through requestReadback/pollReadback, and out again rotated (b, r, g).
+    it('brings a GPU-written value back to the CPU within a few frames', async () => {
+      const frame = await runGpuEffectTest({
+        module: 'debug.compute_probe',
+        inputColor: [0.2, 0.4, 0.8, 1],
+        params: [['case', 4]],
+        ticks: 8,
+        renderEachTick: true,
+        dumpName: 'compute_probe_readback',
+      });
+      expect(frame.success).toBe(true);
+      expect(frame.gpuErrors).toEqual([]);
+      frame.expectUniformColor({ r: 204, g: 51, b: 102, a: 255 }, 2);
+    });
+  });
+
   describe('mip texture chain + LOD sampling', () => {
     // filter.blur.fast is the canonical exercise of the multi-mip
     // platform path: it allocates a scratch with a mip chain,

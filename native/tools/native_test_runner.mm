@@ -271,6 +271,8 @@ int main(int argc, char** argv) {
         double t = (i + 1) * 0.016;
         effect_runtime::setHostTime(t);
         effect_runtime::setHostDeltaTime(0.016);
+        bundles.setHostClock(t, 0.016, std::fmod(t * 120.0 / 60.0 / 4.0, 1.0),
+                             120.0, W, H, 0);
         finalHandle = exec.execute(sketch, inputTex, outputTex, W, H, 0.016, /*dirty=*/true);
       }
       gpu->submit();
@@ -357,10 +359,18 @@ int main(int argc, char** argv) {
       effect_runtime::setHostTime(t);
       effect_runtime::setHostDeltaTime(0.016);
       effect_runtime::setHostBarPhase(std::fmod(t * 120.0 / 60.0 / 4.0, 1.0));
+      // What a WAMR-hosted effect actually reads (host.get_delta_time, the
+      // viewport, ...): the bundles' FrameState. The effect_runtime setters
+      // above only reach the native-linked runtime.
+      bundles.setHostClock(t, 0.016, std::fmod(t * 120.0 / 60.0 / 4.0, 1.0),
+                           120.0, W, H, 0);
       inst->doTick(0.016);
       inst->doRender(W, H);
     }
-    if (tickCount == 0) inst->doRender(W, H);
+    if (tickCount == 0) {
+      bundles.setHostClock(0.0, 0.0, 0.0, 120.0, W, H, 0);
+      inst->doRender(W, H);
+    }
 
     // Submit + read back. Many effects call gpu::Device::submit() at
     // the end of render(), but if a future effect doesn't, ensure we

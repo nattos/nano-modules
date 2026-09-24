@@ -12,10 +12,49 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
 namespace wasm {
+
+// --- Stack-passed arguments (read this before adding a wide import) ---
+//
+// WAMR calls these natives through its own trampoline (invokeNative), which
+// puts every argument past the register set in its OWN 8-byte stack slot. On
+// arm64 that is AAPCS64 — but Apple's arm64 ABI packs stack arguments at their
+// NATURAL size, so a callee declared with int32_t stack params reads the 2nd
+// one from the upper half of the 1st slot, the 3rd from the 2nd slot, and so on.
+// With exec_env in x0 there are 7 integer registers for wasm params: the 8th
+// integer param on is on the stack.
+//
+// So: every integer param from the 8th on is declared int64_t (marked
+// STACK_ARG) and narrowed inside. That matches WAMR's slot on every ABI
+// (Apple arm64, AAPCS64, SysV, Win64 all give an 8-byte slot to an int64), and
+// the low 32 bits carry the wasm i32. Getting this wrong fails SILENTLY — it
+// was every native blend PSO rendering as alpha-over and every MRT target
+// ignoring its blend. debug.raster_test pins it; register_host_functions()
+// refuses a wide import that isn't on the audited list below.
+static bool stackArgsAudited(const char* module, const char* name) {
+  static const char* const kAudited[][2] = {
+      {"state", "register_shader_spv"},
+      {"gpu", "create_render_pso_layout"},
+      {"gpu", "create_instanced_render_pso_layout"},
+      {"gpu", "create_instanced_render_pso_blend_layout"},
+      {"gpu", "create_instanced_render_pso_mrt_layout"},
+  };
+  for (const auto& a : kAudited)
+    if (std::strcmp(a[0], module) == 0 && std::strcmp(a[1], name) == 0) return true;
+  return false;
+}
+
+// Integer params of a WAMR signature string ("(iiF*~)i") — i/I/pointer/length.
+static int integerParamCount(const char* sig) {
+  int n = 0;
+  for (const char* c = sig; c && *c && *c != ')'; ++c)
+    if (*c == 'i' || *c == 'I' || *c == '*' || *c == '~' || *c == '$') ++n;
+  return n;
+}
 
 // --- Context access helpers ---
 
@@ -1002,7 +1041,9 @@ static void state_console_log_structured(wasm_exec_env_t env,
 // SPV bytes + SPV→MSL translation (EffectHostSink::createShaderModuleByName).
 static void state_register_shader_spv(wasm_exec_env_t env,
     int32_t name_ptr, int32_t name_len, int32_t spv_ptr, int32_t spv_len,
-    int32_t fmt_ptr, int32_t fmt_len, int32_t acc_ptr, int32_t acc_len) {
+    int32_t fmt_ptr, int32_t fmt_len, int32_t acc_ptr,
+    int64_t acc_len_slot /* STACK_ARG */) {
+  const int32_t acc_len = static_cast<int32_t>(acc_len_slot);
   auto* ctx = get_ctx(env);
   if (!ctx || !ctx->effect_instance) return;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
@@ -1713,9 +1754,10 @@ static void gpu_copy_texture(wasm_exec_env_t env, int32_t src, int32_t dst) {
 // binding layout is WebGPU-only; Metal binds by slot. vs/fs entries mapped.
 static int32_t gpu_create_instanced_render_pso_blend_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
-    int32_t fs_len, int32_t format, int32_t binding_count, int32_t bindings_ptr,
-    int32_t blend_mode) {
+    int32_t fs_len, int32_t format, int64_t binding_count /* STACK_ARG */,
+    int64_t bindings_ptr /* STACK_ARG */, int64_t blend_mode_slot /* STACK_ARG */) {
   (void)binding_count; (void)bindings_ptr;
+  const int32_t blend_mode = static_cast<int32_t>(blend_mode_slot);
   auto* g = get_gpu(env);
   if (!g) return -1;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
@@ -1742,7 +1784,8 @@ static void gpu_render_set_buffer(wasm_exec_env_t env, int32_t pass, int32_t buf
 // aux-stack pointer and breaks every effect registered after it in the bundle.
 static int32_t gpu_create_render_pso_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
-    int32_t fs_len, int32_t format, int32_t binding_count, int32_t bindings_ptr) {
+    int32_t fs_len, int32_t format, int64_t binding_count /* STACK_ARG */,
+    int64_t bindings_ptr /* STACK_ARG */) {
   (void)binding_count; (void)bindings_ptr;
   auto* g = get_gpu(env);
   if (!g) return -1;
@@ -1757,7 +1800,8 @@ static int32_t gpu_create_render_pso_layout(wasm_exec_env_t env,
 }
 static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
-    int32_t fs_len, int32_t format, int32_t binding_count, int32_t bindings_ptr) {
+    int32_t fs_len, int32_t format, int64_t binding_count /* STACK_ARG */,
+    int64_t bindings_ptr /* STACK_ARG */) {
   (void)binding_count; (void)bindings_ptr;
   auto* g = get_gpu(env);
   if (!g) return -1;
@@ -1773,9 +1817,12 @@ static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
 }
 static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
-    int32_t fs_len, int32_t target_count, int32_t target_formats_ptr,
-    int32_t binding_count, int32_t bindings_ptr, int32_t target_blends_ptr) {
+    int32_t fs_len, int32_t target_count, int64_t target_formats_slot /* STACK_ARG */,
+    int64_t binding_count /* STACK_ARG */, int64_t bindings_ptr /* STACK_ARG */,
+    int64_t target_blends_slot /* STACK_ARG */) {
   (void)binding_count; (void)bindings_ptr;
+  const int32_t target_formats_ptr = static_cast<int32_t>(target_formats_slot);
+  const int32_t target_blends_ptr = static_cast<int32_t>(target_blends_slot);
   auto* g = get_gpu(env);
   if (!g || target_count < 0) return -1;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
@@ -1964,8 +2011,40 @@ static NativeSymbol module_symbols[] = {
 // Registration
 // ========================================================================
 
+// Every import with stack-passed integer args must be one whose native side
+// has been written for them (see "Stack-passed arguments" at the top).
+static bool checkStackArgs(const char* module, const NativeSymbol* syms, size_t n) {
+  bool ok = true;
+  for (size_t i = 0; i < n; ++i) {
+    if (integerParamCount(syms[i].signature) > 7 &&
+        !stackArgsAudited(module, syms[i].symbol)) {
+      fprintf(stderr,
+              "[host_functions] %s.%s has stack-passed args but is not audited: "
+              "declare params 8+ as int64_t (see host_functions.cpp)\n",
+              module, syms[i].symbol);
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 bool register_host_functions() {
   bool ok = true;
+
+#define NANO_CHECK_STACK_ARGS(mod, syms) \
+  ok = checkStackArgs(mod, syms, sizeof(syms) / sizeof(NativeSymbol)) && ok
+  NANO_CHECK_STACK_ARGS("env", env_symbols);
+  NANO_CHECK_STACK_ARGS("host", host_symbols);
+  NANO_CHECK_STACK_ARGS("resolume", resolume_symbols);
+  NANO_CHECK_STACK_ARGS("streams", streams_symbols);
+  NANO_CHECK_STACK_ARGS("resources", resources_symbols);
+  NANO_CHECK_STACK_ARGS("state", state_symbols);
+  NANO_CHECK_STACK_ARGS("io", io_symbols);
+  NANO_CHECK_STACK_ARGS("val", val_symbols);
+  NANO_CHECK_STACK_ARGS("gpu", gpu_symbols);
+  NANO_CHECK_STACK_ARGS("module", module_symbols);
+#undef NANO_CHECK_STACK_ARGS
+  if (!ok) return false;
 
   ok = ok && wasm_runtime_register_natives(
       "env", env_symbols,

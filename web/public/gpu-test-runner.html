@@ -272,6 +272,12 @@ async function run() {
           wasmHost.frameState.barPhase = ((i + 1) * 0.016 * 120 / 60 / 4) % 1.0;
           wasmModule.tick(0.016);
           wasmModule.render(W, H);
+          // End the frame the way the engine does: submit it and let the
+          // GPU finish, so async work that completes between frames (buffer
+          // readbacks' mapAsync) has landed before the next tick polls it.
+          gpuHost.flush();
+          await device.queue.onSubmittedWorkDone();
+          await new Promise((r) => setTimeout(r, 0));
         }
         if (traceSteps.includes(si)) copyToTrace(nextOutput, si);
         const tmp = currentOutput; currentOutput = nextOutput; nextOutput = tmp;

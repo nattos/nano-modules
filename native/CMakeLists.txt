@@ -1681,6 +1681,18 @@ if(NANO_HAS_GPU_BACKEND)
     target_compile_options(test_raw_input PRIVATE -Wno-attributes)
     catch_discover_tests(test_raw_input)
 
+    # The event-out imports (trigger_audio / trigger_clip / structured log)
+    # through the real WAMR host, via debug.trigger_probe (testonly).
+    add_executable(test_trigger_probe tests/test_trigger_probe.cpp)
+    target_link_libraries(test_trigger_probe PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+)
+    target_compile_definitions(test_trigger_probe PRIVATE
+      TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    target_compile_options(test_trigger_probe PRIVATE -Wno-attributes)
+    catch_discover_tests(test_trigger_probe)
+
     # Which field types get an IMPLICIT (positional) rail — composites yes,
     # vecs no. Pure logic; links only the augmenter.
     add_executable(test_implicit_rails tests/test_implicit_rails.cpp)

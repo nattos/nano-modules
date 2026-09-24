@@ -99,6 +99,29 @@ compile_shaders_compute_var_spv motion_blur pyramid_reduce
 _emit_spv_header_var motion_blur reconstruct pyramid_reduce
 echo "  motion_blur shaders compiled (SPV: reconstruct + pyramid_reduce)"
 
+# raster_test — load-pass blending (AlphaOver/Additive/Replace PSOs), a
+# fragment discard, and an indirect draw sized by a compute pass.
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../raster_test/vs.hlsl -Fo "$TMP_DIR/raster_test_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../raster_test/fs.hlsl -Fo "$TMP_DIR/raster_test_fs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../raster_test/fs_mrt.hlsl -Fo "$TMP_DIR/raster_test_fs_mrt.spv"
+compile_shaders_compute_var_spv raster_test args
+_emit_spv_header_var raster_test vs fs fs_mrt args
+echo "  raster_test shaders compiled (SPV: vs + fs + fs_mrt + args)"
+
+# compute_probe — workgroup memory, sampler address modes, f32/sRGB formats,
+# host frame values, async readback (one `case` each).
+for v in groupshared ramp sample big formats fill capture; do
+  compile_shaders_compute_var_spv compute_probe $v
+done
+_emit_spv_header_var compute_probe groupshared ramp sample big formats fill capture
+echo "  compute_probe shaders compiled (SPV: 7 kernels)"
+
 echo "=== Building WASM (testonly) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -149,6 +172,9 @@ wasm_build \
   ../streams_probe/main.cpp \
   ../raw_probe/main.cpp \
   ../any_probe/main.cpp \
+  ../raster_test/main.cpp \
+  ../compute_probe/main.cpp \
+  ../trigger_probe/main.cpp \
   ../trap_test/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

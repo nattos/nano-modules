@@ -3,23 +3,26 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { WasmHost } from './wasm-host';
 
-// This test exercises nanolooper, which lives in the `nano` bundle. Old
-// standalone nanolooper.wasm is kept as a fallback for environments where
-// only that artefact is available.
+// The WasmHost lifecycle is exercised on testonly.wasm's debug.trigger_probe,
+// a pure-data effect that fires host.trigger_audio, resolume.trigger_clip and
+// state.console_log_structured on each rising edge of `fire`.
+const TESTONLY_PATH = resolve(__dirname, '../../build/wasm/testonly.wasm');
+// The nanolooper cases need the extras' nano bundle, built into build/wasm
+// only when the extras checkout is given (build_all.sh --extras).
 const NANO_BUNDLE_PATH = resolve(__dirname, '../../build/wasm/nano.wasm');
-const NANOLOOPER_PATH = resolve(__dirname, '../../build/wasm/nanolooper.wasm');
 
-function getWasmBytes(): Buffer | null {
-  try { return readFileSync(NANO_BUNDLE_PATH); } catch {}
-  try { return readFileSync(NANOLOOPER_PATH); } catch {}
-  return null;
+function readBytes(path: string): Buffer | null {
+  try { return readFileSync(path); } catch { return null; }
 }
 
-// Helper: load WASM module directly from bytes (bypassing fetch)
-async function loadHost(): Promise<{ host: WasmHost; module: import('./wasm-host').WasmModule }> {
+// Helper: load a bundle directly from bytes (bypassing fetch) and activate one
+// of its effects.
+async function loadHost(
+  path = TESTONLY_PATH, effectId = 'debug.trigger_probe',
+): Promise<{ host: WasmHost; module: import('./wasm-host').WasmModule }> {
   const host = new WasmHost();
-  const bytes = getWasmBytes();
-  if (!bytes) throw new Error('No WASM file found');
+  const bytes = readBytes(path);
+  if (!bytes) throw new Error(`No WASM file at ${path}`);
 
   // We need to instantiate manually since fetch() doesn't work in Node
   const imports = buildImports(host);
@@ -32,27 +35,9 @@ async function loadHost(): Promise<{ host: WasmHost; module: import('./wasm-host
   const _initialize = instance.exports._initialize as (() => void) | undefined;
   if (_initialize) _initialize();
 
-  // Call nano_module_main to discover effects, then activate nanolooper
-  const nanoMain = instance.exports.nano_module_main as (() => void) | undefined;
-  if (nanoMain) {
-    nanoMain();
-    const wasmModule = host.activateEffect('control.nanolooper');
-    return { host, module: wasmModule };
-  }
-
-  // Legacy fallback: directly access exports
-  const exports = instance.exports;
-  const wasmModule = {
-    init: exports.init as () => void,
-    tick: exports.tick as (dt: number) => void,
-    render: exports.render as (vpW: number, vpH: number) => void,
-    onStatePatched: exports.on_state_patched as
-      (n: number, pb: number, off: number, len: number, ops: number) => void,
-    isIdentity: () => false,
-  };
-  wasmModule.init();
-
-  return { host, module: wasmModule };
+  // Call nano_module_main to discover effects, then activate the one we want.
+  (instance.exports.nano_module_main as () => void)();
+  return { host, module: host.activateEffect(effectId) };
 }
 
 // Build the same import object that WasmHost.load() would
@@ -203,8 +188,16 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       set_on_state_ready: () => {},
       set_field_hidden: () => {},
       console_log: (_level: number, _msgPtr: number, _msgLen: number) => {},
-      console_log_structured: (_level: number, _msgPtr: number, _msgLen: number,
-                                _jsonPtr: number, _jsonLen: number) => {},
+      console_log_structured: (level: number, msgPtr: number, msgLen: number,
+                                jsonPtr: number, jsonLen: number) => {
+        const mem = new Uint8Array(((host as any).memory as WebAssembly.Memory).buffer);
+        host.consoleLogs.push({
+          timestamp: host.frameState.elapsedTime,
+          level: (['log', 'warn', 'error'] as const)[level] ?? 'log',
+          message: decoder.decode(mem.subarray(msgPtr, msgPtr + msgLen)),
+          data: JSON.parse(decoder.decode(mem.subarray(jsonPtr, jsonPtr + jsonLen))),
+        });
+      },
       set_val: (_pathPtr: number, _pathLen: number, valHandle: number) => {
         const v = valStore.get(valHandle);
         if (v !== undefined) {
@@ -361,37 +354,51 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
 }
 
 describe('WasmHost', () => {
-  it('loads nanolooper.wasm and calls init', async () => {
+  it('loads a bundle and activates one effect', async () => {
     const { module } = await loadHost();
     module.init();
   });
 
-  it('tick runs without error', async () => {
+  it('tick and render run without error (GPU-less host)', async () => {
     const { host, module } = await loadHost();
     module.init();
-    host.frameState.barPhase = 0.1;
-    host.frameState.bpm = 120;
-    module.tick(0.016);
+    host.frameState.viewportW = 800;
+    host.frameState.viewportH = 600;
+    for (let i = 0; i < 10; i++) {
+      host.frameState.elapsedTime = i * 0.016;
+      module.tick(0.016);
+    }
+    expect(() => module.render(800, 600)).not.toThrow();
   });
 
-  // The overlay is now drawn via the in-effect overlay toolbox (GPU solid-quad
-  // rects + text::render), not the old host canvas draw list. Without a GPU
-  // backend (this harness stubs gpu.* to -1) render() resolves no writable
-  // target and returns cleanly — so here we only assert it runs without error.
-  it('render runs without error (GPU-less host)', async () => {
+  it('a patched input reaches the effect, whose trigger_audio and structured log reach the host', async () => {
     const { host, module } = await loadHost();
     module.init();
+    const channels: number[] = [];
+    host.onAudioTrigger = (ch) => { channels.push(ch); };
 
-    host.frameState.elapsedTime = 1.0;
-    host.frameState.barPhase = 0.25;
-    host.frameState.viewportW = 1920;
-    host.frameState.viewportH = 1080;
+    host.notifyStatePatched(module, [{ op: 'replace', path: 'channel', value: 3 }]);
+    // off → on (fires) → held (no re-fire) → off → on (fires)
+    for (const fire of [0, 1, 1, 0, 1]) {
+      host.notifyStatePatched(module, [{ op: 'replace', path: 'fire', value: fire }]);
+      module.tick(0.016);
+    }
 
-    expect(() => module.render(1920, 1080)).not.toThrow();
+    expect(channels).toEqual([3, 3]);
+    const fired = host.consoleLogs.filter((l) => l.message === 'trigger_probe: fired');
+    expect(fired.map((l) => l.data)).toEqual([
+      { channel: 3, count: 1 },
+      { channel: 3, count: 2 },
+    ]);
   });
+});
 
+// The looper's own behaviour, when the extras' nano bundle is built.
+// TODO(extras): moves to nano-modules-extras with control.nanolooper.
+describe.skipIf(!readBytes(NANO_BUNDLE_PATH))('WasmHost: control.nanolooper', () => {
+  const loadLooper = () => loadHost(NANO_BUNDLE_PATH, 'control.nanolooper');
   it('on_param_change triggers audio callback', async () => {
-    const { host, module } = await loadHost();
+    const { host, module } = await loadLooper();
     module.init();
     host.frameState.barPhase = 0.1;
 
@@ -403,7 +410,7 @@ describe('WasmHost', () => {
   });
 
   it('on_state_patched reads grid from canonical state', async () => {
-    const { host, module } = await loadHost();
+    const { host, module } = await loadLooper();
     module.init();
     host.frameState.barPhase = 0.1;
 
@@ -437,7 +444,7 @@ describe('WasmHost', () => {
   });
 
   it('on_state_patched preserves all channels when editing one', async () => {
-    const { host, module } = await loadHost();
+    const { host, module } = await loadLooper();
     module.init();
     host.frameState.barPhase = 0.0;
 
@@ -467,21 +474,6 @@ describe('WasmHost', () => {
     expect(host.pluginState.grid[1]).toEqual([3]);
     expect(host.pluginState.grid[2]).toEqual([5]);
     expect(host.pluginState.grid[3]).toEqual([7]);
-  });
-
-  it('multiple ticks then render works', async () => {
-    const { host, module } = await loadHost();
-    module.init();
-
-    for (let i = 0; i < 10; i++) {
-      host.frameState.barPhase = i * 0.1;
-      host.frameState.elapsedTime = i * 0.016;
-      module.tick(0.016);
-    }
-
-    host.frameState.viewportW = 800;
-    host.frameState.viewportH = 600;
-    expect(() => module.render(800, 600)).not.toThrow();
   });
 });
 
