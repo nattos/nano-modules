@@ -47,12 +47,17 @@ import { effects, defaultStateFor, catalogEffect, catalogSchemaField } from '../
 import type { CompositeNode } from '../engine/instance-keys';
 import { clipSourceTimeAt, type ClipTimeCtx } from '../engine/clip-time';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
-import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
+import {
+  backendForSection, rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel,
+  type WorkspaceSection,
+} from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMediaHandle, resolveMedia } from '../workspace/media-store';
 import { libraryPaths } from '../../../state/library-paths';
 import {
+  absPathOf,
   getHandleFromAbsPath,
+  normalizeAbsPath,
   openMediaSource,
   showDirectoryPicker,
   type MediaSource,
@@ -1322,6 +1327,36 @@ export class ArrangementStore {
   async restoreLayout() {
     const l = await loadLayout();
     if (l) {
+      this.applyLayout(l);
+      runInAction(() => { this.preferredFile = l.lastFile ?? null; });
+    }
+    this.layoutReady = true; // enable saves only AFTER restore (no clobber)
+  }
+
+  /**
+   * Desktop: the settings file's `layout` was edited from outside — apply it
+   * like a restore, without saving it back. `lastFile` only steers the next
+   * launch (a live edit doesn't switch the open document).
+   */
+  applyExternalLayout(l: ArrLayout) {
+    // The setters below schedule a layout save; this one is already on disk.
+    this.applyingExternalLayout = true;
+    try { this.applyLayout(l); } finally { this.applyingExternalLayout = false; }
+  }
+  private applyingExternalLayout = false;
+
+  /** Desktop: the settings file names a different workspace folder — mount it
+   *  (a cleared or missing one leaves the current workspace alone). */
+  async applyExternalWorkspace(sec: WorkspaceSection | null) {
+    if (!sec) return;
+    const current = this.backend instanceof DirectoryBackend ? absPathOf(this.backend.dir) : undefined;
+    if (current && normalizeAbsPath(current) === normalizeAbsPath(sec.path)) return;
+    const backend = await backendForSection(sec);
+    if (backend) await this.mountWorkspace(backend);
+  }
+
+  private applyLayout(l: ArrLayout) {
+    {
       runInAction(() => {
         if (l.activeRightTab) this.activeRightTab = l.activeRightTab as RightTab;
         if (typeof l.clipViewOpen === 'boolean') this.clipViewOpen = l.clipViewOpen;
@@ -1333,15 +1368,13 @@ export class ArrangementStore {
         if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
         if (typeof l.automationMode === 'boolean') this.automationMode = l.automationMode;
         if (typeof l.helpMode === 'boolean') this.helpMode = l.helpMode;
-        this.preferredFile = l.lastFile ?? null;
       });
     }
-    this.layoutReady = true; // enable saves only AFTER restore (no clobber)
   }
 
   /** Debounced layout autosave (panels/tabs/modes/last file). */
   requestLayoutSave(debounceMs = 400) {
-    if (!this.layoutReady) return;
+    if (!this.layoutReady || this.applyingExternalLayout) return;
     if (this.layoutSaveTimer) clearTimeout(this.layoutSaveTimer);
     this.layoutSaveTimer = setTimeout(() => {
       this.layoutSaveTimer = null;

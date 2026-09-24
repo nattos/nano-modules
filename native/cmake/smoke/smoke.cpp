@@ -38,16 +38,16 @@ TEST_CASE("paths.h joins and splits Windows paths", "[smoke][paths]") {
   REQUIRE(j.find("wasm") != std::string::npos);
 }
 
-TEST_CASE("paths.h resolves the Windows support and log dirs", "[smoke][paths]") {
+TEST_CASE("paths.h resolves the Windows data and log dirs", "[smoke][paths]") {
   using namespace nano_paths;
-  // %APPDATA%\NanoBarrel and %LOCALAPPDATA%\<name>\Logs. This is the directory
-  // the Electron install record already lands in under CrossOver, computed by
-  // the JS side with neither half told about the other — so agreement here is
-  // the thing worth checking.
-  const std::string support = supportDirPath();
-  INFO("supportDirPath: " << support);
+  // %APPDATA%\Nano Modules and %LOCALAPPDATA%\<name>\Logs. The data root is
+  // where the Electron apps keep Settings/ and the install record, computed by
+  // the JS side (electron/data-root.cjs) with neither half told about the
+  // other — so agreement here is the thing worth checking.
+  const std::string support = dataRootPath();
+  INFO("dataRootPath: " << support);
   REQUIRE_FALSE(support.empty());
-  REQUIRE(support.find("NanoBarrel") != std::string::npos);
+  REQUIRE(support.find("Nano Modules") != std::string::npos);
 
   const std::string logs = logDir("NanoSmoke");
   INFO("logDir: " << logs);

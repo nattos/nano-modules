@@ -41,6 +41,7 @@ const path = require('path');
 
 const appProtocol = require('./app-protocol.cjs');
 const moduleDirs = require('./module-dirs.cjs');
+const dataRootMod = require('./data-root.cjs');
 const { resolveResourceRoot, writeInstallRecord, ffglPluginPath } = require('./resources.cjs');
 
 /** WebGPU is not optional here — the whole renderer is dead without it. */
@@ -128,8 +129,13 @@ function createWindow() {
     }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
-      // The preload reads this back and sets window.nanoProduct.
-      additionalArguments: [`--nano-product=${PRODUCT}`],
+      // The preload reads these back: window.nanoProduct, and
+      // window.nanoSettingsDir — the shared settings folder (data-root.cjs),
+      // resolved HERE so the renderer and the main process can't disagree.
+      additionalArguments: [
+        `--nano-product=${PRODUCT}`,
+        `--nano-settings-dir=${dataRootMod.settingsDir()}`,
+      ],
       // `fs` straight from the renderer, as nano-player does. That's what
       // state/paths.ts reaches through window.require — it deliberately never
       // imports 'fs', because Vite has no electron-renderer target and would
@@ -407,6 +413,9 @@ app.whenReady().then(async () => {
       console.warn('[electron] could not seed the modules directory:', err.message);
     }
   }
+
+  // The shared settings folder's guide, for whoever (or whatever) edits it.
+  dataRootMod.writeSettingsReadme();
 
   // Remote Control only: it owns the plugin, and two apps writing one record
   // would repoint a copied-out plugin at whichever launched last.

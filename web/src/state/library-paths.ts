@@ -18,6 +18,11 @@
  *
  * At least one must be present. Under Electron the two arrive together: a picked
  * directory IS an absolute path, so `add()` fills both.
+ *
+ * The desktop app keeps the list in `Settings/library-paths.json`
+ * (settings-files.ts) instead of IndexedDB, as `{id, label, absolutePath,
+ * addedAt}` rows — the file the native plugin reads directly, and which an
+ * external edit reloads live (`onExternalChange`).
  */
 
 import { makeAutoObservable, runInAction, toJS } from 'mobx';
@@ -30,6 +35,34 @@ import {
   normalizeAbsPath,
   type PathsDirectoryHandle,
 } from './paths';
+import {
+  readSettings, settingsFilesAvailable, SETTINGS_FILES, watchSettings, writeSettings,
+} from './settings-files';
+
+const FILE = SETTINGS_FILES.libraryPaths;
+
+/** A row of library-paths.json. */
+interface LibraryFileRow { id: string; label: string; absolutePath: string; addedAt?: number }
+
+function validRows(doc: unknown): LibraryFileRow[] {
+  if (!Array.isArray(doc)) return [];
+  return doc.filter((r): r is LibraryFileRow =>
+    !!r && typeof r.id === 'string' && !!r.id && typeof r.absolutePath === 'string' && !!r.absolutePath);
+}
+
+/** Rebuild entries (with live handles) from file rows. */
+async function entriesFromRows(rows: LibraryFileRow[]): Promise<LibraryPath[]> {
+  return Promise.all(rows.map(async (r, i) => {
+    const h = await getHandleFromAbsPath(r.absolutePath);
+    return {
+      id: r.id,
+      ...(h && h.kind === 'directory' ? { handle: h as PathsDirectoryHandle } : {}),
+      absolutePath: r.absolutePath,
+      label: typeof r.label === 'string' && r.label ? r.label : r.absolutePath,
+      addedAt: typeof r.addedAt === 'number' ? r.addedAt : i,
+    };
+  }));
+}
 
 export interface LibraryPath {
   /** Stable generated id; references store this, not the handle. */
@@ -63,13 +96,23 @@ class LibraryController {
   loaded = false;
   private loadPromise: Promise<void> | null = null;
   private bridge: ((rows: LibraryPathSync[]) => void) | null = null;
+  private externalListeners = new Set<() => void>();
 
   constructor() {
-    makeAutoObservable<LibraryController, 'loadPromise' | 'bridge'>(
+    makeAutoObservable<LibraryController, 'loadPromise' | 'bridge' | 'externalListeners'>(
       this,
-      { loadPromise: false, bridge: false },
+      { loadPromise: false, bridge: false, externalListeners: false },
       { autoBind: true },
     );
+  }
+
+  /**
+   * Desktop: `cb` after library-paths.json was edited from outside and the
+   * list reloaded — e.g. to relink media against the new roots.
+   */
+  onExternalChange(cb: () => void): () => void {
+    this.externalListeners.add(cb);
+    return () => { this.externalListeners.delete(cb); };
   }
 
   /** Load once from IDB (idempotent). */
@@ -79,6 +122,17 @@ class LibraryController {
   }
 
   private async load() {
+    if (settingsFilesAvailable()) {
+      const recs = await entriesFromRows(validRows(readSettings(FILE)));
+      recs.sort((a, b) => a.addedAt - b.addedAt);
+      runInAction(() => {
+        this.paths = recs;
+        this.loaded = true;
+      });
+      this.mirror();
+      watchSettings(FILE, (doc) => { void this.reloadFromFile(doc); });
+      return;
+    }
     let recs: LibraryPath[] = [];
     try {
       recs = await idbGetAll<LibraryPath>(STORE_LIBRARY);
@@ -94,6 +148,29 @@ class LibraryController {
       this.loaded = true;
     });
     this.mirror();
+  }
+
+  /** The file changed on disk (not by us): adopt its rows. */
+  private async reloadFromFile(doc: unknown) {
+    const recs = await entriesFromRows(validRows(doc));
+    recs.sort((a, b) => a.addedAt - b.addedAt);
+    runInAction(() => { this.paths = recs; });
+    this.mirror();
+    for (const cb of this.externalListeners) cb();
+  }
+
+  /** Desktop: the whole list, as the file's rows. `upsert` is a record that
+   *  may not be in `paths` yet (callers persist before publishing). */
+  private writeFile(upsert?: LibraryPath, removeId?: string): void {
+    const list = toJS(this.paths).filter((p) => p.id !== removeId);
+    if (upsert) {
+      const i = list.findIndex((p) => p.id === upsert.id);
+      if (i >= 0) list[i] = upsert; else list.push(upsert);
+    }
+    const rows: LibraryFileRow[] = list
+      .filter((p): p is LibraryPath & { absolutePath: string } => !!p.absolutePath)
+      .map((p) => ({ id: p.id, label: p.label, absolutePath: p.absolutePath, addedAt: p.addedAt }));
+    writeSettings(FILE, rows);
   }
 
   get(id: string): LibraryPath | undefined {
@@ -125,6 +202,7 @@ class LibraryController {
   }
 
   private async persist(rec: LibraryPath): Promise<void> {
+    if (settingsFilesAvailable()) { this.writeFile(toJS(rec)); return; }
     // toJS: a MobX proxy can't be structured-cloned into IndexedDB. The handle
     // is passed through as-is (a real FSA handle is clonable; an FsHandle
     // clones to data and is rehydrated on load).
@@ -294,7 +372,8 @@ class LibraryController {
 
   /** Remove a library path. Invalidates any references relative to it. */
   async remove(id: string): Promise<void> {
-    await idbDelete(STORE_LIBRARY, id);
+    if (settingsFilesAvailable()) this.writeFile(undefined, id);
+    else await idbDelete(STORE_LIBRARY, id);
     runInAction(() => { this.paths = this.paths.filter((p) => p.id !== id); });
     this.mirror();
   }

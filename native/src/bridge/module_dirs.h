@@ -16,7 +16,7 @@
 //                  copy from an installed release must never shadow them — the
 //                  same safety rule resource_root.h follows for the install
 //                  record.
-//   3. MAPPED    — directories the user added (module_paths.json). Every
+//   3. MAPPED    — directories the user added (module-paths.json). Every
 //                  `*.wasm` in one is an effect bundle, and a mapped stem
 //                  REPLACES the same stem from anywhere below: that is how a
 //                  developer overrides a shipped bundle with a working copy.
@@ -60,28 +60,22 @@ inline const std::vector<std::string>& builtinBundleStems() {
  * The per-user modules directory the installer seeds:
  *   macOS   ~/Library/Application Support/Nano Modules/Modules
  *   Windows %APPDATA%\Nano Modules\Modules
- * `NANO_MODULES_DIR` overrides it (tests, and anyone who wants it elsewhere).
+ * i.e. `<dataRoot>/Modules` (nano_paths::dataRootPath, so NANO_DATA_DIR moves
+ * it too). `NANO_MODULES_DIR` overrides it (tests, and anyone who wants it elsewhere).
  * Empty when home can't be determined. Not created here.
  */
 inline std::string defaultModulesDirPath() {
   if (const char* e = getenv("NANO_MODULES_DIR")) return e;
-#ifdef _WIN32
-  const char* base = getenv("APPDATA");
-  if (!base || !*base) return {};
-  return nano_paths::joinPath(nano_paths::joinPath(base, "Nano Modules"), "Modules");
-#else
-  const char* home = getenv("HOME");
-  if (!home || !*home) return {};
-  return nano_paths::joinPath(home, "Library/Application Support/Nano Modules/Modules");
-#endif
+  const std::string root = nano_paths::dataRootPath();
+  return root.empty() ? std::string() : nano_paths::joinPath(root, "Modules");
 }
 
-/// `<supportDir>/module_paths.json` — the user's mapped directories, written by
-/// the desktop app. `NANO_MODULE_PATHS_FILE` overrides it.
+/// `<dataRoot>/Settings/module-paths.json` — the user's mapped directories,
+/// written by the desktop app. `NANO_MODULE_PATHS_FILE` overrides it.
 inline std::string modulePathsFilePath() {
   if (const char* e = getenv("NANO_MODULE_PATHS_FILE")) return e;
-  const std::string dir = nano_paths::supportDirPath();
-  return dir.empty() ? std::string() : nano_paths::joinPath(dir, "module_paths.json");
+  const std::string dir = nano_paths::settingsDirPath();
+  return dir.empty() ? std::string() : nano_paths::joinPath(dir, "module-paths.json");
 }
 
 /// The ENABLED mapped directories from `{ "paths": [{ "path", "enabled" }] }`,

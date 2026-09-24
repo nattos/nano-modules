@@ -21,33 +21,20 @@
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { dataRoot, settingsDir } = require('./data-root.cjs');
 
 /** Keep in step with builtinBundleStems() in module_dirs.h. */
 const BUILTIN_STEMS = ['core', 'text', 'richtext', 'nano', 'lights', 'legacy'];
 
-/** The platform's per-user app-data directory — what Electron calls
- *  app.getPath('appData'), computed without Electron. */
-function appDataDir() {
-  if (process.platform === 'win32') {
-    return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-  }
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support');
-  }
-  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-}
-
 /** The per-user modules directory. NANO_MODULES_DIR overrides, as natively. */
 function defaultModulesDir() {
-  return process.env.NANO_MODULES_DIR || path.join(appDataDir(), 'Nano Modules', 'Modules');
+  return process.env.NANO_MODULES_DIR || path.join(dataRoot(), 'Modules');
 }
 
-/** The mapped-directories config, beside the barrel's other sidecars. */
+/** The mapped-directories config — a shared settings file (data-root.cjs). */
 function modulePathsFile() {
-  return process.env.NANO_MODULE_PATHS_FILE ||
-    path.join(appDataDir(), 'NanoBarrel', 'module_paths.json');
+  return process.env.NANO_MODULE_PATHS_FILE || path.join(settingsDir(), 'module-paths.json');
 }
 
 /** Every configured row, enabled or not: [{ path, enabled }]. */
@@ -193,7 +180,7 @@ module.exports = {
   seedDefaultModules,
   versionLess,
   BUILTIN_STEMS,
-  appDataDir,
+
   defaultModulesDir,
   modulePathsFile,
   readModulePaths,

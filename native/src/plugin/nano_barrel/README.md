@@ -216,7 +216,7 @@ candidate checked for an actual `wasm/core.wasm`:
    alike, with nothing configured.
 4. The legacy in-bundle `Contents/Resources` — so an old deployment still runs.
 5. The Electron app's install record,
-   `~/Library/Application Support/NanoBarrel/electron_app.json`
+   `~/Library/Application Support/Nano Modules/install.json`
    (`%APPDATA%\NanoBarrel\` on Windows), written on every app launch.
 
 **Step 5 is last on purpose.** `tools/barrel_host_portability.sh` (a registered

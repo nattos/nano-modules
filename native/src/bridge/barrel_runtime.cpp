@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -24,6 +25,7 @@
 #include "bridge/library_paths.h"
 #include "bridge/module_dirs.h"
 #include "bridge/preview_codec.h"
+#include "bridge/settings_file.h"
 #include "bridge/ws_server.h"
 #include "platform/paths.h"
 #include "platform/scoped_pool.h"
@@ -112,27 +114,47 @@ nlohmann::json parseOrObject(const std::string& s) {
   return j.is_discarded() ? nlohmann::json::object() : j;
 }
 
-// Preview cadence + size caps (read once). Decouple the preview rate from the
-// render rate (default 30 Hz) and bound the readback long-edge. The main
-// edit-preview requests FULL SOURCE resolution (width/height 0 → the comp
-// size), so the cap's default (4096) is only a guard against absurd comp
-// sizes (and the NBPV u16 dimension fields); the per-route in-flight gate is
-// what keeps a slow pipeline from backing up. Drop NANO_BARREL_PREVIEW_MAXDIM
-// (e.g. 512) to trade preview sharpness for pipeline bytes. Both env-tunable.
-double previewIntervalSec() {
-  static double v = [] {
-    const char* e = getenv("NANO_BARREL_PREVIEW_HZ");
-    double hz = e ? atof(e) : 30.0;
-    return hz > 0.0 ? 1.0 / hz : 0.0;
-  }();
-  return v;
+// Preview cadence + size caps. Decouple the preview rate from the render rate
+// (default 30 Hz) and bound the readback long-edge. The main edit-preview
+// requests FULL SOURCE resolution (width/height 0 → the comp size), so the
+// cap's default (4096) is only a guard against absurd comp sizes (and the NBPV
+// u16 dimension fields); the per-route in-flight gate is what keeps a slow
+// pipeline from backing up. Drop the max dim (e.g. 512) to trade preview
+// sharpness for pipeline bytes.
+//
+// Both are LIVE settings: plugin.json's `previewHz` / `previewMaxDim`
+// (applyPluginSettings, polled at 1 Hz), overridden by the env vars
+// NANO_BARREL_PREVIEW_HZ / NANO_BARREL_PREVIEW_MAXDIM when those are set.
+std::atomic<double> gPreviewIntervalSec{1.0 / 30.0};
+std::atomic<uint32_t> gPreviewMaxDim{4096};
+
+double previewIntervalSec() { return gPreviewIntervalSec.load(std::memory_order_relaxed); }
+uint32_t previewMaxDim() { return gPreviewMaxDim.load(std::memory_order_relaxed); }
+
+/// A number from the env var if set, else from `settings[key]`, else nullopt.
+std::optional<double> knob(const char* env, const nlohmann::ordered_json& settings,
+                           const char* key) {
+  if (const char* e = getenv(env); e && *e) return atof(e);
+  if (settings.is_object() && settings.contains(key) && settings[key].is_number())
+    return settings[key].get<double>();
+  return std::nullopt;
 }
-uint32_t previewMaxDim() {
-  static uint32_t v = [] {
-    const char* e = getenv("NANO_BARREL_PREVIEW_MAXDIM");
-    int d = e ? atoi(e) : 4096;
-    return d > 0 ? (uint32_t)d : 4096u;
-  }();
+
+/// Apply plugin.json's live knobs (a missing key resets to the default, so
+/// deleting a line from the file undoes it).
+void applyPluginSettings(const nlohmann::ordered_json& settings) {
+  const double hz = knob("NANO_BARREL_PREVIEW_HZ", settings, "previewHz").value_or(30.0);
+  gPreviewIntervalSec.store(hz > 0.0 ? 1.0 / hz : 0.0, std::memory_order_relaxed);
+  const double dim = knob("NANO_BARREL_PREVIEW_MAXDIM", settings, "previewMaxDim").value_or(4096);
+  gPreviewMaxDim.store(dim >= 1.0 && dim <= 65535.0 ? (uint32_t)dim : 4096u,
+                       std::memory_order_relaxed);
+}
+
+/// plugin.json as it was when first asked — for the knobs that only take
+/// effect at startup (the preview transport's shape).
+const nlohmann::ordered_json& startupPluginSettings() {
+  static const nlohmann::ordered_json v =
+      nano_settings::WatchedFile(nano_settings::settingsFilePath("plugin.json")).read();
   return v;
 }
 
@@ -170,11 +192,12 @@ void stampPreviewTs(std::vector<uint8_t>& frameBytes, size_t slot, double ms) {
 // [10..11]u16 count, then the byte slice. The receiver collects a seq's
 // chunks (they arrive across different sockets, unordered) and feeds the
 // reassembled NBPV frame to the normal decoder. NANO_PREVIEW_CHUNK_KB
-// overrides the slice size (default 256KB).
+// overrides the slice size (default 256KB); plugin.json `previewChunkKB` too
+// (read at startup).
 size_t previewChunkBytes() {
   static size_t v = [] {
-    const char* e = getenv("NANO_PREVIEW_CHUNK_KB");
-    long kb = e ? atol(e) : 256;
+    const long kb = (long)knob("NANO_PREVIEW_CHUNK_KB", startupPluginSettings(),
+                               "previewChunkKB").value_or(256);
     return kb > 0 ? (size_t)kb * 1024 : (size_t)(256 * 1024);
   }();
   return v;
@@ -187,11 +210,12 @@ size_t previewChunkBytes() {
 // are sliced into NBPC chunks striped round-robin and the lanes' flush loops
 // run in parallel. The main bridge socket NEVER carries binary frames; the
 // editor connects to every advertised lane and reassembles.
-// NANO_PREVIEW_FANOUT overrides the lane count (default 8, clamp 1..16).
+// NANO_PREVIEW_FANOUT overrides the lane count (default 8, clamp 1..16), as
+// does plugin.json `previewFanout` (read at startup).
 int previewFanoutLanes() {
   static int v = [] {
-    const char* e = getenv("NANO_PREVIEW_FANOUT");
-    int n = e ? atoi(e) : 8;
+    int n = (int)knob("NANO_PREVIEW_FANOUT", startupPluginSettings(),
+                      "previewFanout").value_or(8);
     if (n < 1) n = 1;
     return n > 16 ? 16 : n;
   }();
@@ -308,21 +332,75 @@ struct BarrelRuntime::Impl {
     nano_midi::MidiHost::instance().setAliases(all);
   }
 
-  static std::string supportDir() { return nano_paths::supportDir(); }
+  // The shared settings files (bridge/settings_file.h). Opened in acquire();
+  // polled from the 1 Hz housekeeping below.
+  nano_settings::WatchedFile midiFile;
+  nano_settings::WatchedFile libraryFile;
+  nano_settings::WatchedFile pluginFile;
+  std::chrono::steady_clock::time_point lastSettingsPoll{};
 
-  static std::string midiSidecarPath() {
-    const std::string dir = supportDir();
-    return dir.empty() ? std::string() : dir + "/midi_devices.json";
+  void openSettingsFiles() {
+    midiFile = nano_settings::WatchedFile(nano_settings::settingsFilePath("midi-devices.json"));
+    libraryFile = nano_settings::WatchedFile(nano_settings::settingsFilePath("library-paths.json"));
+    pluginFile = nano_settings::WatchedFile(nano_settings::settingsFilePath("plugin.json"));
   }
 
-  static std::string librarySidecarPath() {
-    const std::string dir = supportDir();
-    return dir.empty() ? std::string() : dir + "/library_paths.json";
+  /// Take midi-devices.json as the library: into the bridge doc (so a
+  /// connected editor reads the same thing) and the MIDI host. An empty array
+  /// never replaces a non-empty library — `[]` is what a fresh profile looks
+  /// like, not anyone's intent (the web applies the same rule).
+  void adoptMidiFile(const std::string& bytes, BridgeServer& server) {
+    auto parsed = nano_settings::WatchedFile::parse(bytes);
+    if (!parsed.is_array()) {
+      BRT_LOG("settings: midi-devices.json is not a JSON array; ignored");
+      return;
+    }
+    auto current = nlohmann::json::parse(server.get_at("/global/midi_devices"), nullptr, false);
+    if (parsed.empty() && current.is_array() && !current.empty()) return;
+    const std::string compact = parsed.dump();
+    if (current.is_array() && nlohmann::json::parse(compact) == current) return;
+    server.set_at("/global/midi_devices", compact);
+    lastMidiDevicesJson = server.get_at("/global/midi_devices");
+    nano_midi::MidiHost::instance().setLibrary(nlohmann::json::parse(compact));
+    BRT_LOG("settings: midi library from file, %d device(s)", (int)parsed.size());
+  }
+
+  /// Take library-paths.json as the resolver's roots.
+  void adoptLibraryFile(const std::string& bytes) {
+    auto parsed = nano_settings::WatchedFile::parse(bytes);
+    if (!parsed.is_array()) {
+      BRT_LOG("settings: library-paths.json is not a JSON array; ignored");
+      return;
+    }
+    nano_assets::LibraryPaths::instance().setRoots(nlohmann::json::parse(parsed.dump()));
+    BRT_LOG("settings: %d library root(s) from file", (int)parsed.size());
+  }
+
+  /// Every settings file edited from outside (a desktop app, a person, an
+  /// agent) since the last look — 1 Hz, and a stat per file when idle.
+  void pollSettingsFiles(BridgeServer& server) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastSettingsPoll <= std::chrono::seconds(1)) return;
+    lastSettingsPoll = now;
+    if (auto b = midiFile.poll()) adoptMidiFile(*b, server);
+    if (auto b = libraryFile.poll()) adoptLibraryFile(*b);
+    if (auto b = pluginFile.poll()) {
+      auto parsed = nano_settings::WatchedFile::parse(*b);
+      if (parsed.is_object()) {
+        applyPluginSettings(parsed);
+        BRT_LOG("settings: plugin.json applied (preview %.1f Hz, max %u px)",
+                previewIntervalSec() > 0 ? 1.0 / previewIntervalSec() : 0.0,
+                previewMaxDim());
+      } else {
+        BRT_LOG("settings: plugin.json is not a JSON object; ignored");
+      }
+    }
   }
 
   /// Keep the native MIDI host fed: the device library rides
   /// /global/midi_devices (web-mirrored; 1 Hz poll — a few KB, don't dump it
-  /// per frame; persisted to a sidecar for headless restarts) and the web's
+  /// per frame; written through to Settings/midi-devices.json, which is also
+  /// how headless restarts and external edits reach it) and the web's
   /// simulation overrides ride /global/midi_sim (small + latency-sensitive —
   /// polled at up to ~120 Hz, dropped when no client is connected so a
   /// vanished editor can't pin stale overrides).
@@ -336,11 +414,11 @@ struct BarrelRuntime::Impl {
         auto parsed = nlohmann::json::parse(devices, nullptr, false);
         if (parsed.is_array()) {
           nano_midi::MidiHost::instance().setLibrary(parsed);
-          const std::string path = midiSidecarPath();
-          if (!path.empty()) {
-            std::ofstream f(path, std::ios::trunc);
-            if (f.good()) f << devices;
-          }
+          // Write through — but never `[]` over a non-empty file: an editor
+          // on a fresh profile pushes an empty library before it adopts ours.
+          const auto onDisk = midiFile.read();
+          if (!(parsed.empty() && onDisk.is_array() && !onDisk.empty()))
+            midiFile.write(nlohmann::ordered_json::parse(devices, nullptr, false));
         }
       }
     }
@@ -357,10 +435,12 @@ struct BarrelRuntime::Impl {
     }
   }
 
-  /// Keep the library-path resolver fed: the web mirrors its roots (those it
-  /// knows an absolute path for) to /global/library_paths. Same 1 Hz /
-  /// JSON-compare / sidecar shape as the MIDI library — a document's
-  /// library-relative media refs are useless without these.
+  /// Keep the library-path resolver fed. Its truth is
+  /// Settings/library-paths.json (the arrangement app writes it; see
+  /// pollSettingsFiles). A BROWSER editor can't reach that file, so it pushes
+  /// its roots to /global/library_paths instead; those are MERGED into the
+  /// file by id — a browser must not erase the desktop's adopted libraries,
+  /// and ids are per-profile UUIDs, so they don't collide.
   void pollLibraryPaths(BridgeServer& server) {
     const auto now = std::chrono::steady_clock::now();
     if (now - lastLibraryPathsPoll <= std::chrono::seconds(1)) return;
@@ -368,14 +448,11 @@ struct BarrelRuntime::Impl {
     std::string rows = server.get_at("/global/library_paths");
     if (rows == lastLibraryPathsJson) return;
     lastLibraryPathsJson = rows;
-    auto parsed = nlohmann::json::parse(rows, nullptr, false);
-    if (!parsed.is_array()) return;
-    nano_assets::LibraryPaths::instance().setRoots(parsed);
-    const std::string path = librarySidecarPath();
-    if (!path.empty()) {
-      std::ofstream f(path, std::ios::trunc);
-      if (f.good()) f << rows;
-    }
+    auto parsed = nlohmann::ordered_json::parse(rows, nullptr, false);
+    if (!parsed.is_array() || parsed.empty()) return;
+    const auto merged = nano_settings::upsertById(libraryFile.read(), parsed);
+    libraryFile.write(merged);
+    nano_assets::LibraryPaths::instance().setRoots(nlohmann::json::parse(merged.dump()));
   }
 
   // Last-published sidechannel-bus metadata version. The bus bumps it only on
@@ -1086,50 +1163,21 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
   impl_->rt->drainConsoleLog();
   impl_->usable = (total > 0);
 
-  // Native MIDI host: start CoreMIDI and seed the device library from the
-  // persisted sidecar so headless sessions (no web editor connected) still
-  // map hardware to instances. The web's live mirror (/global/midi_devices,
-  // via pollMidi) overwrites this as soon as an editor pushes.
+  // Native MIDI host + library roots: seed both from the shared settings
+  // files, so headless sessions (no editor connected) still map hardware and
+  // resolve media. Later edits to the files — and the web's live mirrors —
+  // arrive through pollSettingsFiles / pollMidi / pollLibraryPaths.
+  impl_->openSettingsFiles();
+  if (auto b = impl_->pluginFile.poll()) {
+    applyPluginSettings(nano_settings::WatchedFile::parse(*b));
+  } else {
+    applyPluginSettings(nlohmann::ordered_json::object());   // env / defaults
+  }
   if (impl_->usable) {
     auto& server = BridgeServer::instance();
-    const std::string existing = server.get_at("/global/midi_devices");
-    auto existingParsed = nlohmann::json::parse(existing, nullptr, false);
-    if (!existingParsed.is_array()) {
-      const std::string path = Impl::midiSidecarPath();
-      std::ifstream f(path);
-      if (f.good()) {
-        std::string blob((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
-        auto parsed = nlohmann::json::parse(blob, nullptr, false);
-        if (parsed.is_array()) {
-          server.set_at("/global/midi_devices", blob);
-          nano_midi::MidiHost::instance().setLibrary(parsed);
-          impl_->lastMidiDevicesJson = server.get_at("/global/midi_devices");
-          BRT_LOG("midi: seeded %d device(s) from sidecar", (int)parsed.size());
-        }
-      }
-    }
+    if (auto b = impl_->midiFile.poll()) impl_->adoptMidiFile(*b, server);
     nano_midi::MidiHost::instance().start();
-
-    // Same seeding story for the library roots: without an editor connected
-    // there's no mirror, so a headless restart would resolve no media at all.
-    const std::string libExisting = server.get_at("/global/library_paths");
-    auto libExistingParsed = nlohmann::json::parse(libExisting, nullptr, false);
-    if (!libExistingParsed.is_array()) {
-      const std::string path = Impl::librarySidecarPath();
-      std::ifstream f(path);
-      if (f.good()) {
-        std::string blob((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
-        auto parsed = nlohmann::json::parse(blob, nullptr, false);
-        if (parsed.is_array()) {
-          server.set_at("/global/library_paths", blob);
-          nano_assets::LibraryPaths::instance().setRoots(parsed);
-          impl_->lastLibraryPathsJson = server.get_at("/global/library_paths");
-          BRT_LOG("library: seeded %d root(s) from sidecar", (int)parsed.size());
-        }
-      }
-    }
+    if (auto b = impl_->libraryFile.poll()) impl_->adoptLibraryFile(*b);
   }
 
   BRT_LOG("acquired: %d effect(s) loaded", total);
@@ -1288,6 +1336,7 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // MIDI device values → the executor's external-scalar table. The host's
   // version bumps on hardware/sim/library change; a static table costs one
   // integer compare per frame.
+  impl_->pollSettingsFiles(server);
   impl_->pollMidi(server);
   impl_->pollLibraryPaths(server);
   {

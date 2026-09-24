@@ -17,6 +17,7 @@
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { dataRoot } = require('./data-root.cjs');
 
 /** A directory only counts as a root if it actually carries the payload. */
 function looksLikeRoot(dir) {
@@ -76,12 +77,12 @@ function writeInstallRecord(root) {
   if (!root) return null;
   if (!app.isPackaged && process.env.NANO_WRITE_INSTALL_RECORD !== '1') return null;
   try {
-    // app.getPath('appData') is ~/Library/Application Support on macOS and
-    // %APPDATA% on Windows — the same directories nano_paths::supportDir()
-    // computes, so neither side has to know about the other's convention.
-    const dir = path.join(app.getPath('appData'), 'NanoBarrel');
+    // The shared per-user data root (data-root.cjs) — the directory
+    // nano_paths::dataRootPath() computes, so neither side has to know about
+    // the other's convention.
+    const dir = dataRoot();
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, 'electron_app.json');
+    const file = path.join(dir, 'install.json');
     fs.writeFileSync(file, JSON.stringify({
       appPath: app.getAppPath(),
       exePath: process.execPath,

@@ -7,6 +7,7 @@
  * - Engine commands (forwarded to worker via EngineProxy)
  */
 
+import { readSection, settingsFilesAvailable, SETTINGS_FILES, writeSection } from './settings-files';
 import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import type { Patch } from 'immer';
 import { appState } from './app-state';
@@ -1492,6 +1493,37 @@ export class AppController {
     });
     // No save here — this IS the load. Persistence stays disabled until
     // boot finishes calling `enablePersistence()`.
+  }
+
+  /**
+   * The settings file was edited from outside the app (desktop only:
+   * settings-files.ts watches `remote-control.json`). Applied like a load —
+   * no save back, the file already says this — plus the live side effects
+   * the matching setters would have run. The mode and the surface-level
+   * session keys (`appMode`, `barrelRemoteEnabled`) take effect on the next
+   * launch, as they do when set in-app.
+   */
+  applyExternalUserSettings(settings: UserSettings) {
+    const before = appState.local.userSettings;
+    const pausedChanged = before.paused !== settings.paused;
+    // The running surface is what it is; a stale file value must not flip it.
+    const next = { ...settings, appMode: before.appMode };
+    runInAction(() => {
+      appState.local.userSettings = next;
+      if (settings.activeTab !== before.activeTab) {
+        appState.local.activeTab = settings.activeTab === 'create' ? 'organize' : settings.activeTab;
+      }
+      if (settings.editingSketchId !== before.editingSketchId) {
+        appState.local.editingSketchId = settings.editingSketchId ?? null;
+      }
+    });
+    if (pausedChanged) {
+      this.engine?.setPaused(settings.paused);
+      this.inputManager.setPaused(settings.paused);
+    }
+    if (settings.ideLeftTab !== before.ideLeftTab) {
+      this.engine?.setDebugMode(settings.ideLeftTab === 'debug_info');
+    }
   }
 
   /**
@@ -3080,7 +3112,7 @@ export class AppController {
     let next: string | null = null;
     let source = 'none';
     try {
-      const saved = localStorage.getItem(this.selectedKeyStorageKey());
+      const saved = this.loadSelectedKey();
       if (has(saved)) { next = saved; source = 'localStorage'; }
       else if (saved) console.log(`[live-cache] setBarrelInstances: saved key=${saved} not in current list [${list.map(i => i.key).join(', ')}]`);
     } catch { /* ignore */ }
@@ -3097,7 +3129,7 @@ export class AppController {
       appState.local.selectedBarrelKey = key;
       appState.local.selectedTriggerClip = null;
     });
-    try { localStorage.setItem(this.selectedKeyStorageKey(), key); } catch { /* ignore */ }
+    try { this.saveSelectedKey(key); } catch { /* ignore */ }
     this.barrelSelectHandler?.(key);
   }
 
@@ -3105,6 +3137,27 @@ export class AppController {
    *  session must not clobber (or adopt) the live barrel selection. */
   private selectedKeyStorageKey(): string {
     return this.playgroundMode ? 'playground.selectedKey' : 'barrel.selectedKey';
+  }
+
+  /** Desktop: the `selectedInstance` section of remote-control.json, keyed
+   *  `barrel` / `playground`; the browser keeps localStorage. */
+  private loadSelectedKey(): string | null {
+    if (settingsFilesAvailable()) {
+      const sel = readSection<Record<string, string>>(SETTINGS_FILES.remoteControl, 'selectedInstance');
+      return sel?.[this.playgroundMode ? 'playground' : 'barrel'] ?? null;
+    }
+    return localStorage.getItem(this.selectedKeyStorageKey());
+  }
+
+  private saveSelectedKey(key: string): void {
+    if (settingsFilesAvailable()) {
+      const file = SETTINGS_FILES.remoteControl;
+      const sel = { ...(readSection<Record<string, string>>(file, 'selectedInstance') ?? {}) };
+      sel[this.playgroundMode ? 'playground' : 'barrel'] = key;
+      writeSection(file, 'selectedInstance', sel);
+      return;
+    }
+    localStorage.setItem(this.selectedKeyStorageKey(), key);
   }
 
   /**

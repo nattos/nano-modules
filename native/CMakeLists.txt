@@ -444,6 +444,11 @@ endif()
 # below don't each need a line; nothing in tests/ shadows a real header.
 include_directories(${CMAKE_SOURCE_DIR}/tests)
 
+# A private per-user data root for every test that loads the shared runtime:
+# it reads and writes Settings/ (bridge/settings_file.h), and a test run must
+# never touch — or be steered by — the developer's own settings.
+set(NANO_TEST_DATA_ROOT "${CMAKE_BINARY_DIR}/test-data-root")
+
 if(WIN32)
   # Catch2 seeds its RNG from std::random_device, which libc++ implements on
   # Windows with BCryptGenRandom. Most test targets drag bcrypt in through
@@ -517,7 +522,7 @@ if(NANO_HAS_GPU_BACKEND AND TARGET Catch2::Catch2WithMain AND
   # live Resolume or a running editor either.
   catch_discover_tests(test_barrel_render PROPERTIES
     RUN_SERIAL TRUE
-    ENVIRONMENT "NANO_BRIDGE_PORT=8171"
+    ENVIRONMENT "NANO_BRIDGE_PORT=8171;NANO_DATA_DIR=${NANO_TEST_DATA_ROOT}"
     TIMEOUT 120)
 
   # The shared-surface preview transport (NBPS) through the real plugin path,
@@ -535,7 +540,8 @@ if(NANO_HAS_GPU_BACKEND AND TARGET Catch2::Catch2WithMain AND
       BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
       BARREL_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
     catch_discover_tests(test_barrel_preview_surface PROPERTIES
-      RUN_SERIAL TRUE TIMEOUT 120)
+      RUN_SERIAL TRUE TIMEOUT 120
+      ENVIRONMENT "NANO_DATA_DIR=${NANO_TEST_DATA_ROOT}")
   endif()
 endif()
 
@@ -546,7 +552,8 @@ target_compile_definitions(test_bridge_loader PRIVATE
   BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
 )
 
-catch_discover_tests(test_bridge_loader)
+catch_discover_tests(test_bridge_loader PROPERTIES
+  ENVIRONMENT "NANO_DATA_DIR=${NANO_TEST_DATA_ROOT}")
 
 # Shared resource root. Header-only, so this needs no library beyond Catch2 —
 # and it deliberately lives OUTSIDE if(APPLE) because platform/resource_root.h
@@ -872,6 +879,13 @@ target_include_directories(test_library_paths PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_library_paths PRIVATE
   nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_library_paths)
+
+# The shared settings files (header-only: platform/paths.h + settings_file.h).
+add_executable(test_settings_file tests/test_settings_file.cpp)
+target_include_directories(test_settings_file PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_settings_file PRIVATE
+  nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_settings_file)
 
 add_executable(test_observer_registry tests/test_observer_registry.cpp)
 target_link_libraries(test_observer_registry PRIVATE state_system Catch2::Catch2WithMain)
@@ -2054,7 +2068,8 @@ if(NANO_HAS_GPU_BACKEND)
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/barrel_host_portability.sh
             ${CMAKE_CURRENT_BINARY_DIR})
   set_tests_properties(barrel_host_portability PROPERTIES
-    LABELS "integration" SKIP_RETURN_CODE 77 TIMEOUT 180)
+    LABELS "integration" SKIP_RETURN_CODE 77 TIMEOUT 180
+    ENVIRONMENT "NANO_DATA_DIR=${NANO_TEST_DATA_ROOT}")
 
   # --- preview_bench: simulated-editor benchmark for the barrel preview path ---
   # Drives bridge_executor_render (the exact FFGL entry: rail publish, capture

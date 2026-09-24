@@ -19,7 +19,7 @@ import { appState } from './state/app-state';
 import { appController } from './state/controller';
 import { EngineProxy } from './engine-proxy';
 import { initFontProvider, requestFont } from './font-access';
-import { loadUserSettings } from './state/user-settings';
+import { loadUserSettings, watchUserSettings } from './state/user-settings';
 import { loadAllProjects } from './state/project-store';
 import { midiController } from './state/midi-controller';
 import { artnetClient } from './artnet/artnet-client';
@@ -150,6 +150,9 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     // Route through the controller so the engine AND the IDE video preview both
     // start paused (the preview pump may begin in enablePersistence() below).
     if (settings.paused) appController.setPaused(true);
+    // Desktop: the settings file is also edited from outside (by hand, by an
+    // agent) — apply those edits live. A no-op in the browser.
+    watchUserSettings((next) => appController.applyExternalUserSettings(next));
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
   }

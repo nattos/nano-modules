@@ -79,7 +79,7 @@ export function electronIpc(): any | undefined {
 }
 
 /** `require` without letting Vite see a static module specifier. */
-function nodeRequire<T = any>(mod: string): T | undefined {
+export function nodeRequire<T = any>(mod: string): T | undefined {
   const req = (globalThis as any).require as ((m: string) => T) | undefined;
   if (typeof req !== 'function') return undefined;
   try {

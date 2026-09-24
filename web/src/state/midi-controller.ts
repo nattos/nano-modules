@@ -25,7 +25,7 @@ import type { ControlMapping, DeviceInstance, PhysicalIdentity } from '../midi/m
 import { buildExternalScalars, collectAliasEdges } from '../midi/wire-lowering';
 import { aliasGroups } from '../midi/alias-groups';
 import { appState } from './app-state';
-import { loadDeviceLibrary, saveDeviceInstance } from './midi-device-store';
+import { loadDeviceLibrary, saveDeviceInstance, validDeviceRows, watchDeviceLibrary } from './midi-device-store';
 
 // Driver modules self-register their templates on import. Main thread only.
 import '../midi/drivers/mft';
@@ -77,9 +77,27 @@ export class MidiController {
   async loadLibrary(): Promise<void> {
     const rows = await loadDeviceLibrary();
     runInAction(() => { appState.local.midi.library = rows; });
+    // Desktop: midi-devices.json is shared with the plugin and editable from
+    // outside — adopt such edits live. A no-op in the browser.
+    this.unwatchLibrary ??= watchDeviceLibrary((next) => this.reloadLibrary(next));
     // The Devices tab can mount (and init MIDI) BEFORE this IDB read lands —
     // that first match pass saw an empty library and nothing re-runs it
     // (no statechange fires for a library load). Re-match explicitly now.
+    if (this.manager.initialized) this.manager.refreshMatching();
+    else if (rows.length > 0) void this.initMidi();
+  }
+
+  private unwatchLibrary: (() => void) | null = null;
+
+  /**
+   * The library file changed on disk by someone else: take its rows as the
+   * library. No save back (the file already says this) and no bridge push —
+   * the plugin reads the same file. An empty array is ignored, as the plugin
+   * ignores it: `[]` is what a fresh profile looks like, not a user's intent.
+   */
+  reloadLibrary(rows: DeviceInstance[]): void {
+    if (rows.length === 0 && !this.libraryIsEmpty()) return;
+    runInAction(() => { appState.local.midi.library = rows; });
     if (this.manager.initialized) this.manager.refreshMatching();
     else if (rows.length > 0) void this.initMidi();
   }
@@ -315,15 +333,9 @@ export class MidiController {
    */
   importLibrary(rows: unknown): number {
     if (!Array.isArray(rows) || !this.libraryIsEmpty()) return 0;
-    const valid = rows.filter((r): r is DeviceInstance =>
-      !!r && typeof r === 'object' &&
-      typeof (r as { id?: unknown }).id === 'string' &&
-      typeof (r as { templateId?: unknown }).templateId === 'string');
+    const valid = validDeviceRows(rows);
     if (valid.length === 0) return 0;
-    runInAction(() => {
-      appState.local.midi.library.push(
-        ...valid.map(v => ({ ...v, identities: v.identities ?? [], config: v.config ?? {} })));
-    });
+    runInAction(() => { appState.local.midi.library.push(...valid); });
     for (const inst of appState.local.midi.library) this.schedulePersist(inst);
     this.manager.refreshMatching();
     return valid.length;

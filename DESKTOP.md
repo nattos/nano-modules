@@ -102,12 +102,13 @@ a folder the app, the dev server and the native plugin all scan the same way —
 |---|---|---|
 | `<root>/wasm/` | the built-ins (a dev tree: all six repo bundles) | lowest |
 | **Modules folder** — `~/Library/Application Support/Nano Modules/Modules`, `%APPDATA%\Nano Modules\Modules` | nano, lights, legacy, copied from `extra-modules/` on first launch of each new app version | fills in only what `wasm/` lacks, so a seeded release copy never shadows a dev tree's build |
-| Folders added in **Settings → Modules** (`NanoBarrel/module_paths.json`) | your own bundles | replaces the same name from anywhere below; later folders win |
+| Folders added in **Settings → Modules** (`Settings/module-paths.json`) | your own bundles | replaces the same name from anywhere below; later folders win |
 
 A mapped folder hot-reloads: rebuild a bundle into it and the running app swaps
 it in. Resolume reads the folders when it loads the plugin, so it needs a
 restart to see a change. `NANO_MODULES_DIR` and `NANO_MODULE_PATHS_FILE`
-override both locations (tests, CI).
+override both locations (tests, CI); `NANO_DATA_DIR` moves the whole data root
+(see [Settings files](#settings-files)).
 
 Launch either app once after installing, so the modules folder is seeded before
 Resolume first loads the plugin.
@@ -124,8 +125,8 @@ for a real `wasm/core.wasm`:
    plugin alike, with nothing configured.
 4. The legacy in-bundle `Contents/Resources`, so an old deployment still runs.
 5. The app's install record, written on every launch:
-   `~/Library/Application Support/NanoBarrel/electron_app.json`
-   (`%APPDATA%\NanoBarrel\` on Windows).
+   `~/Library/Application Support/Nano Modules/install.json`
+   (`%APPDATA%\Nano Modules\` on Windows).
 
 **Step 5 is last deliberately.** `barrel_host_portability` (a ctest) and
 `soak_test.py` run the dev-built bundle with no env override and inherit
@@ -283,9 +284,63 @@ first and then the library ref, matching on the recorded label when the id is
 unknown. It can't use `rel`, because the executor receives JSON and has no
 folder to resolve against.
 
-Remote Control no longer mirrors its library list to the barrel. It has no
-library UI, and its storage is separate from the arrangement app's, so the
-list was always empty and would have wiped roots pushed by a browser tab.
+Remote Control doesn't mirror a library list to the barrel: the plugin reads
+the arrangement app's adopted libraries straight from
+`Settings/library-paths.json` (below). A browser tab still pushes its roots
+over the bridge, and the plugin merges those into the file by id.
+
+---
+
+## Settings files
+
+The desktop apps and the FFGL plugin keep their settings in ONE folder, a JSON
+file per surface plus files for what they share:
+
+```
+<appData>/Nano Modules/          ~/Library/Application Support/…, %APPDATA%\…
+  Modules/                       effect bundles (above)
+  Settings/
+    arrangement.json             NanoModules: {layout, workspace}
+    remote-control.json          Remote Control: {settings, selectedInstance, inputVideo}
+    plugin.json                  NanoBarrel: {previewHz, previewMaxDim, previewFanout, previewChunkKB}
+    midi-devices.json            shared: Remote Control + plugin (+ a browser, via the plugin)
+    library-paths.json           shared: arrangement + plugin
+    module-paths.json            shared: everyone
+    README.md                    what each key does — written by the apps
+  install.json                   where the packaged app lives (resource_root.h step 5)
+```
+
+**Edit them from outside — by hand, a script, a coding agent — and a running
+app or plugin applies the edit within about a second.** The apps watch the
+folder (`src/state/settings-files.ts`); the plugin checks each file's
+mtime+size in its 1 Hz housekeeping (`bridge/settings_file.h`). The two halves
+follow the same rules, pinned by `settings-files.test.ts` and
+`test_settings_file.cpp`:
+
+- Writes are atomic (`<name>.tmp`, then rename) and pretty-printed identically,
+  so a reader never sees half a file.
+- A write equal to what was last read or written is skipped, and a change equal
+  to it is ignored — our own saves never come back as "external" edits, and an
+  edit the app merely applies is never written back.
+- Invalid JSON is ignored and the current values stay. Top-level keys the app
+  doesn't own survive its next save.
+- An empty MIDI library never replaces a non-empty one, on either side: `[]` is
+  what a fresh profile looks like, not anyone's intent. That's the failure the
+  old per-app sidecars had.
+
+What stays in the browser's storage: documents and caches (projects, the live
+cache, playground instances, media handles, thumbnails, decoder profiles), per-
+sketch scroll state, and field help text. The browser build keeps everything in
+IndexedDB as before — it has no folder to write to.
+
+`NANO_DATA_DIR` moves the whole tree. Every test that launches an app or loads
+the plugin sets it (the ctest targets that load the runtime, the Electron
+suites), so no test run touches — or is steered by — your own settings.
+
+Not live, by design: `appMode` and `barrelRemoteEnabled` (they choose how the
+app boots), `lastFile`, `selectedInstance`, `inputVideo`, the preview transport's
+shape (`previewFanout`, `previewChunkKB`) and the plugin's `module-paths.json`
+(bundles don't hot-swap inside Resolume).
 
 ---
 
@@ -350,8 +405,9 @@ the result splits cleanly in two.
 ```
 
 So on Windows: the resource root resolves, the install record lands in
-`%APPDATA%\NanoBarrel\` (the same directory `nano_paths::supportDir()`
-computes, with neither side told about the other), the custom scheme is
+`%APPDATA%\NanoBarrel\` (the same directory the native side computed, with
+neither side told about the other — it has since moved to
+`%APPDATA%\Nano Modules\install.json`), the custom scheme is
 registered and serving, and the renderer boots and runs the app's own JavaScript.
 
 ### CrossOver *does* accelerate graphics — just not through D3D

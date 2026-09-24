@@ -16,6 +16,12 @@
 const productArg = process.argv.find((a) => a.startsWith('--nano-product='));
 window.nanoProduct = productArg ? productArg.slice('--nano-product='.length) : undefined;
 
+// The shared settings folder (electron/data-root.cjs). Read by
+// src/state/settings-files.ts; its absence is what keeps the browser build on
+// IndexedDB.
+const settingsArg = process.argv.find((a) => a.startsWith('--nano-settings-dir='));
+window.nanoSettingsDir = settingsArg ? settingsArg.slice('--nano-settings-dir='.length) : undefined;
+
 process.once('loaded', () => {
   console.log(`[electron] renderer running with node integration (electron ${process.versions.electron})`);
 });

@@ -46,7 +46,9 @@ function runElectronProbe(
       [scriptPath],
       {
         cwd: resolve(__dirname, '..'),
-        env: { ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '', NANO_PRODUCT: product },
+        // A private settings folder: never the developer's own.
+        env: { ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '', NANO_PRODUCT: product,
+               NANO_DATA_DIR: join(dir, 'data') },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );

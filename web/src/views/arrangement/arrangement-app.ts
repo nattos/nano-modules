@@ -12,6 +12,9 @@
  *   └───────────────────────────────────────────────┴──────┴──┘
  */
 
+import { libraryPaths } from '../../state/library-paths';
+import { watchLayout } from './workspace/layout-store';
+import { watchWorkspace } from './workspace/workspace-store';
 import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
@@ -235,12 +238,24 @@ export class ArrangementApp extends MobxLitElement {
     // Restore the saved workspace layout (panels/tabs/modes + last file) BEFORE
     // mounting, so the remembered file re-opens; then re-open the last workspace
     // (silently if permission persists, else on the first user gesture).
-    void store.restoreLayout().then(() => store.autoMountRememberedWorkspace());
+    void store.restoreLayout().then(() => {
+      void store.autoMountRememberedWorkspace();
+      // Desktop: arrangement.json is also edited from outside (by hand, by an
+      // agent) — apply those edits live. No-ops in the browser.
+      this.unwatchSettings.push(
+        watchLayout((l) => store.applyExternalLayout(l)),
+        watchWorkspace((w) => { void store.applyExternalWorkspace(w); }),
+        libraryPaths.onExternalChange(() => { void store.relinkMedia(); }),
+      );
+    });
     this.installBackTrap();
   }
 
+  private unwatchSettings: Array<() => void> = [];
+
   disconnectedCallback() {
     super.disconnectedCallback();
+    for (const u of this.unwatchSettings.splice(0)) u();
     window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('pointerdown', this.onPointerDownCapture, true);

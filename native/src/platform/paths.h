@@ -14,6 +14,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <iterator>
 #include <string>
@@ -200,45 +201,146 @@ inline std::string imagePathContaining(const void* addr) {
 inline bool ensureDir(const std::string& p) {
   if (p.empty()) return false;
 #ifdef _WIN32
-  return _mkdir(p.c_str()) == 0 || dirExists(p);
+  return _wmkdir(widen(p).c_str()) == 0 || dirExists(p);
 #else
   return ::mkdir(p.c_str(), 0755) == 0 || dirExists(p);
 #endif
 }
 
-/**
- * Our per-user WRITABLE state directory:
- *   macOS   ~/Library/Application Support/NanoBarrel
- *   Windows %APPDATA%\NanoBarrel
- * Empty when the environment doesn't say where home is.
- *
- * This is where the MIDI-device and library-path sidecars live (see
- * bridge/barrel_runtime.mm), and where the Electron app records its install
- * location. It is NOT where read-only resources live — that's
- * platform/resource_root.h.
- *
- * Deliberately the SAME name on both platforms and the same directory Electron
- * reaches via `app.getPath('appData')`, so the two halves need no negotiation.
- */
-inline std::string supportDirPath() {
+/// The platform's per-user app-data directory -- what Electron calls
+/// `app.getPath('appData')`. Empty when the environment doesn't say.
+inline std::string appDataDirPath() {
 #ifdef _WIN32
   const char* base = getenv("APPDATA");
-  if (!base || !*base) return {};
-  return joinPath(base, "NanoBarrel");
+  return base && *base ? std::string(base) : std::string();
 #else
   const char* home = getenv("HOME");
   if (!home || !*home) return {};
-  return joinPath(joinPath(home, "Library/Application Support"), "NanoBarrel");
+#ifdef __APPLE__
+  return joinPath(home, "Library/Application Support");
+#else
+  const char* xdg = getenv("XDG_CONFIG_HOME");
+  return xdg && *xdg ? std::string(xdg) : joinPath(home, ".config");
+#endif
 #endif
 }
 
-/// As above, created on demand. Readers should prefer `supportDirPath()` —
-/// resolving a resource root should not leave a directory behind in the home
-/// folder of every host process that merely loads the plugin.
-inline std::string supportDir() {
-  const std::string dir = supportDirPath();
-  if (!dir.empty()) ensureDir(dir);
+/**
+ * The per-user DATA ROOT shared by the desktop apps and every plugin:
+ *   macOS   ~/Library/Application Support/Nano Modules
+ *   Windows %APPDATA%\Nano Modules
+ * `NANO_DATA_DIR` overrides it (every test sets it). Empty when the
+ * environment doesn't say where home is.
+ *
+ *   Modules/    effect bundles (bridge/module_dirs.h)
+ *   Settings/   one JSON file per surface plus the shared ones -- the MIDI
+ *               device library, library paths, mapped module directories,
+ *               plugin.json (bridge/settings_file.h)
+ *   install.json where the packaged app lives (platform/resource_root.h)
+ *
+ * The JS half is web/electron/data-root.cjs -- KEEP THE TWO IN STEP. Read-only
+ * resources are elsewhere: platform/resource_root.h.
+ */
+inline std::string dataRootPath() {
+  if (const char* e = getenv("NANO_DATA_DIR"); e && *e) return e;
+  const std::string base = appDataDirPath();
+  return base.empty() ? std::string() : joinPath(base, "Nano Modules");
+}
+
+/// `<dataRoot>/Settings`, not created. Readers should use this -- merely
+/// loading the plugin must not leave directories behind in every host's home.
+inline std::string settingsDirPath() {
+  const std::string root = dataRootPath();
+  return root.empty() ? std::string() : joinPath(root, "Settings");
+}
+
+/// As above, created on demand (for writers).
+inline std::string settingsDir() {
+  const std::string dir = settingsDirPath();
+  if (!dir.empty()) {
+    ensureDir(dataRootPath());
+    ensureDir(dir);
+  }
   return dir;
+}
+
+/// A whole file as bytes; false when it can't be opened. UTF-8 path.
+inline bool readFileBytes(const std::string& p, std::string& out) {
+  if (p.empty()) return false;
+#ifdef _WIN32
+  FILE* f = _wfopen(widen(p).c_str(), L"rb");
+#else
+  FILE* f = fopen(p.c_str(), "rb");
+#endif
+  if (!f) return false;
+  out.clear();
+  char buf[16384];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+  const bool ok = !ferror(f);
+  fclose(f);
+  return ok;
+}
+
+/// Replace `p` with `bytes` ATOMICALLY: write `<p>.tmp`, then rename over.
+/// A reader (the other app, an agent's editor) never sees half a file.
+inline bool writeFileAtomic(const std::string& p, const std::string& bytes) {
+  if (p.empty()) return false;
+  const std::string tmp = p + ".tmp";
+#ifdef _WIN32
+  FILE* f = _wfopen(widen(tmp).c_str(), L"wb");
+#else
+  FILE* f = fopen(tmp.c_str(), "wb");
+#endif
+  if (!f) return false;
+  const bool wrote = fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+  const bool closed = fclose(f) == 0;
+  if (!wrote || !closed) return false;
+#ifdef _WIN32
+  return MoveFileExW(widen(tmp).c_str(), widen(p).c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+  return ::rename(tmp.c_str(), p.c_str()) == 0;
+#endif
+}
+
+/// Cheap change detection: modification time + size. `exists` false when the
+/// file is missing. Two stamps compare equal iff nothing observable changed
+/// (a same-size rewrite within the clock's resolution is caught by the byte
+/// compare the callers do after).
+struct FileStamp {
+  bool exists = false;
+  long long mtimeNs = 0;
+  long long size = 0;
+  bool operator==(const FileStamp& o) const {
+    return exists == o.exists && mtimeNs == o.mtimeNs && size == o.size;
+  }
+  bool operator!=(const FileStamp& o) const { return !(*this == o); }
+};
+
+inline FileStamp statFile(const std::string& p) {
+  FileStamp s;
+  if (p.empty()) return s;
+#ifdef _WIN32
+  WIN32_FILE_ATTRIBUTE_DATA d;
+  if (!GetFileAttributesExW(widen(p).c_str(), GetFileExInfoStandard, &d)) return s;
+  if (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return s;
+  s.exists = true;
+  s.mtimeNs = static_cast<long long>(((unsigned long long)d.ftLastWriteTime.dwHighDateTime << 32) |
+                                     d.ftLastWriteTime.dwLowDateTime) * 100;
+  s.size = static_cast<long long>(((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow);
+#else
+  struct stat st;
+  if (::stat(p.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return s;
+  s.exists = true;
+#ifdef __APPLE__
+  s.mtimeNs = (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+#else
+  s.mtimeNs = (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
+  s.size = (long long)st.st_size;
+#endif
+  return s;
 }
 
 /**

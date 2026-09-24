@@ -100,30 +100,17 @@ TEST_CASE("the dev tree outranks an installed app", "[resource_root]") {
   const std::string installed = tempDir();
   makeRoot(installed);
 
-  const std::string support = nano_paths::supportDir();
-  if (support.empty()) return;  // no HOME — nothing to assert
-  const std::string record = nano_paths::joinPath(support, "electron_app.json");
-
-  // Preserve a real record if the developer has the app installed.
-  std::string saved;
-  bool had = false;
-  {
-    std::ifstream f(record);
-    if (f.good()) {
-      had = true;
-      saved.assign((std::istreambuf_iterator<char>(f)),
-                   std::istreambuf_iterator<char>());
-    }
-  }
-  std::ofstream(record) << "{\"resourceRoot\":\"" << installed << "\"}";
+  // A private data root: the record goes where the real one would, but never
+  // touches the developer's own install.
+  const std::string root = tempDir();
+  ScopedEnv data("NANO_DATA_DIR", root.c_str());
+  std::ofstream(nano_paths::joinPath(root, "install.json"))
+      << "{\"resourceRoot\":\"" << installed << "\"}";
 
   ScopedEnv a("NANO_RESOURCE_ROOT", nullptr);
   ScopedEnv b("NANO_BARREL_WASM_DIR", nullptr);
 
   const std::string got = nano_paths::resourceRoot(kSelf);
-
-  if (had) std::ofstream(record) << saved;
-  else ::remove(record.c_str());
 
   // The test binary lives in native/build, so the walk reaches <repo>/build.
   // If that root isn't built yet there is nothing to compare against, but the
@@ -132,20 +119,9 @@ TEST_CASE("the dev tree outranks an installed app", "[resource_root]") {
 }
 
 TEST_CASE("the install record parses out of a realistic file", "[resource_root]") {
-  const std::string support = nano_paths::supportDir();
-  if (support.empty()) return;
-  const std::string record = nano_paths::joinPath(support, "electron_app.json");
-
-  std::string saved;
-  bool had = false;
-  {
-    std::ifstream f(record);
-    if (f.good()) {
-      had = true;
-      saved.assign((std::istreambuf_iterator<char>(f)),
-                   std::istreambuf_iterator<char>());
-    }
-  }
+  const std::string root = tempDir();
+  ScopedEnv data("NANO_DATA_DIR", root.c_str());
+  const std::string record = nano_paths::joinPath(root, "install.json");
   std::ofstream(record) << R"({
   "appPath": "/Applications/Nano.app",
   "resourceRoot": "/Applications/Nano.app/Contents/Resources/nano",
@@ -153,8 +129,6 @@ TEST_CASE("the install record parses out of a realistic file", "[resource_root]"
   "updatedAt": 1758240000000
 })";
   const std::string got = nano_paths::installRecordRoot();
-  if (had) std::ofstream(record) << saved;
-  else ::remove(record.c_str());
 
   REQUIRE(got == "/Applications/Nano.app/Contents/Resources/nano");
 }

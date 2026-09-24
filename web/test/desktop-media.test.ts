@@ -42,6 +42,8 @@ function runPhase(phase: 'save' | 'reopen' | 'adopt', proj: string): Promise<any
         env: {
           ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '', NANO_PRODUCT: 'arrangement',
           PHASE: phase, PROFILE: profile, PROJ: proj,
+          // Settings files too: a fresh folder per launch, like the profile.
+          NANO_DATA_DIR: join(profile, 'data'),
           MAIN_CJS: resolve(__dirname, '..', 'electron', 'main.cjs'),
         },
         stdio: ['ignore', 'pipe', 'pipe'],

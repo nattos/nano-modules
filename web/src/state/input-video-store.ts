@@ -10,10 +10,25 @@
  * across reloads (one library grant covers it), and a direct handle falls back
  * to a one-click re-grant. Shared browser-wide across every offline + playground
  * instance.
+ *
+ * The desktop app keeps the plain absolute path instead, as the `inputVideo`
+ * section of `Settings/remote-control.json` (settings-files.ts).
  */
 
 import { idbGet, idbPut, idbDelete, STORE_INPUT_VIDEO } from './idb-store';
 import { HandleRef, makeHandleRef, resolveFileRef } from './handle-ref';
+import { absPathOf, getHandleFromAbsPath, type PathsFileHandle } from './paths';
+import { readSection, settingsFilesAvailable, SETTINGS_FILES, writeSection } from './settings-files';
+
+const FILE = SETTINGS_FILES.remoteControl;
+const SECTION = 'inputVideo';
+
+interface InputVideoSection { path: string; label: string }
+
+function fileSection(): InputVideoSection | null {
+  const v = readSection<InputVideoSection>(FILE, SECTION);
+  return v && typeof v.path === 'string' && v.path ? v : null;
+}
 
 const CURRENT_KEY = 'current';
 
@@ -26,17 +41,24 @@ interface InputVideoRecord {
 
 /** Remember the chosen input video (as a relocatable ref) for reload. */
 export async function rememberInputVideo(handle: FileSystemFileHandle): Promise<void> {
+  const abs = absPathOf(handle as any);
+  if (settingsFilesAvailable() && abs) {
+    writeSection(FILE, SECTION, { path: abs, label: handle.name } satisfies InputVideoSection);
+    return;
+  }
   const ref = await makeHandleRef(handle);
   await idbPut(STORE_INPUT_VIDEO, { id: CURRENT_KEY, ref, label: handle.name, savedAt: Date.now() });
 }
 
 /** Forget the global input video (the input card's "clear"). */
 export async function forgetInputVideo(): Promise<void> {
+  if (settingsFilesAvailable()) { writeSection(FILE, SECTION, undefined); return; }
   await idbDelete(STORE_INPUT_VIDEO, CURRENT_KEY);
 }
 
 /** The remembered file's name, or null — for the input card's re-link label. */
 export async function rememberedInputVideoLabel(): Promise<string | null> {
+  if (settingsFilesAvailable()) return fileSection()?.label ?? null;
   const rec = await idbGet<InputVideoRecord>(STORE_INPUT_VIDEO, CURRENT_KEY);
   return rec?.label ?? null;
 }
@@ -48,6 +70,17 @@ export async function rememberedInputVideoLabel(): Promise<string | null> {
  * `prompt: true` (from a user gesture) requests permission if needed.
  */
 export async function restoreInputVideoFile(opts: { prompt: boolean }): Promise<File | null> {
+  if (settingsFilesAvailable()) {
+    const sec = fileSection();
+    const handle = sec ? await getHandleFromAbsPath(sec.path) : undefined;
+    if (!handle || handle.kind !== 'file') return null;
+    try {
+      return await (handle as PathsFileHandle).getFile();
+    } catch (err) {
+      console.warn('[input-video-store] getFile failed', err);
+      return null;
+    }
+  }
   const rec = await idbGet<InputVideoRecord>(STORE_INPUT_VIDEO, CURRENT_KEY);
   if (!rec) return null;
   const handle = await resolveFileRef(rec.ref, { mode: 'read', prompt: opts.prompt });
