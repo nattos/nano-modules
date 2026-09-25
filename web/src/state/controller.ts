@@ -1855,14 +1855,23 @@ export class AppController {
     }
   }
 
-  /** Store discovered effects from a loaded WASM module. */
-  setAvailableEffects(effects: EffectInfo[]) {
+  /** Store discovered effects from a loaded WASM module. With `bundle`, the
+   *  list is that bundle's WHOLE set — a reloaded or swapped copy — so its
+   *  entries are refreshed and any it no longer declares are dropped. */
+  setAvailableEffects(effects: EffectInfo[], bundle?: string) {
     runInAction(() => {
       const existing = appState.local.availableEffects;
-      for (const e of effects) {
-        if (!existing.some(x => x.id === e.id)) {
-          existing.push({ id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords, bundle: e.bundle, icon: e.icon, thumbnail: e.thumbnail });
+      if (bundle) {
+        const keep = new Set(effects.map(e => e.id));
+        for (let i = existing.length - 1; i >= 0; i--) {
+          if (existing[i].bundle === bundle && !keep.has(existing[i].id)) existing.splice(i, 1);
         }
+      }
+      for (const e of effects) {
+        const entry = { id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords, bundle: e.bundle, icon: e.icon, thumbnail: e.thumbnail };
+        const at = existing.findIndex(x => x.id === e.id);
+        if (at < 0) existing.push(entry);
+        else if (bundle && existing[at].bundle === bundle) Object.assign(existing[at], entry);
       }
       // util.dashboard is a real, schema-backed core-bundle effect, but the UI
       // gives it a bespoke knob-row card instead of the generic inspector — tag
@@ -3618,6 +3627,11 @@ export class AppController {
    */
   loadModule(moduleType: string) {
     this.engine?.loadModule(moduleType);
+  }
+
+  /** Forget a bundle no module folder provides any more (Settings → Modules). */
+  unloadModule(moduleType: string) {
+    this.engine?.unloadModule(moduleType);
   }
 
   /**

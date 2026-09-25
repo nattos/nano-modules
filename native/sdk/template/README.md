@@ -49,8 +49,12 @@ Or `./build.sh --install` copies the `.wasm` into the shared Modules folder
 (`~/Library/Application Support/Nano Modules/Modules`, or
 `%APPDATA%\Nano Modules\Modules`) — no live reload, but nothing to configure.
 
-Resolume reads module folders when it loads the plugin: restart it after
-adding a folder or installing a new bundle.
+Resolume loads its bundles once, when it starts the plugin, and doesn't watch
+the disk. The app does: after a rebuild (or a folder added, checked or
+unchecked) it offers **Reload in Resolume**, and **Settings → Resolume Remote →
+Reload modules in Resolume** does the same by hand — no restart. Effects in use
+restart with their saved settings. (Rebuild the AOT sidecar too, if you ship
+one: the plugin ignores a `<stem>-<arch>.aot` older than its `.wasm`.)
 
 ## 4. Add an effect
 

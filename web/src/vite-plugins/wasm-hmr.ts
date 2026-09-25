@@ -121,7 +121,7 @@ export function wasmHmrPlugin(): Plugin {
       });
 
       // Effect module directories (electron/module-dirs.cjs), the same way the
-      // packaged app serves them: a listing, `/modules/<n>/<file>`, and an
+      // packaged app serves them: a listing, `/modules/<key>/<file>`, and an
       // editor for the mapped set so Settings works against the dev server.
       server.middlewares.use('/__nano/modules', (req, res) => {
         const send = () => {
@@ -166,7 +166,13 @@ export function wasmHmrPlugin(): Plugin {
 
       const fire = (file: string) => {
         if (!file.endsWith('.wasm')) return;
-        // A module-directory bundle is served at /modules/<n>/..., not /wasm/.
+        // A copy another folder overrides isn't what's loaded: reloading it
+        // would put it back in front of the one that wins.
+        if (moduleDirs.isShadowed(file, wasmDir)) {
+          server.config.logger.info(`[wasm-hmr] ignore ${file} (another folder's copy wins)`);
+          return;
+        }
+        // A module-directory bundle is served at /modules/<key>/..., not /wasm/.
         const moduleUrl = moduleDirs.urlForModuleFile(file);
         if (moduleUrl) {
           server.ws.send({ type: 'custom', event: 'wasm:reload', data: { url: moduleUrl } });

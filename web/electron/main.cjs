@@ -352,6 +352,9 @@ function watchModuleDirs() {
         reloadTimers.set(file, setTimeout(() => {
           reloadTimers.delete(file);
           const url = moduleDirs.urlForModuleFile(file);
+          // A copy another folder overrides isn't the one loaded — see isShadowed.
+          const builtin = resourceRoot ? path.join(resourceRoot, 'wasm') : null;
+          if (moduleDirs.isShadowed(file, builtin)) return;
           if (url && fs.existsSync(file) && mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('nano:wasm-reload', { url });
           }

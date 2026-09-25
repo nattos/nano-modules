@@ -5,15 +5,17 @@
  * no barrel connection at all (Effect Dev, Playground, Live-offline) — that is
  * precisely when someone reads it. So this keeps its own small WebSocket to
  * the shared NanoBarrel server rather than borrowing Live's client, and asks
- * for three things:
+ * for these:
  *
  *   /global/host                  where the plugin + server are, and whether
  *                                 Resolume's own webserver answered
  *   /global/plugins               barrel instances that have actually rendered
  *   /global/composition_barrel_ids  every NanoBarrel in the composition,
  *                                 launched or not (needs Resolume's webserver)
+ *   /global/modules               the effect bundles the plugin loaded, and
+ *   /global/modules_reload        the last `reload_modules` (module-reload.ts)
  *
- * Those last two differ in exactly the way the checklist needs to explain: an
+ * The plugins and composition lists differ in exactly the way the checklist needs to explain: an
  * instance on a clip or a layer does not register until that content plays, so
  * "in the composition" and "alive" are separate checkmarks.
  *
@@ -28,6 +30,7 @@
 
 import { observable, runInAction } from 'mobx';
 import { appState } from './app-state';
+import type { ModuleReloadResult } from '../module-reload';
 
 /** `/global/host/plugin` — written once by the FFGL plugin at load. */
 export interface HostPluginInfo {
@@ -52,6 +55,17 @@ export interface HostServerInfo {
   resolumeConnected?: boolean;
 }
 
+/** One row of `/global/modules` — a bundle the plugin has loaded. */
+export interface BarrelModuleInfo {
+  id: string;
+  /** The resolved `<stem>.wasm`. */
+  path: string;
+  /** What was actually read: the .wasm, or its AOT sidecar. */
+  file?: string;
+  origin: 'builtin' | 'default' | 'mapped';
+  effects: number;
+}
+
 export interface ResolumeSetupState {
   /** Health of OUR probe socket to the barrel (port 8081 by default). */
   probe: 'idle' | 'connecting' | 'open' | 'closed';
@@ -62,6 +76,10 @@ export interface ResolumeSetupState {
   /** NanoBarrels found in the composition, launched or not. Only ever
    *  non-zero while Resolume's webserver is on (it feeds the scan). */
   compositionInstances: number;
+  /** The bundles the plugin runs, or null when it hasn't said. */
+  modules: BarrelModuleInfo[] | null;
+  /** Its last module reload, or null if there hasn't been one. */
+  modulesReload: ModuleReloadResult | null;
 }
 
 export const resolumeSetup = observable.object<ResolumeSetupState>({
@@ -70,6 +88,8 @@ export const resolumeSetup = observable.object<ResolumeSetupState>({
   server: null,
   liveInstances: 0,
   compositionInstances: 0,
+  modules: null,
+  modulesReload: null,
 });
 
 /** Fast while someone is following the instructions, then backed off so an
@@ -101,11 +121,16 @@ function ingest(path: string, data: any) {
       resolumeSetup.liveInstances = countBarrels(data);
     } else if (path === '/global/composition_barrel_ids') {
       resolumeSetup.compositionInstances = Array.isArray(data) ? data.length : 0;
+    } else if (path === '/global/modules') {
+      resolumeSetup.modules = Array.isArray(data) ? data : null;
+    } else if (path === '/global/modules_reload') {
+      resolumeSetup.modulesReload = data && typeof data.seq === 'number' ? data : null;
     }
   });
 }
 
-const WATCHED = ['/global/host', '/global/plugins', '/global/composition_barrel_ids'];
+const WATCHED = ['/global/host', '/global/plugins', '/global/composition_barrel_ids',
+  '/global/modules', '/global/modules_reload'];
 
 function clearFetchTimer() {
   if (fetchTimer != null) { clearTimeout(fetchTimer); fetchTimer = null; }
@@ -187,6 +212,8 @@ function open() {
       resolumeSetup.server = null;
       resolumeSetup.liveInstances = 0;
       resolumeSetup.compositionInstances = 0;
+      resolumeSetup.modules = null;
+      resolumeSetup.modulesReload = null;
     });
     scheduleRetry();
   };
@@ -237,6 +264,8 @@ export function resolumeRemoteSettingChanged() {
     resolumeSetup.server = null;
     resolumeSetup.liveInstances = 0;
     resolumeSetup.compositionInstances = 0;
+    resolumeSetup.modules = null;
+    resolumeSetup.modulesReload = null;
   });
 }
 
@@ -254,6 +283,8 @@ export function resetResolumeSetup() {
     resolumeSetup.server = null;
     resolumeSetup.liveInstances = 0;
     resolumeSetup.compositionInstances = 0;
+    resolumeSetup.modules = null;
+    resolumeSetup.modulesReload = null;
   });
 }
 

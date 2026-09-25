@@ -15,11 +15,12 @@
  *                copy can never shadow a dev tree's fresh build.
  *   3. mapped    the user's directories (module_paths.json). Every *.wasm is a
  *                bundle and REPLACES the same stem from below; a later mapping
- *                beats an earlier one.
+ *                beats an earlier one, and an unchecked one takes no part.
  *
  * Plain node (no electron import), because the vite dev server uses it too.
  */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { dataRoot, settingsDir } = require('./data-root.cjs');
@@ -71,19 +72,33 @@ function wasmFiles(dir) {
 }
 
 /**
- * The directories served under /modules/<n>/: the default directory first,
- * then every enabled mapped one. The index is the URL, so it must be computed
- * the same way by whoever lists and whoever serves.
+ * The directories served under /modules/<key>/: the default directory first,
+ * then every enabled mapped one. Position 0 is what makes a directory the
+ * default one; the URL does not depend on position (see dirKey).
  */
 function servedDirs(rows = readModulePaths()) {
   return [defaultModulesDir(), ...rows.filter((r) => r.enabled).map((r) => r.path)];
 }
 
 /**
+ * The URL segment a directory is served under: a hash of its absolute path.
+ * NOT its position — checking or unchecking one folder would renumber every
+ * folder after it, and the engine caches bundles by URL, so `/modules/1/x.wasm`
+ * meaning a different file after a toggle made it keep the wrong copy.
+ */
+function dirKey(dir) {
+  return crypto.createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 12);
+}
+
+function moduleUrl(dir, name) {
+  return `/modules/${dirKey(dir)}/${encodeURIComponent(name)}`;
+}
+
+/**
  * Resolve the bundle set: one entry per stem, built-in stems first in
  * BUILTIN_STEMS order, then the rest by first appearance. Each entry carries
  * the URL the renderer fetches it from — `/wasm/<file>` for the built-in
- * directory, `/modules/<n>/<file>` for a served one.
+ * directory, `/modules/<key>/<file>` for a served one.
  */
 function resolveBundles(builtinDir, dirs = servedDirs()) {
   const out = [];
@@ -103,7 +118,7 @@ function resolveBundles(builtinDir, dirs = servedDirs()) {
       const entry = {
         stem,
         path: path.join(dir, name),
-        url: `/modules/${n}/${encodeURIComponent(name)}`,
+        url: moduleUrl(dir, name),
         origin: isDefault ? 'default' : 'mapped',
       };
       const existing = find(stem);
@@ -117,11 +132,11 @@ function resolveBundles(builtinDir, dirs = servedDirs()) {
   return out.map((b) => ({ id: `com.nano.${b.stem}`, ...b }));
 }
 
-/** `/modules/<n>/<file>` → an absolute file inside served directory n, or null. */
+/** `/modules/<key>/<file>` → an absolute file inside that served directory, or null. */
 function resolveModuleUrl(urlPath, dirs = servedDirs()) {
-  const m = /^\/?modules\/(\d+)\/([^/]+)$/.exec(decodeURIComponent(urlPath.split(/[?#]/)[0]));
+  const m = /^\/?modules\/([0-9a-f]+)\/([^/]+)$/.exec(decodeURIComponent(urlPath.split(/[?#]/)[0]));
   if (!m) return null;
-  const dir = dirs[Number(m[1])];
+  const dir = dirs.find((d) => dirKey(d) === m[1]);
   if (!dir || !m[2].endsWith('.wasm')) return null;
   const file = path.resolve(dir, m[2]);
   if (path.dirname(file) !== path.resolve(dir)) return null;  // no escapes
@@ -131,8 +146,28 @@ function resolveModuleUrl(urlPath, dirs = servedDirs()) {
 /** The inverse, for hot reload: which URL is this file served at, if any? */
 function urlForModuleFile(file, dirs = servedDirs()) {
   const dir = path.resolve(path.dirname(file));
-  const n = dirs.findIndex((d) => path.resolve(d) === dir);
-  return n < 0 ? null : `/modules/${n}/${encodeURIComponent(path.basename(file))}`;
+  const served = dirs.find((d) => path.resolve(d) === dir);
+  return served ? moduleUrl(served, path.basename(file)) : null;
+}
+
+/**
+ * Is `file` a bundle that some OTHER copy overrides — a deployed copy under a
+ * checked dev folder, or a built-in one a mapped folder replaces? Hot reload
+ * must ignore those: reloading the hidden copy would put it back in front of
+ * the one that is supposed to win. Files that aren't candidate bundles at all
+ * (executor.wasm, a file in no served directory) are never shadowed.
+ */
+function isShadowed(file, builtinDir, dirs = servedDirs()) {
+  const name = path.basename(file);
+  if (!name.endsWith('.wasm')) return false;
+  const stem = name.slice(0, -'.wasm'.length);
+  const dir = path.resolve(path.dirname(file));
+  const candidate =
+    (builtinDir && path.resolve(builtinDir) === dir && BUILTIN_STEMS.includes(stem)) ||
+    dirs.some((d) => path.resolve(d) === dir);
+  if (!candidate) return false;
+  const winner = resolveBundles(builtinDir, dirs).find((b) => b.stem === stem);
+  return !!winner && path.resolve(winner.path) !== path.resolve(file);
 }
 
 /** a < b for dotted numeric versions ('1.2.10' > '1.2.9'). */
@@ -169,7 +204,13 @@ function seedDefaultModules(extraDir, version, targetDir = defaultModulesDir()) 
   const copied = [];
   for (const name of fs.readdirSync(extraDir)) {
     if (!/\.(wasm|aot)$/.test(name)) continue;
-    fs.copyFileSync(path.join(extraDir, name), path.join(targetDir, name));
+    const src = path.join(extraDir, name);
+    const dst = path.join(targetDir, name);
+    fs.copyFileSync(src, dst);
+    // Keep the timestamps: the barrel ignores an .aot sidecar older than its
+    // .wasm (a stale one would run old code), and a copy stamps both "now".
+    const st = fs.statSync(src);
+    fs.utimesSync(dst, st.atime, st.mtime);
     copied.push(name);
   }
   fs.writeFileSync(marker, JSON.stringify({ version, files: copied }, null, 2));
@@ -186,7 +227,9 @@ module.exports = {
   readModulePaths,
   writeModulePaths,
   servedDirs,
+  dirKey,
   resolveBundles,
+  isShadowed,
   resolveModuleUrl,
   urlForModuleFile,
 };

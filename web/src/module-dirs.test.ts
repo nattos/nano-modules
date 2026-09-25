@@ -39,7 +39,7 @@ describe('module-dirs', () => {
     const got = md.resolveBundles(builtin, [defaults]);
     expect(stems(got)).toEqual(['core', 'nano', 'lights']);
     expect(by(got, 'nano').origin).toBe('builtin');
-    expect(by(got, 'lights')).toMatchObject({ origin: 'default', url: '/modules/0/lights.wasm' });
+    expect(by(got, 'lights')).toMatchObject({ origin: 'default', url: `/modules/${md.dirKey(defaults)}/lights.wasm` });
   });
 
   it('lets a mapped directory replace by stem, the later mapping winning', () => {
@@ -49,19 +49,53 @@ describe('module-dirs', () => {
     const devB = dir('devB', ['mine.wasm']);
     const got = md.resolveBundles(builtin, [defaults, devA, devB]);
     expect(stems(got)).toEqual(['core', 'lights', 'mine']);
-    expect(by(got, 'core')).toMatchObject({ origin: 'mapped', url: '/modules/1/core.wasm' });
-    expect(by(got, 'mine').url).toBe('/modules/2/mine.wasm');
+    expect(by(got, 'core')).toMatchObject({ origin: 'mapped', url: `/modules/${md.dirKey(devA)}/core.wasm` });
+    expect(by(got, 'mine').url).toBe(`/modules/${md.dirKey(devB)}/mine.wasm`);
+  });
+
+  it('keeps a folder\'s URL when the folders around it are checked or unchecked', () => {
+    // The engine caches bundles by URL, so a URL must never come to mean a
+    // different file: deployed, then a dev folder mapped after it.
+    const defaults = dir('default', []);
+    const deployed = dir('deployed', ['nano.wasm']);
+    const dev = dir('dev', ['nano.wasm']);
+    const both = by(md.resolveBundles(null, [defaults, deployed, dev]), 'nano');
+    expect(both.path).toBe(join(dev, 'nano.wasm'));
+    const devOnly = by(md.resolveBundles(null, [defaults, dev]), 'nano');
+    expect(devOnly.url).toBe(both.url);
+    const deployedOnly = by(md.resolveBundles(null, [defaults, deployed]), 'nano');
+    expect(deployedOnly.path).toBe(join(deployed, 'nano.wasm'));
+    expect(deployedOnly.url).not.toBe(both.url);
+  });
+
+  it('knows which copy of a bundle is shadowed, so hot reload skips it', () => {
+    const builtin = dir('builtin', ['core.wasm', 'nano.wasm', 'executor.wasm']);
+    const defaults = dir('default', ['lights.wasm']);
+    const deployed = dir('deployed', ['nano.wasm', 'lights.wasm']);
+    const dev = dir('dev', ['nano.wasm']);
+    const dirs = [defaults, deployed, dev];
+    expect(md.isShadowed(join(dev, 'nano.wasm'), builtin, dirs)).toBe(false);
+    expect(md.isShadowed(join(deployed, 'nano.wasm'), builtin, dirs)).toBe(true);
+    expect(md.isShadowed(join(builtin, 'nano.wasm'), builtin, dirs)).toBe(true);
+    expect(md.isShadowed(join(builtin, 'core.wasm'), builtin, dirs)).toBe(false);
+    expect(md.isShadowed(join(deployed, 'lights.wasm'), builtin, dirs)).toBe(false);
+    expect(md.isShadowed(join(defaults, 'lights.wasm'), builtin, dirs)).toBe(true);
+    // Not a bundle candidate at all: a service module, or a stray directory.
+    expect(md.isShadowed(join(builtin, 'executor.wasm'), builtin, dirs)).toBe(false);
+    expect(md.isShadowed(join(root, 'elsewhere', 'nano.wasm'), builtin, dirs)).toBe(false);
   });
 
   it('serves only .wasm files inside a configured directory', () => {
     const a = dir('a', ['x.wasm']);
     const dirs = [a];
-    expect(md.resolveModuleUrl('/modules/0/x.wasm', dirs)).toBe(join(a, 'x.wasm'));
-    expect(md.resolveModuleUrl('/modules/0/x.wasm?t=5', dirs)).toBe(join(a, 'x.wasm'));
-    expect(md.resolveModuleUrl('/modules/1/x.wasm', dirs)).toBeNull();
-    expect(md.resolveModuleUrl('/modules/0/secret.txt', dirs)).toBeNull();
-    expect(md.resolveModuleUrl('/modules/0/..%2F..%2Fetc.wasm', dirs)).toBeNull();
-    expect(md.urlForModuleFile(join(a, 'x.wasm'), dirs)).toBe('/modules/0/x.wasm');
+    const k = md.dirKey(a);
+    expect(md.resolveModuleUrl(`/modules/${k}/x.wasm`, dirs)).toBe(join(a, 'x.wasm'));
+    expect(md.resolveModuleUrl(`/modules/${k}/x.wasm?t=5`, dirs)).toBe(join(a, 'x.wasm'));
+    expect(md.resolveModuleUrl(`/modules/${md.dirKey(join(root, 'b'))}/x.wasm`, dirs)).toBeNull();
+    expect(md.resolveModuleUrl('/modules/0/x.wasm', dirs)).toBeNull();
+    expect(md.resolveModuleUrl(`/modules/${k}/secret.txt`, dirs)).toBeNull();
+    expect(md.resolveModuleUrl(`/modules/${k}/..%2F..%2Fetc.wasm`, dirs)).toBeNull();
+    expect(md.urlForModuleFile(join(a, 'x.wasm'), dirs)).toBe(`/modules/${k}/x.wasm`);
     expect(md.urlForModuleFile(join(root, 'elsewhere.wasm'), dirs)).toBeNull();
   });
 

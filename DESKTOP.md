@@ -126,11 +126,24 @@ a folder the app, the dev server and the native plugin all scan the same way —
 |---|---|---|
 | `<root>/wasm/` | the built-ins (a dev tree: core, text, richtext, testonly, plus the extras when built with `--extras`) | lowest |
 | **Modules folder** — `~/Library/Application Support/Nano Modules/Modules`, `%APPDATA%\Nano Modules\Modules` | nano, lights, legacy, copied from `extra-modules/` on first launch of each new app version | fills in only what `wasm/` lacks, so a seeded release copy never shadows a dev tree's build |
-| Folders added in **Settings → Modules** (`Settings/module-paths.json`) | your own bundles | replaces the same name from anywhere below; later folders win |
+| Folders added in **Settings → Modules** (`Settings/module-paths.json`) | your own bundles | replaces the same name from anywhere below; later folders win; an unchecked one takes no part |
 
-A mapped folder hot-reloads: rebuild a bundle into it and the running app swaps
-it in. Resolume reads the folders when it loads the plugin, so it needs a
-restart to see a change. `NANO_MODULES_DIR` and `NANO_MODULE_PATHS_FILE`
+So a dev folder added AFTER the folder holding the deployed bundles wins while
+it is checked, and unchecking it puts the deployed copy back.
+
+The app follows every change live: rebuild a bundle and it hot-reloads; check,
+uncheck or remove a folder and the engine swaps each bundle whose winning copy
+moved (effects in use restart with their saved settings) and drops any nothing
+provides. Only the copy that wins is watched — rebuilding one a later folder
+overrides does nothing. Folders are served at `/modules/<hash of the path>/`,
+so a URL never comes to mean a different folder's file.
+
+Resolume loads its bundles once and doesn't watch the disk. The app offers
+**Reload in Resolume** whenever it sees a bundle rebuilt or the folders change,
+and **Settings → Resolume Remote** lists what the plugin runs (flagging where
+it differs from the app) with a button to reload. Both send `reload_modules`
+over the bridge; the plugin re-resolves the folders on its next frame and
+swaps what changed. `NANO_MODULES_DIR` and `NANO_MODULE_PATHS_FILE`
 override both locations (tests, CI); `NANO_DATA_DIR` moves the whole data root
 (see [Settings files](#settings-files)).
 

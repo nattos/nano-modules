@@ -49,7 +49,7 @@ export type BundleOrigin = 'builtin' | 'default' | 'mapped';
 
 export interface EffectBundleInfo {
   id: string;
-  /** Where the engine fetches it: `/wasm/<stem>.wasm` or `/modules/<n>/<file>`. */
+  /** Where the engine fetches it: `/wasm/<stem>.wasm` or `/modules/<key>/<file>`. */
   url: string;
   origin: BundleOrigin;
   /** Absolute file path, when the lister knows it. */
@@ -77,6 +77,14 @@ export function bundleUrl(id: string): string {
   if (known) return known;
   const stem = id.replace(/^com\.[^.]+\./, '').replace(/\./g, '_');
   return `/wasm/${stem}.wasm`;
+}
+
+/** The bundle id served at `url` (query ignored), or null for anything that
+ *  isn't a discovered effect bundle — executor.wasm, naga_spv.wasm, ... */
+export function bundleIdForUrl(url: string): string | null {
+  const bare = url.split(/[?#]/)[0];
+  for (const [id, u] of urls) if (u === bare) return id;
+  return null;
 }
 
 function remember(listing: ModuleListing): ModuleListing {
@@ -117,9 +125,10 @@ export function discoverEffectBundles(): Promise<string[]> {
   return discovery;
 }
 
-/** Persist the mapped directories (desktop shell or dev server). Takes effect
- *  for the app on the next launch; the native barrel reads it when Resolume
- *  next loads the plugin. */
+/** Persist the mapped directories (desktop shell or dev server). The caller
+ *  loads what the new listing resolves to (the engine swaps a bundle whose
+ *  winning copy moved); the native barrel re-reads it on `reload_modules`
+ *  (module-reload.ts). */
 export async function setModulePaths(rows: ModulePathRow[]): Promise<ModuleListing> {
   const clean = JSON.parse(JSON.stringify(rows)) as ModulePathRow[];
   const ipc = electronIpc();

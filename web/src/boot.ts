@@ -132,7 +132,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     engine.onModulationDataDiff = (diff) => appController.applyModulationDataDiff(diff);
     engine.onDebugStats = (stats) => appController.setDebugStats(stats);
     engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
-    engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
+    engine.onEffectsDiscovered = (effects, bundle) => appController.setAvailableEffects(effects, bundle);
     engine.onSidechannels = (channels, scalars) => {
       appController.setSidechannels(channels);
       appController.setScalarSidechannels(scalars);

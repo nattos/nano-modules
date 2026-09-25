@@ -32,6 +32,9 @@ import {
 import {
   absPathOf, appResourceRoot, copyText, isElectron, revealInFolder, showDirectoryPicker,
 } from '../state/paths';
+import {
+  describeReload, moduleDrift, offerBarrelModuleReload, requestBarrelModuleReload,
+} from '../module-reload';
 
 /** macOS, from Electron's own `process` when we have it. Both platforms ship a
  *  plug-in now, but they are different ARTEFACTS — a `.bundle` directory plus a
@@ -272,6 +275,9 @@ export class AppSettings extends MobxLitElement {
   @state() private modulesError = '';
   /** Browser-only: a path typed in, since the web picker yields no paths. */
   @state() private typedModulePath = '';
+  /** A module reload in Resolume is in flight / how the last one went. */
+  @state() private reloadingInResolume = false;
+  @state() private resolumeReloadNote = '';
   private stopWatch: (() => void) | null = null;
   private copyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -326,6 +332,7 @@ export class AppSettings extends MobxLitElement {
             </label>
           </div>
           ${this.renderSetupChecklist()}
+          ${this.renderResolumeModules()}
         </section>
         ${this.renderModules()}
         <section>
@@ -416,8 +423,9 @@ export class AppSettings extends MobxLitElement {
               </li>`)}
           </ul>` : html`<div class="hint">No extra bundles found.</div>`}
         <div class="hint">
-          Removing a folder takes effect the next time the app starts. Resolume
-          picks up any change the next time it loads the plugin.
+          Changes here apply to this app at once. Resolume keeps what it loaded
+          until you reload its modules (Resolume Remote, above) — the app offers
+          to whenever a folder or a bundle changes.
         </div>
       </section>
     `;
@@ -435,15 +443,80 @@ export class AppSettings extends MobxLitElement {
     }
   };
 
-  /** Persist the mapped folders, then load whatever they newly provide — an
-   *  added folder's bundles are usable at once; the worker ignores bundles it
-   *  already has. */
+  /** Persist the mapped folders and bring the engine in line with what they
+   *  now resolve to: a new bundle loads, one whose winning copy moved (a dev
+   *  folder checked or unchecked) is swapped — the worker compares URLs — and
+   *  one nothing provides any more is unloaded. Then offer the same to
+   *  Resolume, which has its own copy of everything. */
   private updateModulePaths(rows: ModulePathRow[]) {
     this.modulesError = '';
+    const before = this.modules?.bundles ?? [];
     void setModulePaths(rows).then((listing) => {
       this.modules = listing;
+      const now = new Set(listing.bundles.map((b) => b.id));
+      for (const b of before) if (!now.has(b.id)) appController.unloadModule(b.id);
       for (const b of listing.bundles) appController.loadModule(b.id);
+      offerBarrelModuleReload('Module folders changed', false);
     }).catch((e) => { this.modulesError = String(e); });
+  }
+
+  private onReloadInResolume = async () => {
+    this.reloadingInResolume = true;
+    this.resolumeReloadNote = '';
+    try {
+      this.resolumeReloadNote = describeReload(await requestBarrelModuleReload());
+    } finally {
+      this.reloadingInResolume = false;
+    }
+  };
+
+  /**
+   * The effect bundles the plugin runs — its own resolution of the same module
+   * folders, done when Resolume loaded it or last reloaded — and a button to
+   * reload them. Anything it resolves differently from this app is called out:
+   * that is exactly the state a checked dev folder leaves until the reload.
+   */
+  private renderResolumeModules() {
+    const { probe, modules, modulesReload } = resolumeSetup;
+    if (probe !== 'open' || !modules) return nothing;
+    const drift = this.modules ? moduleDrift(this.modules.bundles, modules) : [];
+    const shown = modules.filter((b) => b.origin !== 'builtin');
+    return html`
+      <h2 style="margin-top:var(--app-sp-4)">Modules in Resolume</h2>
+      <div class="hint">
+        The plug-in loads effect bundles once, when Resolume starts it. Reload to
+        pick up rebuilt bundles and module-folder changes without restarting
+        Resolume; effects in use restart with their saved settings.
+      </div>
+      ${shown.length ? html`
+        <ul class="module-list">
+          ${shown.map((b) => html`
+            <li class="module-row">
+              <span>${bundleLabel(b.id)}</span>
+              <span class="grow"><code>${b.path}</code></span>
+              <span class="origin">${b.effects} effect${b.effects === 1 ? '' : 's'}</span>
+            </li>`)}
+        </ul>` : nothing}
+      ${drift.length ? html`
+        <div class="note" data-drift>
+          Resolume runs different modules than this app:
+          ${drift.map((d) => html`<div>${bundleLabel(d.id)} —
+            ${d.resolume ? html`Resolume has <code>${d.resolume}</code>` : 'not in Resolume'},
+            ${d.app ? html`this app has <code>${d.app}</code>` : 'not in this app'}</div>`)}
+        </div>` : nothing}
+      <div class="actions">
+        <button class="small" data-reload-modules
+          ?disabled=${this.reloadingInResolume}
+          @click=${this.onReloadInResolume}>
+          ${this.reloadingInResolume ? 'Reloading…' : 'Reload modules in Resolume'}
+        </button>
+      </div>
+      ${this.resolumeReloadNote
+        ? html`<div class="hint" data-reload-note>${this.resolumeReloadNote}</div>`
+        : modulesReload
+          ? html`<div class="hint">Last reload: ${describeReload({ kind: 'done', result: modulesReload })}</div>`
+          : nothing}
+    `;
   }
 
   private renderSetupChecklist() {

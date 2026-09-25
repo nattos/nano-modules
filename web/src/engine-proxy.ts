@@ -13,7 +13,7 @@ export class EngineProxy {
   private _barrelMode = false;
 
   onStateUpdate: ((state: EngineState) => void) | null = null;
-  onEffectsDiscovered: ((effects: EffectInfo[]) => void) | null = null;
+  onEffectsDiscovered: ((effects: EffectInfo[], bundle?: string) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
   /// Estimated GPU busy-time this frame, in milliseconds (CPU-fence proxy).
   /// Drives the headroom readout against the user's target framerate.
@@ -66,7 +66,7 @@ export class EngineProxy {
           this.onStateUpdate?.(event.state);
           break;
         case 'effectsDiscovered':
-          this.onEffectsDiscovered?.(event.effects);
+          this.onEffectsDiscovered?.(event.effects, event.bundle);
           break;
         case 'frame':
           this.onFps?.(event.fps);
@@ -141,6 +141,11 @@ export class EngineProxy {
     // The bundle may live in a module directory outside the app; discovery
     // (effect-bundles.ts) knows its URL, the worker doesn't.
     this.send({ type: 'loadModule', moduleType, url: bundleUrl(moduleType) });
+  }
+
+  /** Forget a bundle no module folder provides any more. */
+  unloadModule(moduleType: string) {
+    this.send({ type: 'unloadModule', moduleType });
   }
 
   instantiateEffect(effectId: string) {

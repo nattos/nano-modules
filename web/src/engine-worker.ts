@@ -433,6 +433,10 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'reloadWasm':
       await reloadWasmModule(cmd.wasmUrl);
       break;
+    case 'unloadModule':
+      if (barrelMode) break;
+      unloadModule(cmd.moduleType);
+      break;
     case 'registerFont': {
       // Main thread resolved an OS font via Local Font Access; register its
       // bytes with the shared text engine so the next frame can use the face.
@@ -1338,9 +1342,18 @@ function findCompiledModule(effectId: string): { compiled: WebAssembly.Module; r
  *
  * Cache-busts the URL so the browser HTTP cache doesn't serve a stale .wasm.
  */
-async function reloadWasmModule(wasmUrl: string) {
+/**
+ * Replace a loaded bundle with a fresh copy and rebuild every live instance of
+ * its effects. `wasmUrl` is where the loaded copy came from; `fromUrl` is where
+ * to fetch the replacement — the same URL for a hot reload (the file changed),
+ * a different one when another folder's copy now wins (Settings → Modules: a
+ * dev folder checked or unchecked).
+ */
+async function reloadWasmModule(wasmUrl: string, fromUrl: string = wasmUrl) {
   const t0 = performance.now();
-  console.log(`[wasm-hmr] worker received reload for ${wasmUrl}`);
+  console.log(fromUrl === wasmUrl
+    ? `[wasm-hmr] worker received reload for ${wasmUrl}`
+    : `[wasm-hmr] worker swapping ${wasmUrl} for ${fromUrl}`);
   if (!bridgeCore || !gpuHost) {
     console.warn('[wasm-hmr] bridgeCore/gpuHost not initialised yet — ignoring reload');
     return;
@@ -1376,7 +1389,7 @@ async function reloadWasmModule(wasmUrl: string) {
   // mid-load still finds the old effects and executes cleanly. The
   // registry swap below is synchronous, so there's no window where the
   // registries are empty.
-  const cacheBustedUrl = `${wasmUrl}?t=${Date.now()}`;
+  const cacheBustedUrl = `${fromUrl}?t=${Date.now()}`;
   const host = new WasmHost();
   host.bridgeCore = bridgeCore;
   host.gpuHost = gpuHost;
@@ -1404,7 +1417,7 @@ async function reloadWasmModule(wasmUrl: string) {
       effectRegistry.delete(e.id);
     }
   }
-  moduleRegistry.set(wasmUrl, { moduleId: moduleType, compiled, effects });
+  moduleRegistry.set(fromUrl, { moduleId: moduleType, compiled, effects });
   for (const effect of effects) {
     effectRegistry.set(effect.id, { compiled, effect });
   }
@@ -1485,17 +1498,54 @@ async function reloadWasmModule(wasmUrl: string) {
 
   post({
     type: 'effectsDiscovered',
+    bundle: moduleType,
     effects: effects.map(e => ({
       id: e.id, name: e.name, description: e.description,
       category: e.category, keywords: e.keywords, bundle: moduleType,
       icon: e.icon, thumbnail: e.thumbnail,
     })),
   });
+  // A different copy may declare different effects or schemas; publish them
+  // as a first load would (a same-file hot reload keeps its existing ones).
+  if (fromUrl !== wasmUrl) await warmupEffects(compiled, effects);
   // Instances recreate on the next frame — every sketch must re-apply state.
   for (const id of sketches.keys()) touchSketch(id);
   markDirty();
   const totalMs = (performance.now() - t0).toFixed(1);
-  console.log(`[wasm-hmr] ✔ reloaded ${wasmUrl} in ${totalMs}ms (fetch+instantiate ${fetchMs}ms, ${effects.length} effects: ${effects.map(e => e.id).join(', ')})`);
+  console.log(`[wasm-hmr] ✔ reloaded ${fromUrl} in ${totalMs}ms (fetch+instantiate ${fetchMs}ms, ${effects.length} effects: ${effects.map(e => e.id).join(', ')})`);
+}
+
+/**
+ * Forget a bundle no folder provides any more (its folder was unchecked or
+ * removed). Its effects leave the registry and the picker; live instances are
+ * dropped, so their chain entries pass the image through, as for any effect
+ * that isn't installed.
+ */
+function unloadModule(moduleType: string) {
+  for (const [url, loaded] of [...moduleRegistry]) {
+    if (loaded.moduleId !== moduleType) continue;
+    moduleRegistry.delete(url);
+    const ids = new Set(loaded.effects.map(e => e.id));
+    for (const id of ids) {
+      if (effectRegistry.get(id)?.compiled === loaded.compiled) effectRegistry.delete(id);
+    }
+    if (executor) {
+      for (const [, sketch] of sketches) {
+        for (const entry of sketchChain(sketch)) {
+          if (entry.type !== 'module') continue;
+          const resolved = resolveEffectId(entry.module_type);
+          if (ids.has(entry.module_type) || ids.has(resolved)) {
+            executor.invalidateInstance(entry.instance_key);
+            executor.invalidateFusionCacheFor(resolved);
+          }
+        }
+      }
+    }
+    console.log(`[modules] unloaded ${moduleType} (${url}, ${ids.size} effects)`);
+  }
+  post({ type: 'effectsDiscovered', bundle: moduleType, effects: [] });
+  for (const id of sketches.keys()) touchSketch(id);
+  markDirty();
 }
 
 /**
@@ -1506,17 +1556,27 @@ async function loadModule(moduleType: string, url?: string) {
   if (!bridgeCore || !gpuHost) return;
 
   // The main thread resolves the URL (effect-bundles.ts): a bundle may live in
-  // a module directory served at /modules/<n>/. Absent one, derive the
+  // a module directory served at /modules/<key>/. Absent one, derive the
   // built-in path from the id, stripping any `com.<vendor>.` prefix.
   const stripped = moduleType.replace(/^com\.[^.]+\./, '');
   const moduleName = stripped.replace(/\./g, '_');
   const wasmUrl = url ?? `/wasm/${moduleName}.wasm`;
 
+  // Already loaded from ANOTHER copy — a different folder's now wins (Settings
+  // → Modules). Swap it in place, rebuilding the live instances, rather than
+  // loading a second copy beside it that only new instances would use.
+  for (const [loadedUrl, loaded] of moduleRegistry) {
+    if (loaded.moduleId === moduleType && loadedUrl !== wasmUrl) {
+      await reloadWasmModule(loadedUrl, wasmUrl);
+      return;
+    }
+  }
+
   // Don't reload if already registered
   if (moduleRegistry.has(wasmUrl)) {
     const existing = moduleRegistry.get(wasmUrl)!;
     post({
-      type: 'effectsDiscovered', effects: existing.effects.map(e => ({
+      type: 'effectsDiscovered', bundle: moduleType, effects: existing.effects.map(e => ({
         id: e.id, name: e.name, description: e.description,
         category: e.category, keywords: e.keywords, bundle: moduleType,
         icon: e.icon, thumbnail: e.thumbnail,
@@ -1544,7 +1604,7 @@ async function loadModule(moduleType: string, url?: string) {
 
     // Broadcast discovered effects to the main thread
     post({
-      type: 'effectsDiscovered', effects: effects.map(e => ({
+      type: 'effectsDiscovered', bundle: moduleType, effects: effects.map(e => ({
         id: e.id, name: e.name, description: e.description,
         category: e.category, keywords: e.keywords, bundle: moduleType,
         icon: e.icon, thumbnail: e.thumbnail,

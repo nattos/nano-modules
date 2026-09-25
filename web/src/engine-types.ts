@@ -168,6 +168,7 @@ export type WorkerCommand =
   | { type: 'init'; width: number; height: number; barrelMode?: boolean }
   | { type: 'resize'; width: number; height: number }
   | { type: 'loadModule'; moduleType: string; url?: string }
+  | { type: 'unloadModule'; moduleType: string }
   | { type: 'instantiateEffect'; effectId: string }
   | { type: 'changeInstanceType'; sketchId: string; colIdx: number; chainIdx: number; newModuleType: string }
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
@@ -322,7 +323,9 @@ export interface StateDiff {
 export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
-  | { type: 'effectsDiscovered'; effects: EffectInfo[] }
+  /** `bundle` set: this is that bundle's WHOLE effect list — entries of it
+   *  not listed are gone (an empty list unloads it). */
+  | { type: 'effectsDiscovered'; effects: EffectInfo[]; bundle?: string }
   | { type: 'frame'; fps: number; gpuTimeMs?: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; modulationDataDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[]; comp?: CompFrameInfo }
   // Sidechannel-bus channel metadata (channel name → last writer + size).
   // Sent only when it CHANGES (new channel / writer identity / size), never

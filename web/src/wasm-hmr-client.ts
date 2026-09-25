@@ -13,6 +13,15 @@
 
 import { appController } from './state/controller';
 import { electronIpc } from './state/paths';
+import { bundleIdForUrl, bundleLabel } from './effect-bundles';
+import { offerBarrelModuleReload } from './module-reload';
+
+/** The FFGL plugin doesn't watch the disk; offer to pass a rebuilt effect
+ *  bundle on to it (module-reload.ts). Service modules aren't its concern. */
+function offerToResolume(url: string) {
+  const id = bundleIdForUrl(url);
+  if (id) offerBarrelModuleReload(bundleLabel(id));
+}
 
 const ipc = electronIpc();
 if (ipc && !import.meta.hot) {
@@ -20,6 +29,7 @@ if (ipc && !import.meta.hot) {
     if (!data?.url) return;
     console.log(`[wasm-hmr] ${new Date().toLocaleTimeString()} module directory changed: ${data.url}`);
     appController.reloadWasm(data.url);
+    offerToResolume(data.url);
   });
 }
 
@@ -33,6 +43,7 @@ if (import.meta.hot) {
     const t = (typeof performance !== 'undefined') ? performance.now() : Date.now();
     console.log(`[wasm-hmr] ${new Date().toLocaleTimeString()} reload requested for ${data.url} → forwarding to worker`);
     appController.reloadWasm(data.url);
+    offerToResolume(data.url);
     // Couldn't easily await the worker side; record dispatch time so the
     // engine's "[engine] reloaded WASM" log can be cross-referenced.
     (window as any).__lastWasmReloadDispatch = { url: data.url, t };

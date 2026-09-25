@@ -146,7 +146,12 @@ loads those bundles at startup through WAMR.
    `nano_module_main` runs, registering every effect it carries into the
    `ModuleRegistry` (schema publish + SPV -> MSL/HLSL translation + PSO build,
    on the real backend). There is **no static fallback** — a load failure means
-   a broken install and is logged.
+   a broken install and is logged. What loaded is published at
+   `/global/modules`. The set is not final: an editor's `reload_modules`
+   action re-resolves it on the next rendered frame and swaps, adds or unloads
+   whatever changed (`BarrelRuntime::Impl::reloadModules`; outcome at
+   `/global/modules_reload`). A `<stem>-<arch>.aot` sidecar older than its
+   `.wasm` is skipped.
 3. `effect_runtime::textInstallDefaultFonts(...)` — fonts are a host concern (see
    *Text effects* below).
 4. `SketchExecutor` constructed against the runtime + registry + GPUBackend. The
