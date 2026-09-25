@@ -635,6 +635,14 @@ function connectBarrel(url: string) {
     appController.applyModulationDataDiff({ changed: states, removed });
   };
 
+  // Which fields each card hides (the barrel runs the effects' static
+  // eval_visibility on every sketch change — this browser runs no engine in
+  // live mode). Replaced wholesale, like the worker's own broadcast, so a card
+  // that stops hiding anything drops its stale set.
+  const ingestHiddenFields = (data: any) => {
+    appController.setHiddenFields(coerceJsonObject(data) ?? {});
+  };
+
   // Apply a full /plugins/<key>/state object (schemas first — the sketch
   // apply path backfills instance defaults from them).
   const applyInstanceState = (state: any, forKey: string) => {
@@ -645,6 +653,7 @@ function connectBarrel(url: string) {
     ingestMacroOutputs(state.macro_outputs);
     ingestPluginStates(state.plugin_states);
     ingestModulationData(state.modulation_data);
+    ingestHiddenFields(state.hidden_fields);
   };
 
   // Parse /global/plugins into the NanoBarrel instance list for the Organize
@@ -718,6 +727,9 @@ function connectBarrel(url: string) {
       });
       barrel.onSnapshot(`${statePath}/modulation_data`, (data) => {
         if (key === currentKey) ingestModulationData(data);
+      });
+      barrel.onSnapshot(`${statePath}/hidden_fields`, (data) => {
+        if (key === currentKey) ingestHiddenFields(data);
       });
     }
 
@@ -1070,10 +1082,12 @@ function connectBarrel(url: string) {
     const macroOutputsPath = statePath ? `${statePath}/macro_outputs` : null;
     const pluginStatesPath = statePath ? `${statePath}/plugin_states` : null;
     const modulationDataPath = statePath ? `${statePath}/modulation_data` : null;
+    const hiddenFieldsPath = statePath ? `${statePath}/hidden_fields` : null;
     let sketchTouched = false;
     let railRefetch = false;
     let pluginStatesRefetch = false;
     let modulationRefetch = false;
+    let hiddenRefetch = false;
     for (const op of ops) {
       const p = typeof op?.path === 'string' ? op.path : '';
       if (p === '/global/plugins' || p.startsWith('/global/plugins')) {
@@ -1113,6 +1127,10 @@ function connectBarrel(url: string) {
       } else if (modulationDataPath && p.startsWith(modulationDataPath + '/')) {
         if (!applyModulationLeaf(p.slice(modulationDataPath.length), op.value))
           modulationRefetch = true;
+      } else if (p === hiddenFieldsPath) {
+        ingestHiddenFields(op.value);
+      } else if (hiddenFieldsPath && p.startsWith(hiddenFieldsPath + '/')) {
+        hiddenRefetch = true;          // rare (an edit): refetch the whole map
       }
     }
     if (globalTouched) barrel.get('/global/plugins');  // refresh the list
@@ -1120,6 +1138,7 @@ function connectBarrel(url: string) {
     if (railRefetch && sketchStatePath) barrel.get(sketchStatePath);
     if (pluginStatesRefetch && pluginStatesPath) barrel.get(pluginStatesPath);
     if (modulationRefetch && modulationDataPath) barrel.get(modulationDataPath);
+    if (hiddenRefetch && hiddenFieldsPath) barrel.get(hiddenFieldsPath);
   });
 
   const subscribe = () => {

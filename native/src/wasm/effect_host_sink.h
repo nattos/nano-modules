@@ -88,6 +88,12 @@ class EffectHostSink {
   // native listener that owns this instance. Default empty keeps other sinks
   // unaffected.
   virtual std::string instanceKey() const { return {}; }
+
+  // state.set_field_hidden — inspector field visibility. Only a static
+  // visibility query (EffectInstance::evalVisibility) listens: it collects
+  // what the effect's eval_visibility hides. Anywhere else it is a UI concern
+  // with no render effect, so the default drops it.
+  virtual void hostSetFieldHidden(std::string_view path, bool hidden) {}
 };
 
 }  // namespace wasm

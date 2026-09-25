@@ -231,7 +231,10 @@ struct EffectDesc_v2 {
     // visibility is derivable purely from state; effects that omit it are
     // assumed to have no dynamic visibility (or to require a live run). The
     // host calls it off the render path and reads back the resulting hidden set.
-    // Native barrels never call it (no inspector); web/editor only.
+    // The web editor calls it for clips that aren't executing; the native
+    // barrel calls it on every sketch change and publishes each card's set to
+    // a remote editor (/plugins/<key>/state/hidden_fields), which runs no
+    // engine of its own.
     // Trailing + optional: nullptr means "no static visibility evaluator".
     void (*eval_visibility)(int n, const char* pb,
                             const int* off, const int* len, const int* ops);

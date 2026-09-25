@@ -1137,9 +1137,22 @@ static void state_set_gpu_buffer(wasm_exec_env_t env,
   if (p) ctx->effect_instance->setBufferField(std::string(p, path_len), handle);
 }
 
+// state.set_field_hidden: inspector field visibility. Captured only while a
+// static visibility query runs (EffectInstance::evalVisibility, which the barrel
+// uses to tell a remote editor what each card hides); the sink drops it
+// otherwise.
+static void state_set_field_hidden(wasm_exec_env_t env,
+    int32_t path_ptr, int32_t path_len, int32_t hidden) {
+  auto* ctx = get_ctx(env);
+  if (!ctx || !ctx->effect_instance) return;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
+  char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
+  if (p) ctx->effect_instance->hostSetFieldHidden(std::string_view(p, path_len), hidden != 0);
+}
+
 // Intentional no-ops on the barrel render path (accepted so effects calling
 // them don't trap):
-//  - set_field_hidden: inspector field visibility — editor/web concern only.
 //  - mark_gpu_dirty: buffer-dirty hint; the barrel re-applies state each dirty
 //    frame regardless.
 //  - set_on_state_ready: a post-init/post-restore hook effects register in
@@ -1148,7 +1161,7 @@ static void state_set_gpu_buffer(wasm_exec_env_t env,
 //    render instances either (instanceFor copies the descriptor, not the
 //    prototype's on_state_ready_), so a no-op here MATCHES native — confirmed
 //    by pixel parity on the effects that use it (e.g. warp.crop, AE=0).
-static void state_set_field_hidden(wasm_exec_env_t, int32_t, int32_t, int32_t) {}
+//    Visibility reaches a remote editor through eval_visibility instead.
 static void state_mark_gpu_dirty(wasm_exec_env_t, int32_t, int32_t) {}
 static void state_set_on_state_ready(wasm_exec_env_t, int32_t) {}
 

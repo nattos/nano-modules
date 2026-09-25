@@ -3569,6 +3569,13 @@ export class AppController {
     });
   }
 
+  /** Per-instance hidden fields, whole (instance_key → hidden field names).
+   *  The worker's state broadcast sets them locally; live mode takes the
+   *  barrel's `hidden_fields` publish. */
+  setHiddenFields(hidden: Record<string, string[]>) {
+    runInAction(() => { appState.local.engine.hiddenFields = hidden; });
+  }
+
   applyModulationDataDiff(diff: import('../engine-types').StateDiff) {
     if (!diff) return;
     const changedKeys = Object.keys(diff.changed);

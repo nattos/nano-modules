@@ -544,6 +544,28 @@ if(NANO_HAS_GPU_BACKEND AND TARGET Catch2::Catch2WithMain AND
     ENVIRONMENT "NANO_BRIDGE_PORT=8172;NANO_DATA_DIR=${NANO_TEST_DATA_ROOT}"
     TIMEOUT 120)
 
+  # Which fields each card hides, published by the barrel for a remote editor
+  # (the effects' static eval_visibility, run natively).
+  add_executable(test_barrel_field_visibility tests/test_barrel_field_visibility.cpp
+                 ${_barrel_probe_tex})
+  target_link_libraries(test_barrel_field_visibility PRIVATE bridge_loader ixwebsocket
+    nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+  if(APPLE)
+    target_link_libraries(test_barrel_field_visibility PRIVATE
+      "-framework Metal" "-framework Foundation")
+  else()
+    target_include_directories(test_barrel_field_visibility PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_barrel_field_visibility PRIVATE d3d11)
+  endif()
+  add_dependencies(test_barrel_field_visibility bridge_server)
+  target_compile_definitions(test_barrel_field_visibility PRIVATE
+    BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
+    CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+  catch_discover_tests(test_barrel_field_visibility PROPERTIES
+    RUN_SERIAL TRUE
+    ENVIRONMENT "NANO_BRIDGE_PORT=8173;NANO_DATA_DIR=${NANO_TEST_DATA_ROOT}"
+    TIMEOUT 120)
+
   # The shared-surface preview transport (NBPS) through the real plugin path,
   # with a WebSocket client as the desktop editor. macOS: the consumer side
   # opens surfaces with IOSurfaceLookup, as the Electron addon does.

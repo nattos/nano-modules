@@ -452,69 +452,78 @@ void EffectInstance::setParamArray(const std::string& path,
 // active-instance pointer, and calls into on_state_patched. The
 // effect's callback may call state::getPatch(i) / val::asNumber etc.
 // — those resolve via the active instance + the in-scope val table.
+bool EffectInstance::stageWasmPatches(const std::vector<PendingPatch>& patches,
+                                      uint32_t out[4]) {
+  auto* h = desc_.wasm_host;
+  const int32_t mid = desc_.wasm_module_id;
+
+  // Build the packed path buffer + per-patch arrays (the on_state_patched
+  // ABI) and the {op,path,value} objects state.get_patch returns.
+  std::string pb;
+  std::vector<int32_t> off, len, ops;
+  off.reserve(patches.size());
+  len.reserve(patches.size());
+  ops.reserve(patches.size());
+  std::vector<nlohmann::json> pend;
+  pend.reserve(patches.size());
+  for (const auto& p : patches) {
+    off.push_back(static_cast<int32_t>(pb.size()));
+    len.push_back(static_cast<int32_t>(p.path.size()));
+    ops.push_back(p.op);
+    pb += p.path;
+    nlohmann::json obj;
+    obj["op"] = (p.op == 0 ? "add"
+                 : p.op == 1 ? "remove"
+                 : p.op == 2 ? "replace"
+                 : p.op == 3 ? "move"
+                             : "copy");
+    obj["path"] = p.path;
+    obj["value"] = nlohmann::json::parse(p.valueJson, nullptr, false);
+    pend.push_back(std::move(obj));
+  }
+  h->set_pending_patches(mid, std::move(pend));
+
+  // Copy the buffers into the module's linear memory as ONE persistent
+  // scratch allocation, reused (grow-only) across calls: [paths][off][len]
+  // [ops], int arrays 4-aligned. The previous 4×malloc + 4×free per call
+  // meant 9 wasm entries per patch fire — each paying WAMR's per-call
+  // setjmp/sigprocmask guard — on the per-wire per-frame path. Steady
+  // state is now exactly ONE wasm call (on_state_patched itself).
+  const uint32_t n = static_cast<uint32_t>(patches.size());
+  const uint32_t bytes = n * sizeof(int32_t);
+  const uint32_t pbAligned = (static_cast<uint32_t>(pb.size()) + 3u) & ~3u;
+  const uint32_t need = pbAligned + 3u * bytes;
+  if (patchBufCap_ < need || patchBufMid_ != mid) {
+    if (patchBuf_) h->app_free(patchBufMid_, patchBuf_);
+    patchBufCap_ = need < 256u ? 256u : (need + need / 2u);
+    patchBuf_ = h->app_malloc(mid, patchBufCap_, nullptr);
+    patchBufMid_ = mid;
+    if (!patchBuf_) { patchBufCap_ = 0; h->set_pending_patches(mid, {}); return false; }
+  }
+  // Re-resolve the native pointer every call (memory.grow moves the base).
+  uint8_t* base = static_cast<uint8_t*>(h->app_to_native(mid, patchBuf_, need));
+  if (!base) { h->set_pending_patches(mid, {}); return false; }
+  out[0] = patchBuf_;
+  out[1] = patchBuf_ + pbAligned;
+  out[2] = out[1] + bytes;
+  out[3] = out[2] + bytes;
+  std::memcpy(base, pb.data(), pb.size());
+  std::memcpy(base + pbAligned, off.data(), bytes);
+  std::memcpy(base + pbAligned + bytes, len.data(), bytes);
+  std::memcpy(base + pbAligned + 2u * bytes, ops.data(), bytes);
+  return true;
+}
+
 void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
   if (desc_.isWasm()) {
     const uint32_t on_patched = desc_.wfn("on_state_patched");
     if (!on_patched || patches.empty()) return;
     auto* h = desc_.wasm_host;
     const int32_t mid = desc_.wasm_module_id;
-
-    // Build the packed path buffer + per-patch arrays (the on_state_patched
-    // ABI) and the {op,path,value} objects state.get_patch returns.
-    std::string pb;
-    std::vector<int32_t> off, len, ops;
-    off.reserve(patches.size());
-    len.reserve(patches.size());
-    ops.reserve(patches.size());
-    std::vector<nlohmann::json> pend;
-    pend.reserve(patches.size());
-    for (const auto& p : patches) {
-      off.push_back(static_cast<int32_t>(pb.size()));
-      len.push_back(static_cast<int32_t>(p.path.size()));
-      ops.push_back(p.op);
-      pb += p.path;
-      nlohmann::json obj;
-      obj["op"] = (p.op == 0 ? "add"
-                   : p.op == 1 ? "remove"
-                   : p.op == 2 ? "replace"
-                   : p.op == 3 ? "move"
-                               : "copy");
-      obj["path"] = p.path;
-      obj["value"] = nlohmann::json::parse(p.valueJson, nullptr, false);
-      pend.push_back(std::move(obj));
-    }
-    h->set_pending_patches(mid, std::move(pend));
-
-    // Copy the buffers into the module's linear memory as ONE persistent
-    // scratch allocation, reused (grow-only) across calls: [paths][off][len]
-    // [ops], int arrays 4-aligned. The previous 4×malloc + 4×free per call
-    // meant 9 wasm entries per patch fire — each paying WAMR's per-call
-    // setjmp/sigprocmask guard — on the per-wire per-frame path. Steady
-    // state is now exactly ONE wasm call (on_state_patched itself).
-    const uint32_t n = static_cast<uint32_t>(patches.size());
-    const uint32_t bytes = n * sizeof(int32_t);
-    const uint32_t pbAligned = (static_cast<uint32_t>(pb.size()) + 3u) & ~3u;
-    const uint32_t need = pbAligned + 3u * bytes;
-    if (patchBufCap_ < need || patchBufMid_ != mid) {
-      if (patchBuf_) h->app_free(patchBufMid_, patchBuf_);
-      patchBufCap_ = need < 256u ? 256u : (need + need / 2u);
-      patchBuf_ = h->app_malloc(mid, patchBufCap_, nullptr);
-      patchBufMid_ = mid;
-      if (!patchBuf_) { patchBufCap_ = 0; h->set_pending_patches(mid, {}); return; }
-    }
-    // Re-resolve the native pointer every call (memory.grow moves the base).
-    uint8_t* base = static_cast<uint8_t*>(h->app_to_native(mid, patchBuf_, need));
-    if (!base) { h->set_pending_patches(mid, {}); return; }
-    const uint32_t pb_off  = patchBuf_;
-    const uint32_t off_off = patchBuf_ + pbAligned;
-    const uint32_t len_off = off_off + bytes;
-    const uint32_t ops_off = len_off + bytes;
-    std::memcpy(base, pb.data(), pb.size());
-    std::memcpy(base + pbAligned, off.data(), bytes);
-    std::memcpy(base + pbAligned + bytes, len.data(), bytes);
-    std::memcpy(base + pbAligned + 2u * bytes, ops.data(), bytes);
-
-    uint32_t argv[6] = {wasmSelf(), n, pb_off, off_off, len_off, ops_off};
+    uint32_t bufs[4];
+    if (!stageWasmPatches(patches, bufs)) return;
+    uint32_t argv[6] = {wasmSelf(), static_cast<uint32_t>(patches.size()),
+                        bufs[0], bufs[1], bufs[2], bufs[3]};
     h->set_effect_instance(mid, this);
     h->call_indirect(mid, on_patched, 6, argv);
     h->set_effect_instance(mid, nullptr);
@@ -562,6 +571,49 @@ void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
                          ops.empty() ? nullptr : ops.data());
 
   runtime_->setActive(nullptr);
+}
+
+void EffectInstance::hostSetFieldHidden(std::string_view path, bool hidden) {
+  if (!hiddenCapture_) return;
+  if (hidden) hiddenCapture_->emplace(path);
+  else hiddenCapture_->erase(std::string(path));
+}
+
+bool EffectInstance::hasVisibilityEvaluator() const {
+  return desc_.isWasm() && desc_.wfn("eval_visibility") != 0;
+}
+
+bool EffectInstance::evalVisibility(const nlohmann::json& state,
+                                    std::vector<std::string>* hidden) {
+  if (!hasVisibilityEvaluator()) return false;
+  std::vector<PendingPatch> patches;
+  if (state.is_object()) {
+    for (const auto& [k, v] : state.items()) {
+      // UI-only / internal keys never gate visibility (same filter as web).
+      if (k.rfind("__", 0) == 0) continue;
+      patches.push_back({k, 2, v.dump()});
+    }
+  }
+  auto* h = desc_.wasm_host;
+  const int32_t mid = desc_.wasm_module_id;
+  uint32_t argv[5] = {0, 0, 0, 0, 0};
+  // An empty state still resolves the defaults: the evaluator defaults every
+  // gating field itself.
+  if (!patches.empty()) {
+    uint32_t bufs[4];
+    if (!stageWasmPatches(patches, bufs)) return false;
+    argv[0] = static_cast<uint32_t>(patches.size());
+    for (int i = 0; i < 4; ++i) argv[i + 1] = bufs[i];
+  }
+  std::set<std::string> captured;
+  hiddenCapture_ = &captured;
+  h->set_effect_instance(mid, this);
+  h->call_indirect(mid, desc_.wfn("eval_visibility"), 5, argv);
+  h->set_effect_instance(mid, nullptr);
+  h->set_pending_patches(mid, {});
+  hiddenCapture_ = nullptr;
+  if (hidden) hidden->assign(captured.begin(), captured.end());
+  return true;
 }
 
 int EffectInstance::val_alloc(std::string_view jsonValue) {

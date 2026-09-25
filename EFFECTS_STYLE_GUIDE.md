@@ -112,6 +112,14 @@ Why this shape:
 
 The hidden SET, unlike the schema, is per INSTANCE, and the editor resolves it that way: each live instance's set ships keyed by `instance_key` and `ideColumnAdapter.getPlugin(moduleType, instanceKey)` overlays it per card, so two cards of one type in different modes never share an answer. (The `hidden` flags on the broadcast `plugins[].schema` are a type-level, first-host-wins approximation, kept only as the fallback for an instance that hasn't executed yet.)
 
+**Also declare `eval_visibility`** — the same rule as a static, self-less function of state
+(see `env_lfo` / `crop`: parse `mode` from the replace ops, then call the shared
+`apply_mode_visibility`). The live path above only answers where the BROWSER runs the instance.
+Two editors don't: the arrangement, for a clip off the playhead, and Remote Control connected to
+Resolume, where the barrel renders and the browser runs no engine at all. The barrel runs
+`eval_visibility` over each card's state on every sketch change and publishes the sets at
+`/plugins/<key>/state/hidden_fields`. An effect without it shows every field in both.
+
 **Variable arity — a count field, not a variable schema**
 
 An effect whose *number* of inputs the user picks is the same pattern taken one step further: declare a fixed bank at the maximum (`input_1` … `input_8`), plus an `input_count` field the effect reads, and fold only the first N. There is no alternative — `module_init` takes no `self`, the executor caches schemas by `module_type`, and `slot.registeredSchemas` skips the second instance of a type outright, so arity can only ever be a value, never a shape. `mod.shaper.add` and its siblings (`native/wasm_modules/mod_math/main.cpp`) are the reference.

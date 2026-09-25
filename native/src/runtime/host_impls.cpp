@@ -117,7 +117,11 @@ void state_set_gpu_texture(const char* path, int path_len, int texture_handle) {
   if (!inst) return;
   inst->setTextureField(std::string(path, path_len), texture_handle);
 }
-void state_set_field_hidden(const char* /*path*/, int /*path_len*/, int /*hidden*/) {}
+void state_set_field_hidden(const char* path, int path_len, int hidden) {
+  auto* inst = active();
+  if (!inst) return;
+  inst->hostSetFieldHidden(std::string_view(path, path_len), hidden != 0);
+}
 
 int state_is_field_connected(const char* path, int path_len, int direction) {
   auto* inst = active();

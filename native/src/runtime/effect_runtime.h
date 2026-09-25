@@ -18,6 +18,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -255,6 +256,17 @@ class EffectInstance : public wasm::EffectHostSink {
                               int uniformBufferHandle, int uniformSizeBytes,
                               uint32_t prepareIdx) override;
   void hostSetOnStateReady(void (*fn)(void* self));
+  void hostSetFieldHidden(std::string_view path, bool hidden) override;
+
+  // STATIC visibility query (EffectDesc_v2.eval_visibility): which fields the
+  // effect hides for `state` (a JSON object of field → value), without a live
+  // instance — the evaluator is self-less and pure over state. Call it on the
+  // type prototype. Returns false when the effect declares no evaluator (its
+  // visibility doesn't depend on state). `hidden` comes back sorted. Mirrors
+  // the web's WasmHost.evaluateVisibility: one replace op per top-level key,
+  // "__"-prefixed keys skipped.
+  bool hasVisibilityEvaluator() const;
+  bool evalVisibility(const nlohmann::json& state, std::vector<std::string>* hidden);
 
   // Patch reading — driven by setParam* methods. Held only for the
   // duration of doOnStatePatched. The path buffer (pb) and arrays
@@ -272,6 +284,12 @@ class EffectInstance : public wasm::EffectHostSink {
 
  private:
   void firePatched(const std::vector<PendingPatch>& patches);
+  // Copy `patches` into the module's linear memory as the on_state_patched
+  // buffers and set them as the pending patches state.get_patch reads. Fills
+  // out[0..3] = {paths, offsets, lengths, ops} app offsets. False on failure.
+  bool stageWasmPatches(const std::vector<PendingPatch>& patches, uint32_t out[4]);
+  // Non-null only during evalVisibility: set_field_hidden lands here.
+  std::set<std::string>* hiddenCapture_ = nullptr;
 
   // --- WASM driver helpers (no-ops on native-backed descriptors) ---
   // The current user_state_ as a wasm32 linear-memory offset (the State* an

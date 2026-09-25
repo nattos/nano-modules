@@ -267,6 +267,12 @@ struct BarrelRuntime::Impl {
     bool haveLastMacroOut = false;
     bool haveLastPluginStates = false;
     bool haveLastModulation = false;
+    // Per-instance hidden fields (the effects' static eval_visibility over each
+    // instance's state), published at <base>/hidden_fields for a remote editor.
+    // Recomputed only when the sketch is refetched or the modules reload.
+    nlohmann::json lastHidden;
+    bool haveLastHidden = false;
+    bool hiddenStale = true;
     // Host-elapsed time of the last preview-capture frame, for rate limiting.
     double lastPreviewElapsed = -1e9;
     // Control aliases (device→device wires) from THIS instance's sketch,
@@ -359,6 +365,28 @@ struct BarrelRuntime::Impl {
     return file != b.file || nano_paths::statFile(file) != b.fileStamp;
   }
 
+  /// `{instance_key: [hidden field, ...]}` for every instance in `sketch`
+  /// whose effect declares a static visibility evaluator. An instance that
+  /// hides nothing maps to [] — it still overrides the schema's type-level
+  /// flags on the editor side.
+  nlohmann::json hiddenFieldsFor(const nlohmann::json& sketch) {
+    nlohmann::json out = nlohmann::json::object();
+    auto it = sketch.find("instances");
+    if (it == sketch.end() || !it->is_object()) return out;
+    static const nlohmann::json kEmpty = nlohmann::json::object();
+    std::vector<std::string> hidden;
+    for (const auto& [ik, inst] : it->items()) {
+      if (!inst.is_object()) continue;
+      auto* proto = rt->find(inst.value("module_type", std::string()));
+      if (!proto || !proto->hasVisibilityEvaluator()) continue;
+      auto st = inst.find("state");
+      hidden.clear();
+      if (proto->evalVisibility(st != inst.end() ? *st : kEmpty, &hidden))
+        out[ik] = hidden;
+    }
+    return out;
+  }
+
   void publishModules() {
     nlohmann::json loaded = nlohmann::json::array();
     for (const auto& b : loadedBundles) {
@@ -435,6 +463,7 @@ struct BarrelRuntime::Impl {
       for (auto& [key, pe] : executors) {
         pe.executor->resetModuleSchemas();
         pe.haveLastPluginStates = false;
+        pe.hiddenStale = true;
       }
       const std::string schemas = catalogJson();
       for (auto& [key, pe] : executors)
@@ -1520,7 +1549,11 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // web's compile-once GraphDefinition.
   if (dirty || !pe.haveSketch) {
     auto parsed = nlohmann::json::parse(server.get_at(base + "/sketch"), nullptr, false);
-    if (!parsed.is_discarded()) { pe.sketch = std::move(parsed); pe.haveSketch = true; }
+    if (!parsed.is_discarded()) {
+      pe.sketch = std::move(parsed);
+      pe.haveSketch = true;
+      pe.hiddenStale = true;
+    }
     impl_->refreshPreviewRequests(pe, server.get_at(base + "/preview_requests"));
     // Control aliases travel in the document, so they re-derive with it.
     pe.aliasEdges = nano_midi::collectAliasEdges(pe.sketch);
@@ -1733,6 +1766,23 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
       pe.haveLastModulation = true;
       if (!firstAndEmpty)
         server.set_at(base + "/modulation_data", md.dump());
+    }
+  }
+
+  // Which fields each card hides, for a remote editor. The browser runs no
+  // engine in live mode, and every instance renders here, so the plugin is the
+  // one to ask: the effect's static eval_visibility over that instance's state
+  // (the same evaluator the web uses). Only on a sketch change — an edit —
+  // never per frame.
+  if (watched && pe.hiddenStale) {
+    pe.hiddenStale = false;
+    const nlohmann::json hidden = impl_->hiddenFieldsFor(pe.sketch);
+    if (!pe.haveLastHidden || hidden != pe.lastHidden) {
+      const bool firstAndEmpty = !pe.haveLastHidden && hidden.empty();
+      pe.lastHidden = hidden;
+      pe.haveLastHidden = true;
+      if (!firstAndEmpty)
+        server.set_at(base + "/hidden_fields", hidden.dump());
     }
   }
 
