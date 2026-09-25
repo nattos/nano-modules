@@ -440,8 +440,18 @@ minor, patch}, …)`, and every bundle declares a module version once in its
 `nano_module_main` via `state::setModuleVersion({major, minor, patch})`
 (defaults to `1.0.0`). Both ride the schema and get **recorded onto each
 serialized instance** (`instance.version.{effect, module}`), alongside a
-top-level engine version on the sketch. There are no migrations yet — these are
-recorded so a future load can *detect* an incompatibility.
+top-level engine version on the sketch. A MINOR bump whose old values can be
+converted gets a **migration**: an entry in `native/src/sketch/effect_migrations.h`
+and its lock-step twin `web/src/state/effect-migrations.ts`, pinned by the shared
+cases in `web/test/fixtures/effect-migration-cases.json`. A migration names the
+effect and the version it upgrades TO; it runs on any instance recorded below
+that version (an unversioned instance counts as oldest) and stamps the new one,
+so it never runs twice. The web runs it on every sketch it ingests
+(`normalizeSketchChains`) and every arrangement it opens (arrangement devices
+carry no version, so the composition's `migrations` list records what has run);
+the barrel runs it on every sketch it refetches, which upgrades a Resolume
+composition even with no editor connected. `mod.source.lfo` 1.2.0 is the first
+(its `rate` became Hz: ×10).
 
 The one rule that matters: **MINOR = serialization break.** The middle number is
 the contract for "can an older sketch's stored `state` still be read?"
@@ -749,6 +759,8 @@ Common patterns:
 - **dB for gain.** `gain = pow(10, slider_db / 20)` if you must expose audio-style gain. But often a `[0,1]` "amount" with a perceptual curve is friendlier than dB.
 
 Document the mapping in the field's description string so the UI / param linker can make it visible.
+
+**A real unit on a log slider: `.logScale()`.** When the natural unit spans decades — a rate in Hz, a time in seconds — you can store the real value and let the slider do the curve: declare the float field with `min > 0` and chain `.logScale()` (e.g. `mod.source.lfo`'s `rate`, 0.01–120 Hz). The slider then gives every decade equal travel. Wires and automation fold in that same travel, so a wire's magnitude sweeps the slider evenly instead of the raw number. The stored value stays the plain number. A value below `min` (0 typed in, say) sits at the start of the travel.
 
 ### 1.4 Aspect-ratio aware
 

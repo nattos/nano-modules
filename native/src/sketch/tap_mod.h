@@ -157,4 +157,39 @@ inline float applyMagnitude(float existing, float input, bool isSigned,
   }
 }
 
+/// A LOG-scaled field (schema `"scale":"log"`, min > 0) is modulated in
+/// slider space: the value's position along log(min)..log(max). These map a
+/// value into that 0..1 travel and back. Linear (or an unusable log range —
+/// min <= 0) is the identity affine map. LOCK-STEP twin of
+/// web/src/widgets/slider-scale.ts.
+inline bool logScaleUsable(float minV, float maxV) {
+  return minV > 0.0f && maxV > minV;
+}
+inline float toScaleTravel(float v, float minV, float maxV, bool logScale) {
+  if (logScale && logScaleUsable(minV, maxV)) {
+    const float c = v < minV ? minV : v;   // log travel starts at min
+    return std::log(c / minV) / std::log(maxV / minV);
+  }
+  const float span = maxV - minV;
+  return span != 0.0f ? (v - minV) / span : 0.0f;
+}
+inline float fromScaleTravel(float t, float minV, float maxV, bool logScale) {
+  if (logScale && logScaleUsable(minV, maxV))
+    return minV * std::exp(t * std::log(maxV / minV));
+  return minV + t * (maxV - minV);
+}
+
+/// applyMagnitude for a destination that may be log-scaled: the fold runs in
+/// slider travel (0..1) and the result maps back, so a wire sweeps a log field
+/// evenly across its decades. Linear destinations take applyMagnitude as-is.
+inline float applyMagnitudeScaled(float existing, float input, bool isSigned,
+                                  Combine combine, float mixFactor,
+                                  float minV, float maxV, bool logScale) {
+  if (!logScale || !logScaleUsable(minV, maxV))
+    return applyMagnitude(existing, input, isSigned, combine, mixFactor, minV, maxV);
+  const float t = applyMagnitude(toScaleTravel(existing, minV, maxV, true), input,
+                                 isSigned, combine, mixFactor, 0.0f, 1.0f);
+  return fromScaleTravel(t, minV, maxV, true);
+}
+
 }  // namespace tap_mod

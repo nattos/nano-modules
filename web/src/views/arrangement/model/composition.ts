@@ -11,6 +11,7 @@
  * list) that maps onto a real Structor `Sketch` (ChainEntry[]) in M2+.
  */
 
+import { ALL_MIGRATION_IDS } from '../../../state/effect-migrations';
 import type { Wire as SketchWire } from '../../../sketch-types';
 
 export interface Resolution {
@@ -771,6 +772,14 @@ export interface Composition {
    * (enabled, [0, 32]).
    */
   loop?: { enabled: boolean; startBeat: number; endBeat: number };
+  /**
+   * Effect state migrations already applied (state/effect-migrations.ts ids).
+   * Devices carry no per-instance version, so this is how a file says its
+   * device state is current: opening one runs whichever migrations it lacks
+   * and records them. A new composition starts with all of them. Omitted on
+   * files saved before migrations existed ⇒ all of them run.
+   */
+  migrations?: string[];
 }
 
 /** Stable id of the master/main-bus group. Identity is by THIS id (not just
@@ -835,6 +844,7 @@ export function emptyComposition(): Composition {
     tracks: [makeStarterTrack(), makeMainBus()],
     rails: [],
     playMode: { defaultMode: 'time' },
+    migrations: [...ALL_MIGRATION_IDS],
   };
 }
 

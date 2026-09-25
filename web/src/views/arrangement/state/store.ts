@@ -64,6 +64,7 @@ import {
   type PathsFileHandle,
 } from '../../../state/paths';
 import { resolveFileRef } from '../../../state/handle-ref';
+import { ALL_MIGRATION_IDS, migrateDeviceState } from '../../../state/effect-migrations';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
 import {
   allLanes,
@@ -6262,6 +6263,22 @@ export class ArrangementStore {
           freshClipIds(c);
         }
         seenClips.add(c.id);
+      }
+    }
+    // Effect state migrations this file hasn't run (its devices carry no
+    // version — the composition's list is the record). Then mark them all run.
+    const pending = new Set(ALL_MIGRATION_IDS.filter((id) => !comp.migrations?.includes(id)));
+    const migrateDevices = (devices: Device[] | undefined) => {
+      if (!devices || pending.size === 0) return;
+      for (const d of devices) d.state = migrateDeviceState(d.moduleType, d.state, pending);
+    };
+    comp.migrations = [...ALL_MIGRATION_IDS];
+    for (const t of allLanes(comp)) {
+      migrateDevices(t.sketch?.devices);
+      migrateDevices(t.transport?.devices);
+      for (const c of t.clips ?? []) {
+        migrateDevices(c.sketch?.devices);
+        migrateDevices(c.transport?.devices);
       }
     }
     for (const t of allLanes(comp)) {

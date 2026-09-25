@@ -1,0 +1,44 @@
+{
+  "_doc": "Shared TS/C++ cases for effect state migrations (web/src/state/effect-migrations.ts, native/src/sketch/effect_migrations.h). Each case migrates `instance` and expects `expected`.",
+  "cases": [
+    {
+      "name": "lfo 1.1.0 rate is scaled to Hz and stamped",
+      "instance": { "module_type": "mod.source.lfo", "state": { "rate": 0.5, "mode": 0 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 1, 0] } },
+      "expected": { "module_type": "mod.source.lfo", "state": { "rate": 5.0, "mode": 0 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 2, 0] } }
+    },
+    {
+      "name": "an unversioned lfo is legacy",
+      "instance": { "module_type": "mod.source.lfo", "state": { "rate": 0.25 } },
+      "expected": { "module_type": "mod.source.lfo", "state": { "rate": 2.5 },
+                    "version": { "module": [0, 0, 0], "effect": [1, 2, 0] } }
+    },
+    {
+      "name": "a stopped lfo stays stopped",
+      "instance": { "module_type": "mod.source.lfo", "state": { "rate": 0 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 1, 0] } },
+      "expected": { "module_type": "mod.source.lfo", "state": { "rate": 0 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 2, 0] } }
+    },
+    {
+      "name": "an lfo without a rate is only stamped",
+      "instance": { "module_type": "mod.source.lfo", "state": { "waveform": 3 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 0, 2] } },
+      "expected": { "module_type": "mod.source.lfo", "state": { "waveform": 3 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 2, 0] } }
+    },
+    {
+      "name": "a current lfo is untouched",
+      "instance": { "module_type": "mod.source.lfo", "state": { "rate": 40 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 2, 0] } },
+      "expected": { "module_type": "mod.source.lfo", "state": { "rate": 40 },
+                    "version": { "module": [1, 0, 0], "effect": [1, 2, 0] } }
+    },
+    {
+      "name": "another effect's rate is not an lfo rate",
+      "instance": { "module_type": "mod.source.time", "state": { "rate": 0.5 } },
+      "expected": { "module_type": "mod.source.time", "state": { "rate": 0.5 } }
+    }
+  ]
+}

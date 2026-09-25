@@ -310,10 +310,12 @@ void recordModBand(json& modData, const std::string& instanceKey,
 //   add / mix → the user's base value (input 0 contributes nothing);
 //   mul       → 0 (the multiplicative origin).
 inline float modNeutral(tap_mod::Combine combine, bool isSigned,
-                        float base, float dmin, float dmax) {
+                        float base, float dmin, float dmax, bool destLog = false) {
   switch (combine) {
     case tap_mod::Combine::Mul:     return 0.0f;
-    case tap_mod::Combine::Replace: return isSigned ? (dmin + dmax) * 0.5f : dmin;
+    case tap_mod::Combine::Replace:
+      // The midpoint of the slider's TRAVEL (geometric on a log field).
+      return tap_mod::fromScaleTravel(isSigned ? 0.5f : 0.0f, dmin, dmax, destLog);
     case tap_mod::Combine::Add:
     case tap_mod::Combine::Mix:
     default:                        return base;
@@ -334,6 +336,7 @@ struct TapFold {
   bool  hasMag = false;      // magnitude present -> range-aware fold
   bool  isSigned = false;
   float dmin = 0.0f, dmax = 1.0f;
+  bool  destLog = false;     // dest is log-scaled: fold in slider travel
   float preScale = 1.0f, preBias = 0.0f;
 };
 
@@ -346,6 +349,7 @@ TapFold parseTapFold(const json& tap) {
   f.isSigned  = tap.value("magnitude", std::string()) == "signed";
   f.dmin      = (float)tap.value("destMin", 0.0);
   f.dmax      = (float)tap.value("destMax", 1.0);
+  f.destLog   = tap.value("destScale", std::string()) == "log";
   // Polarity prescale (identity unless the wire forces signed/unsigned against
   // an opposite EXPLICIT source decl -- see normalization). Applied to the raw
   // value BEFORE applyTapMod, so the conversion's affine bias is inside what
@@ -362,8 +366,9 @@ TapFold parseTapFold(const json& tap) {
 inline float foldOne(const TapFold& f, float v, bool hasCanon, float canon) {
   const float shaped = tap_mod::applyTapMod(v * f.preScale + f.preBias, f.mod);
   return f.hasMag
-      ? tap_mod::applyMagnitude(hasCanon ? canon : f.dmin, shaped, f.isSigned,
-                                f.combine, f.mixFactor, f.dmin, f.dmax)
+      ? tap_mod::applyMagnitudeScaled(hasCanon ? canon : f.dmin, shaped, f.isSigned,
+                                      f.combine, f.mixFactor, f.dmin, f.dmax,
+                                      f.destLog)
       : tap_mod::combineTap(hasCanon, canon, shaped, f.combine, f.mixFactor);
 }
 
@@ -1208,6 +1213,7 @@ int32_t SketchExecutor::execute(
               rtap["preBias"] = -1.0;
             }
             double dmin = 0.0, dmax = 1.0;
+            bool destLog = false;
             const RegisteredModule* dreg = findSchema(
                 chain[di->second].value("module_type", std::string()));
             if (dreg && dreg->schemaFields.is_object()) {
@@ -1215,11 +1221,13 @@ int32_t SketchExecutor::execute(
               if (dfit != dreg->schemaFields.end() && dfit->is_object()) {
                 dmin = dfit->value("min", 0.0);
                 dmax = dfit->value("max", 1.0);
+                destLog = dfit->value("scale", std::string()) == "log";
               }
             }
             rtap["magnitude"] = mag;
             rtap["destMin"] = dmin;
             rtap["destMax"] = dmax;
+            if (destLog) rtap["destScale"] = "log";
           }
           chain[di->second]["taps"].push_back(std::move(rtap));
           continue;
@@ -1331,6 +1339,7 @@ int32_t SketchExecutor::execute(
             //  the forced polarity is taken at face value, as before.)
             // Dest field's [min,max] (default 0..1, e.g. dashboard knobs).
             double dmin = 0.0, dmax = 1.0;
+            bool destLog = false;
             const RegisteredModule* dreg =
                 findSchema(chain[di->second].value("module_type", std::string()));
             if (dreg && dreg->schemaFields.is_object()) {
@@ -1338,11 +1347,13 @@ int32_t SketchExecutor::execute(
               if (dfit != dreg->schemaFields.end() && dfit->is_object()) {
                 dmin = dfit->value("min", 0.0);
                 dmax = dfit->value("max", 1.0);
+                destLog = dfit->value("scale", std::string()) == "log";
               }
             }
             rtap["magnitude"] = mag;   // "signed" | "unsigned"
             rtap["destMin"] = dmin;
             rtap["destMax"] = dmax;
+            if (destLog) rtap["destScale"] = "log";
           }
         }
         chain[di->second]["taps"].push_back(rtap);
@@ -2514,7 +2525,8 @@ float SketchExecutor::foldFloatReadTap(const json& tap, const std::string& insta
   // fold modulates from (dmin seeds when no canonical).
   recordModBand(modulationData_, instanceKey, fieldPath, combined,
                 modNeutral(params.combine, params.isSigned,
-                           hasCanon ? canon : params.dmin, params.dmin, params.dmax),
+                           hasCanon ? canon : params.dmin, params.dmin, params.dmax,
+                           params.destLog),
                 (float)tap.value("srcMin", 0.0),
                 (float)tap.value("srcMax", 1.0), fold);
   return combined;
@@ -2766,7 +2778,7 @@ void SketchExecutor::applyReadTaps(
                                  combined, delaySec);
         recordModBand(modulationData_, instanceKey, laneField, combined,
                       modNeutral(params.combine, params.isSigned, base,
-                                 params.dmin, params.dmax),
+                                 params.dmin, params.dmax, params.destLog),
                       srcMin, srcMax, foldLane);
         running.comps[(size_t)i] = combined;
         running.drivenMask |= (1u << i);
@@ -3037,6 +3049,7 @@ void SketchExecutor::applyAutomation(
     // A vector declares ONE min/max across all its components, so the same
     // contract covers every lane.
     float dmin = 0.0f, dmax = 1.0f;
+    bool destLog = false;
     int width = 1;
     const json* fieldDef = nullptr;
     if (reg && reg->schemaFields.is_object()) {
@@ -3045,6 +3058,7 @@ void SketchExecutor::applyAutomation(
         fieldDef = &(*f);
         dmin = (float)f->value("min", 0.0);
         dmax = (float)f->value("max", 1.0);
+        destLog = f->value("scale", std::string()) == "log";
         const std::string t = f->value("type", std::string());
         if (t == "float2") width = 2;
         else if (t == "float3") width = 3;
@@ -3095,8 +3109,8 @@ void SketchExecutor::applyAutomation(
         // A live wire drove this lane THIS frame — same precedence as the
         // scalar gate above, just per lane instead of per field.
         if (st.wireMask & (1u << i)) continue;
-        st.out[(size_t)i] = tap_mod::applyMagnitude(
-            st.base[(size_t)i], value, isSigned, combine, 1.0f, dmin, dmax);
+        st.out[(size_t)i] = tap_mod::applyMagnitudeScaled(
+            st.base[(size_t)i], value, isSigned, combine, 1.0f, dmin, dmax, destLog);
         st.autoMask |= (1u << i);
       }
       continue;
@@ -3108,8 +3122,8 @@ void SketchExecutor::applyAutomation(
       canon = (float)(*canonState)[field].get<double>();
       hasCanon = true;
     }
-    const float combined = tap_mod::applyMagnitude(
-        hasCanon ? canon : dmin, value, isSigned, combine, 1.0f, dmin, dmax);
+    const float combined = tap_mod::applyMagnitudeScaled(
+        hasCanon ? canon : dmin, value, isSigned, combine, 1.0f, dmin, dmax, destLog);
     inst.setParamFloat(field, combined);
     inst.setFieldConnected(field, true, false);
     if (outModulatedScalars) (*outModulatedScalars)[field] = combined;

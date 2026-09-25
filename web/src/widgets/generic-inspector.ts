@@ -16,6 +16,7 @@
  *   inspector(binding)  // inside render()
  */
 
+import type { SliderScale } from './slider-scale';
 import { html, TemplateResult, nothing } from 'lit';
 import type { FieldBinding } from './field-editor';
 import './scalar-slider';
@@ -36,8 +37,8 @@ export type InspectorFieldDef =
   | { type: 'string'; label: string; path: string; placeholder?: string; default?: string; multiline?: boolean; description?: string }
   /// Font-family picker (searchable list with previews) for string `font` params.
   | { type: 'font'; label: string; path: string; default?: string; description?: string }
-  | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number; units?: string; description?: string }
-  | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number; units?: string; description?: string }
+  | { type: 'number'; label: string; path: string; min?: number; max?: number; step?: number; default?: number; units?: string; description?: string; scale?: SliderScale }
+  | { type: 'slider'; label: string; path: string; min: number; max: number; step?: number; default?: number; units?: string; description?: string; scale?: SliderScale }
   | { type: 'boolean'; label: string; path: string; default?: boolean; description?: string }
   | { type: 'select'; label: string; path: string; options: { label: string; value: any }[]; default?: any; wrap?: boolean; description?: string }
   | { type: 'button'; label: string; path: string; text?: string }
@@ -98,6 +99,7 @@ const renderNumber = (binding: FieldBinding, f: Extract<InspectorFieldDef, { typ
     .max=${f.max ?? 1}
     .step=${f.step ?? 0.01}
     .units=${f.units ?? ''}
+    .scale=${f.scale ?? 'linear'}
     .defaultValue=${f.default ?? 0}
     .binding=${binding}
   ></scalar-slider>
@@ -111,6 +113,7 @@ const renderSlider = (binding: FieldBinding, f: Extract<InspectorFieldDef, { typ
     .max=${f.max}
     .step=${f.step ?? 0.01}
     .units=${f.units ?? ''}
+    .scale=${f.scale ?? 'linear'}
     .defaultValue=${f.default ?? f.min}
     .binding=${binding}
   ></scalar-slider>

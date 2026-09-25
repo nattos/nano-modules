@@ -2630,6 +2630,7 @@ export class ColumnGroup extends MobxLitElement {
           if (fieldDef.type === 'slider' || fieldDef.type === 'number') {
             if (typeof d.step === 'number' && d.step > 0) fieldDef.step = d.step;
             if (typeof d.units === 'string') fieldDef.units = d.units;
+            if (d.scale === 'log') fieldDef.scale = 'log';
           }
           if (typeof d.description === 'string') (fieldDef as any).description = d.description;
           push(fieldDef);

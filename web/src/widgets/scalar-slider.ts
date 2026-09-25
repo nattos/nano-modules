@@ -13,6 +13,7 @@
  * - 'change' on commit (pointer up, enter, blur) (detail: number)
  */
 
+import { fromTravel, roundForScale, toTravel, type SliderScale } from './slider-scale';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { CancelReason, PointerDragOp } from '../utils/pointer-drag-op';
@@ -43,10 +44,11 @@ export interface ModBandGeometry {
 export function modBandGeometry(
   min: number, max: number,
   mod: { value: number; min: number; max: number; neutral?: number },
+  scale: SliderScale = 'linear',
 ): ModBandGeometry {
   const norm = (v: number): number => {
     if (!(Number.isFinite(min) && Number.isFinite(max) && max > min)) return 0;
-    return Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+    return Math.max(0, Math.min(100, toTravel(v, min, max, scale) * 100));
   };
   const lo = norm(Math.min(mod.min, mod.max));
   const hi = norm(Math.max(mod.min, mod.max));
@@ -68,6 +70,8 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
   @property({ type: Number }) step = 0.01;
   @property() units = '';
   @property({ type: Number }) defaultValue = 0;
+  /** The field's declared travel (schema `scale`): 'log' spaces decades evenly. */
+  @property() scale: SliderScale = 'linear';
   /** Render the filled bar as a solid accent GRADIENT (instead of the default
    *  hatched stripes) — for prominent value sliders like opacity. */
   @property({ type: Boolean, reflect: true }) gradient = false;
@@ -323,7 +327,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     let barWidth = 0;
     if (!mixed && Number.isFinite(this.min) && Number.isFinite(this.max) && this.max > this.min) {
       const clamped = Math.max(this.min, Math.min(this.max, val));
-      barWidth = ((clamped - this.min) / (this.max - this.min)) * 100;
+      barWidth = toTravel(clamped, this.min, this.max, this.scale) * 100;
     }
 
     const mod = mixed ? null : (this.binding?.getModulation?.(this.fieldPath) ?? null);
@@ -344,7 +348,7 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
 
   /** Render the modulation range band + the filled neutral→value bar. */
   private renderModStrip(mod: { value: number; min: number; max: number; neutral: number }) {
-    const g = modBandGeometry(this.min, this.max, mod);
+    const g = modBandGeometry(this.min, this.max, mod, this.scale);
     return html`
       <div class="mod-strip">
         <div class="mod-band" style="left: ${g.lo}%; width: ${g.width}%"></div>
@@ -356,6 +360,8 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
   private formatValue(val: number): string {
     if (typeof val !== 'number' || isNaN(val)) return '0';
     const suffix = this.units ? ` ${this.units}` : '';
+    // A log slider shows three significant figures (0.0123, 1.23, 45.6).
+    if (this.scale === 'log') return `${Number(roundForScale(val, this.step, 'log').toPrecision(3))}${suffix}`;
     if (Number.isInteger(this.step)) return val.toString() + suffix;
     const decimals = this.step.toString().split('.')[1]?.length || 0;
     return val.toFixed(decimals) + suffix;
@@ -419,23 +425,22 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
       if (!Number.isFinite(range)) {
         newValue = this.startValue + (deltaX * 0.1 * this.step);
       } else {
+        // Fine drag: a tenth of the slider's travel per width, in its own scale.
         const width = this.rect?.width || 100;
-        const deltaValue = (deltaX / width) * range * 0.1;
-        newValue = this.startValue + deltaValue;
+        const t0 = toTravel(this.startValue, this.min, this.max, this.scale);
+        newValue = fromTravel(t0 + (deltaX / width) * 0.1, this.min, this.max, this.scale);
       }
     } else {
       if (this.rect && Number.isFinite(this.min) && Number.isFinite(this.max)) {
         const relativeX = e.clientX - this.rect.left;
         const ratio = Math.max(0, Math.min(1, relativeX / this.rect.width));
-        newValue = this.min + ratio * (this.max - this.min);
+        newValue = fromTravel(ratio, this.min, this.max, this.scale);
       } else {
         newValue = this.startValue + deltaX * this.step;
       }
     }
 
-    const precision = this.step.toString().split('.')[1]?.length || 0;
-    const factor = Math.pow(10, precision);
-    newValue = Math.round(newValue * factor) / factor;
+    newValue = roundForScale(newValue, this.step, this.scale);
 
     if (!e.ctrlKey) {
       newValue = Math.max(this.min, Math.min(this.max, newValue));

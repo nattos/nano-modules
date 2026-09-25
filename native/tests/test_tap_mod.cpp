@@ -182,3 +182,40 @@ TEST_CASE("applyMagnitude mix blends existing toward the mapped replace value", 
 TEST_CASE("applyMagnitude unsigned replace into 0..1 is a pass-through (== absolute)", "[tap_mod]") {
   REQUIRE_THAT(applyMagnitude(0.7f, 0.5f, false, Combine::Replace, 1, 0.0f, 1.0f), WithinAbs(0.5, 1e-5));
 }
+
+// --- Log-scaled destinations (schema "scale":"log") ---
+// The fold runs in slider travel, so a wire sweeps a log field evenly across
+// its decades. Lock-step with web/src/widgets/slider-scale.ts.
+
+TEST_CASE("scale travel: every decade of a log field gets the same travel", "[tap_mod]") {
+  REQUIRE_THAT(toScaleTravel(0.1f, 0.01f, 100.f, true), WithinAbs(0.25f, 1e-5f));
+  REQUIRE_THAT(toScaleTravel(1.0f, 0.01f, 100.f, true), WithinAbs(0.5f, 1e-5f));
+  REQUIRE_THAT(fromScaleTravel(0.75f, 0.01f, 100.f, true), WithinAbs(10.f, 1e-3f));
+  // Below min (a stopped LFO at 0) sits at the start of the travel.
+  REQUIRE(toScaleTravel(0.0f, 0.01f, 100.f, true) == 0.0f);
+  // An unusable log range folds linearly.
+  REQUIRE_THAT(toScaleTravel(0.5f, 0.f, 1.f, true), WithinAbs(0.5f, 1e-6f));
+}
+
+TEST_CASE("applyMagnitudeScaled: replace on a log field lands by travel", "[tap_mod]") {
+  // Signed mid (0) → the geometric middle, 1 on 0.01..100; ±1 → the ends.
+  REQUIRE_THAT(applyMagnitudeScaled(5.f, 0.f, true, Combine::Replace, 1.f, 0.01f, 100.f, true),
+               WithinAbs(1.f, 1e-4f));
+  REQUIRE_THAT(applyMagnitudeScaled(5.f, 1.f, true, Combine::Replace, 1.f, 0.01f, 100.f, true),
+               WithinAbs(100.f, 1e-2f));
+  // Unsigned 0.25 → a quarter of the travel: 0.1.
+  REQUIRE_THAT(applyMagnitudeScaled(5.f, 0.25f, false, Combine::Replace, 1.f, 0.01f, 100.f, true),
+               WithinAbs(0.1f, 1e-5f));
+}
+
+TEST_CASE("applyMagnitudeScaled: add moves by travel, so +0.25 is one decade up", "[tap_mod]") {
+  REQUIRE_THAT(applyMagnitudeScaled(1.f, 0.25f, false, Combine::Add, 1.f, 0.01f, 100.f, true),
+               WithinAbs(10.f, 1e-3f));
+  REQUIRE_THAT(applyMagnitudeScaled(1.f, -0.25f, false, Combine::Add, 1.f, 0.01f, 100.f, true),
+               WithinAbs(0.1f, 1e-4f));
+}
+
+TEST_CASE("applyMagnitudeScaled: a linear field is plain applyMagnitude", "[tap_mod]") {
+  REQUIRE(applyMagnitudeScaled(0.3f, 0.5f, false, Combine::Add, 1.f, 0.f, 2.f, false) ==
+          applyMagnitude(0.3f, 0.5f, false, Combine::Add, 1.f, 0.f, 2.f));
+}

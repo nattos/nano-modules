@@ -107,7 +107,7 @@ TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect
   auto state = doc.get_plugin_state(key);
   INFO("state: " << state.dump());
   REQUIRE(state.contains("output"));
-  // Phase is a dt accumulator (style guide §2.1): default rate 0.5 → 5 Hz, so a
+  // Phase is a dt accumulator (style guide §2.1): default rate 5 Hz, so a
   // single 16 ms tick advances phase to 0.08 cycles. The LFO is a SIGNED
   // (bipolar [-1,1]) source resting at 0: output = sin(0.08*2π) * amplitude
   // (default 1.0) — not the old unipolar sin*0.5+0.5.
@@ -145,7 +145,7 @@ TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "
 
   StateDocument doc;
   host.set_state_doc(id, &doc);
-  // phase accumulates as dt*(rate*10) cycles. rate=0.5 (default) => 5 Hz, so a
+  // phase accumulates as dt*rate cycles. rate defaults to 5 Hz, so a
   // dt=0.05 tick advances phase to 0.25 cycles (=pi/2 in radians) => sin=1 and
   // amplitude becomes observable: bipolar output = sin(phase*2π)*amplitude.
   FrameState fs;
@@ -320,8 +320,8 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
   enum { WfSine = 0, WfSquare = 1, WfTriangle = 2, WfSaw = 3, WfRandomWalk = 4,
          WfRandomFM = 5 };
 
-  // One full cycle: rate 0.1 → 1 Hz, dt 0.01 → 100 samples per cycle.
-  const double kRate = 0.1, kDt = 0.01;
+  // One full cycle: rate 1 Hz, dt 0.01 → 100 samples per cycle.
+  const double kRate = 1.0, kDt = 0.01;
   const int kN = 100;
   auto sweep = [&](const char* ikey, int waveform, float shape) {
     EffectInstance* inst = rt.instanceFor("mod.source.lfo", ikey);
@@ -422,6 +422,163 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
       double v = doc.get_plugin_state(key)["output"].get<double>();
       CHECK(v == Catch::Approx(1.0 - 2.0 * i * kDt).margin(1e-4));
     }
+  }
+
+  host.shutdown();
+}
+
+// mod.source.lfo 1.2.0: Rate is Hz up to 120 (log slider), Strobe pacing caps a
+// cycle faster than the frame rate at min/max alternation, and Random Hold
+// holds a new random value for a spread of cycle lengths.
+TEST_CASE("mod.source.lfo: Hz rate, strobe pacing, random hold", "[effect_driver]") {
+  auto bytecode = load_file(kTestonlyWasm);
+  REQUIRE(!bytecode.empty());
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  FrameState fs;
+  fs.elapsed_time = 0.0;
+  host.set_frame_state(id, &fs);
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id))
+    if (e.id == "mod.source.lfo") { w = &e; break; }
+  REQUIRE(w != nullptr);
+  EffectDesc desc;
+  desc.id = w->id;
+  desc.wasm_host = &host;
+  desc.wasm_module_id = id;
+  desc.wasm_fns = w->fns;
+  EffectRuntime rt(nullptr);
+  EffectInstance* proto = rt.registerEffect(desc);
+  const std::string key = host.plugin_key(id);
+  REQUIRE(!key.empty());
+
+  enum { WfSine = 0, WfRandomWalk = 4, WfRandomHold = 6 };
+  enum { Realtime = 0, Strobe = 1 };
+  const double kFrame = 1.0 / 60.0;
+  auto out = [&] { return doc.get_plugin_state(key)["output"].get<double>(); };
+  auto run = [&](EffectInstance* inst, int n, double dt) {
+    std::vector<double> v;
+    for (int i = 0; i < n; i++) { inst->doTick(dt); v.push_back(out()); }
+    return v;
+  };
+  auto make = [&](const char* k, float rateHz, int waveform, int pacing) {
+    EffectInstance* inst = rt.instanceFor("mod.source.lfo", k);
+    REQUIRE(inst != nullptr);
+    inst->setParamFloat("rate", rateHz);
+    inst->setParamFloat("waveform", static_cast<float>(waveform));
+    inst->setParamFloat("pacing", static_cast<float>(pacing));
+    return inst;
+  };
+
+  SECTION("the schema: rate is 0.01..120 Hz on a log slider, version 1.2.0") {
+    auto schema = nlohmann::json::parse(proto->schemaJson());
+    const auto& f = schema.contains("fields") ? schema["fields"] : schema;
+    INFO(f["rate"].dump());
+    CHECK(f["rate"]["min"].get<double>() == Catch::Approx(0.01));
+    CHECK(f["rate"]["max"].get<double>() == Catch::Approx(120.0));
+    CHECK(f["rate"]["scale"] == "log");
+    CHECK(f.contains("pacing"));
+    CHECK(f.contains("spread"));
+    CHECK(proto->metadataVersion() == "1.2.0");
+  }
+
+  SECTION("rate is Hz: 2 Hz for 1/8 s is a quarter cycle") {
+    EffectInstance* inst = make("hz", 2.0f, WfSine, Realtime);
+    inst->doTick(0.125);
+    CHECK(out() == Catch::Approx(1.0).margin(1e-4));
+  }
+
+  SECTION("realtime keeps true speed past the frame rate (and aliases)") {
+    // 120 Hz sampled at 60 fps is exactly two cycles a frame: every sample
+    // lands on the same phase, so the sine sits still at 0.
+    auto v = run(make("rt", 120.0f, WfSine, Realtime), 30, kFrame);
+    for (double x : v) CHECK(std::fabs(x) < 1e-3);
+  }
+
+  SECTION("strobe alternates min and max once a cycle fits in two frames") {
+    for (float hz : {30.0f, 60.0f, 120.0f}) {
+      INFO("rate " << hz);
+      auto v = run(make(hz == 30.0f ? "s30" : hz == 60.0f ? "s60" : "s120",
+                        hz, WfSine, Strobe), 20, kFrame);
+      for (size_t i = 0; i < v.size(); i++) {
+        CHECK(std::fabs(std::fabs(v[i]) - 1.0) < 1e-6);
+        if (i) CHECK(v[i] == -v[i - 1]);
+      }
+    }
+  }
+
+  SECTION("below half the frame rate, strobe pacing is an ordinary sine") {
+    // 12 Hz at 60 fps: 0.2 cycles a frame — sampled normally, mid values too.
+    auto v = run(make("s12", 12.0f, WfSine, Strobe), 30, kFrame);
+    int mids = 0;
+    for (double x : v) if (std::fabs(x) < 0.99) mids++;
+    CHECK(mids > 10);
+  }
+
+  SECTION("strobe caps a random walk at one new value per frame") {
+    auto v = run(make("rw", 120.0f, WfRandomWalk, Strobe), 40, kFrame);
+    int changes = 0;
+    for (size_t i = 1; i < v.size(); i++) if (v[i] != v[i - 1]) changes++;
+    CHECK(changes >= 35);  // (a draw can repeat its value, rarely)
+    for (double x : v) CHECK(std::fabs(x) <= 1.0 + 1e-6);
+  }
+
+  SECTION("random hold, spread 0: a new value exactly once a cycle") {
+    EffectInstance* inst = make("h0", 1.0f, WfRandomHold, Realtime);
+    inst->setParamFloat("spread", 0.0f);
+    inst->setParamFloat("shape", 0.0f);
+    auto v = run(inst, 1000, 0.01);   // 10 cycles at 1 Hz
+    std::vector<int> changesAt;
+    for (size_t i = 1; i < v.size(); i++) if (v[i] != v[i - 1]) changesAt.push_back((int)i);
+    INFO("changes: " << changesAt.size());
+    CHECK(changesAt.size() >= 9);
+    CHECK(changesAt.size() <= 10);
+    for (size_t i = 1; i < changesAt.size(); i++)
+      CHECK(std::abs(changesAt[i] - changesAt[i - 1] - 100) <= 1);
+    for (double x : v) CHECK(std::fabs(x) <= 1.0 + 1e-6);
+  }
+
+  SECTION("random hold, spread 1: holds vary between a quarter and four cycles") {
+    EffectInstance* inst = make("h1", 10.0f, WfRandomHold, Realtime);
+    inst->setParamFloat("spread", 1.0f);
+    auto v = run(inst, 6000, 0.001);  // 60 cycles, 100 samples a cycle
+    std::vector<int> changesAt;
+    for (size_t i = 1; i < v.size(); i++) if (v[i] != v[i - 1]) changesAt.push_back((int)i);
+    REQUIRE(changesAt.size() > 10);
+    int lo = 1 << 30, hi = 0;
+    for (size_t i = 1; i < changesAt.size(); i++) {
+      const int d = changesAt[i] - changesAt[i - 1];
+      lo = std::min(lo, d);
+      hi = std::max(hi, d);
+    }
+    INFO("hold lengths " << lo << ".." << hi << " samples (100 = one cycle)");
+    CHECK(lo >= 24);
+    CHECK(hi <= 401);
+    CHECK(hi > lo * 2);   // actually varies
+  }
+
+  SECTION("random hold never changes more than once a frame") {
+    auto v = run(make("hfast", 120.0f, WfRandomHold, Realtime), 60, kFrame);
+    int changes = 0;
+    for (size_t i = 1; i < v.size(); i++) if (v[i] != v[i - 1]) changes++;
+    CHECK(changes >= 55);
+    CHECK(changes <= 59);
+  }
+
+  SECTION("random hold glides with shape") {
+    EffectInstance* inst = make("hg", 1.0f, WfRandomHold, Realtime);
+    inst->setParamFloat("spread", 0.0f);
+    inst->setParamFloat("shape", 1.0f);
+    auto v = run(inst, 400, 0.01);
+    int distinct = 0;
+    for (size_t i = 1; i < v.size(); i++) if (v[i] != v[i - 1]) distinct++;
+    CHECK(distinct > 250);  // eases continuously (smoothstep flattens each end)
   }
 
   host.shutdown();

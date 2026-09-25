@@ -5,6 +5,7 @@
  */
 
 // Pure string helpers only — midi-types has no DOM/MobX deps (worker-safe).
+import { migrateInstances } from './state/effect-migrations';
 import { isMidiInstanceKey } from './midi/midi-types';
 
 /** The ID of the special unassigned bucket sketch that holds modules not yet placed in a real sketch. */
@@ -313,6 +314,9 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
     : sanitized;
   const { columns, ...rest } = sketch as any;   // drop any legacy columns blob
   const result = { ...rest, chain } as Sketch;
+  // Upgrade instances an effect has since redefined (state/effect-migrations.ts).
+  // Same map object when nothing applies, so clean sketches stay untouched.
+  if (result.instances) result.instances = migrateInstances(result.instances);
   // Scrub any malformed output-format numbers a prior session may have persisted
   // (e.g. a NaN scale round-tripped through JSON.stringify → null) so they can't
   // reach the executor. Delete the key entirely when nothing non-default remains.

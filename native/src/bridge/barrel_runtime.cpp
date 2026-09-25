@@ -29,6 +29,7 @@
 #include "bridge/ws_server.h"
 #include "platform/paths.h"
 #include "platform/scoped_pool.h"
+#include "sketch/effect_migrations.h"
 #include "gpu/gpu_backend.h"
 #include "midi/midi_host.h"
 #include "artnet/artnet_host.h"
@@ -1550,6 +1551,10 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   if (dirty || !pe.haveSketch) {
     auto parsed = nlohmann::json::parse(server.get_at(base + "/sketch"), nullptr, false);
     if (!parsed.is_discarded()) {
+      // Upgrade instances saved by an older effect version (a composition
+      // restored with no editor connected never passes through the web's
+      // migration). Idempotent: the stamped version stops a second pass.
+      effect_migrations::migrateSketch(parsed);
       pe.sketch = std::move(parsed);
       pe.haveSketch = true;
       pe.hiddenStale = true;

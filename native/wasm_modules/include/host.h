@@ -779,6 +779,21 @@ public:
     return *this;
   }
 
+  /// Mark the float field JUST declared as LOG-scaled (chained modifier, like
+  /// raw()). Injects `"scale":"log"`. Needs `min > 0`.
+  ///
+  /// The slider then moves in proportion to the value's LOGARITHM, so each
+  /// decade gets the same travel — a 0.01..120 Hz rate is as easy to set at
+  /// 0.5 Hz as at 50. Wires and automation fold in the same space: a wire's
+  /// magnitude sweeps the slider's travel, not the raw number, so an LFO on a
+  /// log field moves it evenly across the decades. The stored value is still
+  /// the plain number (Hz), so nothing about state or JSON changes.
+  Schema& logScale() {
+    if (len_ > 0 && buf_[len_ - 1] == '}') len_--;   // reopen the just-closed field
+    appendRaw(",\"scale\":\"log\"}");
+    return *this;
+  }
+
   /// Begin a parameter GROUP (a first-class section — a natural home for
   /// section-level metadata). STICKY: every field declared afterward is tagged
   /// with this group `id` until the next group() (or group("")/endGroup() to

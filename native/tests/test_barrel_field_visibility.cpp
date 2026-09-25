@@ -102,21 +102,22 @@ TEST_CASE("the barrel publishes each card's hidden fields to an observing editor
   auto h = awaitHidden(true, [](const nlohmann::json& j) { return j.contains("a"); });
   INFO(h.dump());
   REQUIRE(h.is_object());
-  // `a` has no mode in its state: the default (Freq) shows only `rate`.
-  CHECK(h["a"].get<Names>() == Names{"period", "period_beats"});
+  // `a` has no mode in its state: the default (Freq) shows only `rate`, and
+  // Spread (Random Hold only) stays hidden for its default Sine.
+  CHECK(h["a"].get<Names>() == Names{"period", "period_beats", "spread"});
   // `b` is in Period mode — resolved per card, not per type.
-  CHECK(h["b"].get<Names>() == Names{"period_beats", "rate"});
+  CHECK(h["b"].get<Names>() == Names{"period_beats", "rate", "spread"});
   // brightness_contrast declares no evaluator: no entry, the schema stands.
   CHECK_FALSE(h.contains("bc"));
 
-  // An edit (b → Beats) republishes on its dirty frame.
-  b.setSketch(lfoSketch(nlohmann::json::object(), {{"mode", 2}}).dump());
+  // An edit (b → Beats, Random Hold) republishes on its dirty frame.
+  b.setSketch(lfoSketch(nlohmann::json::object(), {{"mode", 2}, {"waveform", 6}}).dump());
   h = awaitHidden(true, [](const nlohmann::json& j) {
     return j.contains("b") && j["b"].get<Names>() == Names{"period", "rate"};
   });
   INFO(h.dump());
   CHECK(h["b"].get<Names>() == Names{"period", "rate"});
-  CHECK(h["a"].get<Names>() == Names{"period", "period_beats"});
+  CHECK(h["a"].get<Names>() == Names{"period", "period_beats", "spread"});
 
   // Removing a card drops its entry.
   b.setSketch(nlohmann::json{
@@ -126,7 +127,7 @@ TEST_CASE("the barrel publishes each card's hidden fields to an observing editor
   h = awaitHidden(true, [](const nlohmann::json& j) { return !j.contains("b"); });
   INFO(h.dump());
   CHECK_FALSE(h.contains("b"));
-  CHECK(h["a"].get<Names>() == Names{"period_beats", "rate"});
+  CHECK(h["a"].get<Names>() == Names{"period_beats", "rate", "spread"});
 
   barrel_probe::releaseTexture(in_tex);
   barrel_probe::releaseTexture(out_tex);

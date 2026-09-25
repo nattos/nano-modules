@@ -1700,6 +1700,15 @@ if(NANO_HAS_GPU_BACKEND)
     target_compile_options(test_exec_doc_cache PRIVATE -Wno-attributes)
     catch_discover_tests(test_exec_doc_cache)
 
+    # Effect state migrations — the TS/C++ twins' shared cases.
+    add_executable(test_effect_migrations tests/test_effect_migrations.cpp)
+    target_include_directories(test_effect_migrations PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_effect_migrations PRIVATE
+      nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+    target_compile_definitions(test_effect_migrations PRIVATE
+      EFFECT_MIGRATION_FIXTURE="${CMAKE_SOURCE_DIR}/../web/test/fixtures/effect-migration-cases.json")
+    catch_discover_tests(test_effect_migrations)
+
     # Sidecar-canvas execution-order override: cursor isolation, texture
     # branching, causality by execution position, and the shared TS/C++ fixture.
     add_executable(test_exec_order tests/test_exec_order.cpp)
