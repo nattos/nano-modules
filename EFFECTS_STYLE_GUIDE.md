@@ -84,7 +84,18 @@ guard with `if (ops[i] != state::PatchReplace) continue;` to skip the host's
 
 **Mode-dependent parameters — declare them all, hide the inactive ones**
 
-When an effect has multiple "shapes" controlled by a mode selector (Span vs Inset crop, RGB vs HSV picker, …), register *every* parameter the effect can ever expose in the schema (`module_init`). Then use `state::setOnStateReady` to register a callback that — fired once after init + the initial state replay — calls `state::setFieldHidden(path, hidden)` to hide whichever fields the active mode doesn't use. In `on_state_patched`, when the mode field changes, re-run the visibility logic. The callback takes `self` so it can read the instance's mode.
+When an effect has multiple "shapes" controlled by a mode selector (Span vs Inset crop, RGB vs HSV picker, …), register *every* parameter the effect can ever expose in the schema (`module_init`), then hide whichever fields the active mode doesn't use with `state::setFieldHidden(path, hidden)`.
+
+**Provide BOTH visibility paths.** Each one covers editors the other can't reach:
+
+1. **Live, from the instance.** Register `state::setOnStateReady` in `init`. The callback fires once, after init and the initial state replay. In `on_state_patched`, re-run the rule when a gating field changes. This is what the effects IDE and Playground use, because they run the instance in the browser.
+2. **Static, from state alone: `eval_visibility`.** This is a self-less function registered as `EffectDesc_v2.eval_visibility`. It receives the saved state as replace ops and calls the same rule. Two editors have no live instance to ask:
+   - the **arrangement**, for a clip off the playhead;
+   - **Remote Control connected to Resolume**, where the barrel renders and the browser runs no engine. The barrel runs `eval_visibility` over each card's state on every sketch change and publishes the sets at `/plugins/<key>/state/hidden_fields`.
+
+   Without it, every field shows in both.
+
+Write the rule ONCE as a helper that takes the gating VALUES, not `State*`, and call it from both paths. In the static path, a field the state doesn't carry must take its **schema default**. A fresh card's state is often empty, and a wrong default shows the wrong fields until someone touches the mode.
 
 ```cpp
 .selectField("mode", ModeSpan, state::PrimaryInput, {{"Span", 0}, {"Inset", 1}})
@@ -92,33 +103,49 @@ When an effect has multiple "shapes" controlled by a mode selector (Span vs Inse
 .floatField("inset_left", 0.0f, 0.f, 1.f, state::PrimaryInput)   // inset-only
 …
 
+// The rule — values in, never `self`, so both paths share it.
+static void apply_mode_visibility(int mode) {
+  state::setFieldHidden("width",      mode != ModeSpan);
+  state::setFieldHidden("inset_left", mode != ModeInset);
+}
+
+// 1. Live.
 void init(void* self) {                // per-instance tail (schema is in module_init)
   state::setOnStateReady(&on_state_ready);
 }
 static void on_state_ready(void* self) {
-  apply_mode_visibility(*static_cast<State*>(self));
+  apply_mode_visibility(static_cast<State*>(self)->mode);
 }
 void on_state_patched(void* self, ...) {
   auto* s = static_cast<State*>(self);
   /* update s->mode etc. */
-  if (mode_changed) apply_mode_visibility(*s);
+  if (mode_changed) apply_mode_visibility(s->mode);
 }
+
+// 2. Static — pure over state; defaults mirror the schema.
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  int mode = ModeSpan;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "mode")) mode = state::patchInt(i);
+  }
+  apply_mode_visibility(mode);
+}
+
+// …and register it — the EffectDesc_v2 slot after is_identity / on_active / seek:
+//   NANO_INSTANCE_LIFECYCLE(crop),
+//   nullptr, nullptr, nullptr, &crop::eval_visibility,
 ```
+
+`env_lfo`, `crop` and `fx::AutoTrigger` (`effect_auto_trigger.h`) are references in core. `simulant` and `triangulate` in the extras gate on two fields.
 
 Why this shape:
 - The schema stays a stable union of *every* field, so serialized state always round-trips — toggling mode doesn't drop or rename any data.
 - `on_state_ready` fires after the executor replays serialized state, so the IDE only ever paints the post-restoration schema. The user never sees a transient "all fields visible" frame.
 - Setting hidden is a pure UI overlay — `notifyStatePatched`, rail routing, and bridge-core state continue to work for hidden fields exactly as if they were visible.
+- A visibility rule must be derivable from the saved state. If it would depend on runtime-only facts (a connected input, a measured value), the static path can't express it, and the card will show those fields wherever no instance runs in the browser.
 
 The hidden SET, unlike the schema, is per INSTANCE, and the editor resolves it that way: each live instance's set ships keyed by `instance_key` and `ideColumnAdapter.getPlugin(moduleType, instanceKey)` overlays it per card, so two cards of one type in different modes never share an answer. (The `hidden` flags on the broadcast `plugins[].schema` are a type-level, first-host-wins approximation, kept only as the fallback for an instance that hasn't executed yet.)
-
-**Also declare `eval_visibility`** — the same rule as a static, self-less function of state
-(see `env_lfo` / `crop`: parse `mode` from the replace ops, then call the shared
-`apply_mode_visibility`). The live path above only answers where the BROWSER runs the instance.
-Two editors don't: the arrangement, for a clip off the playhead, and Remote Control connected to
-Resolume, where the barrel renders and the browser runs no engine at all. The barrel runs
-`eval_visibility` over each card's state on every sketch change and publishes the sets at
-`/plugins/<key>/state/hidden_fields`. An effect without it shows every field in both.
 
 **Variable arity — a count field, not a variable schema**
 
@@ -1020,6 +1047,7 @@ For `bool`-typed debug toggles, the `mute`-style schema entry works well:
 - [ ] All parameters declared in `state::Schema` with `order:` and a sensible `io:` flag.
 - [ ] **Legible** (§0 "Legibility"): every meaningful field has `.label(display, short)`; params are clustered under `.group(id, name)` sections; one `.helpField("intro", …)` plus `.groupHelp` on the sections that warrant it (help is markdown, manual-tone — how-to + what-to-try — and NOT on every field).
 - [ ] Declares its capability tags (§0 "Capabilities") — including a **temporal contract** (§2.3): `TimeIndependent` / `SeekableApproximate` / none. Generators and modulation sources/shapers declare their role tags too.
+- [ ] Mode-dependent fields (§0 "Mode-dependent parameters") are hidden through BOTH paths — live (`setOnStateReady` + `on_state_patched`) AND a registered `eval_visibility` sharing one value-taking rule — or Remote Control and the arrangement show every field.
 - [ ] Standard params come first; tuning / debug params after.
 - [ ] Every parameter is on a normalized range OR has a documented perceptual mapping in its description.
 - [ ] No `time * rate` patterns — accumulators only.
