@@ -1,10 +1,13 @@
 #include "sketch/wasm_bundles.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <string>
 #include <vector>
 
 #include "sketch/module_registry.h"
+#include "platform/paths.h"
 
 namespace sketch_executor {
 
@@ -12,7 +15,6 @@ namespace sketch_executor {
 // richtext.wasm resolve their text.* imports to the native TextEngine service.
 bool registerTextHostFunctions();
 
-namespace {
 // Optional per-arch AOT sidecar. Given a bundle's `<base>.wasm` path, return the
 // `<base>-<arch>.aot` next to it when AOT loading is compiled in AND that file
 // exists — it runs at ~native speed. Otherwise return the original `.wasm` (the
@@ -20,7 +22,12 @@ namespace {
 // compile-time target, so a universal binary's two slices each pick correctly.
 // WAMR auto-detects the module format from the bytes, so the caller just reads
 // whichever path this returns.
-std::string preferredBundlePath(const std::string& wasmPath) {
+//
+// A sidecar OLDER than its .wasm is skipped: it was compiled from a previous
+// build, and loading it would run the old code (rebuilding one bundle without
+// build_aot.sh leaves exactly that). The slack absorbs copies that stamp both
+// files "now" in whatever order they happen to be written.
+std::string WasmEffectBundles::preferredBundlePath(const std::string& wasmPath) {
 #ifdef NANO_WASM_AOT_ENABLED
 #if defined(__aarch64__)
   const char* arch = "aarch64";
@@ -35,13 +42,19 @@ std::string preferredBundlePath(const std::string& wasmPath) {
     if (base.size() > ext.size() &&
         base.compare(base.size() - ext.size(), ext.size(), ext) == 0)
       base.resize(base.size() - ext.size());
-    std::string aot = base + "-" + arch + ".aot";
-    if (std::ifstream(aot, std::ios::binary).good()) return aot;
+    const std::string aot = base + "-" + arch + ".aot";
+    const nano_paths::FileStamp a = nano_paths::statFile(aot);
+    if (a.exists) {
+      constexpr long long kSlackNs = 2000000000LL;  // 2 s
+      const nano_paths::FileStamp w = nano_paths::statFile(wasmPath);
+      if (!w.exists || a.mtimeNs + kSlackNs >= w.mtimeNs) return aot;
+      fprintf(stderr, "[nano] ignoring %s: older than %s (rebuild it with build_aot.sh)\n",
+              aot.c_str(), wasmPath.c_str());
+    }
   }
 #endif
   return wasmPath;
 }
-}  // namespace
 
 WasmEffectBundles::WasmEffectBundles() : host_(cache_) {}
 
@@ -58,10 +71,18 @@ bool WasmEffectBundles::init() {
 int WasmEffectBundles::loadBundle(const uint8_t* bytecode, uint32_t len,
                                   ModuleRegistry& registry, gpu::GPUBackend* gpu,
                                   bridge::StateDocument* stateDoc) {
-  if (!initialized_ || !bytecode || len == 0) return 0;
+  const int32_t id = loadModuleBytes(bytecode, len, gpu, stateDoc);
+  if (id < 0) return 0;
+  return registry.registerWasmBundle(host_, id);
+}
+
+int32_t WasmEffectBundles::loadModuleBytes(const uint8_t* bytecode, uint32_t len,
+                                           gpu::GPUBackend* gpu,
+                                           bridge::StateDocument* stateDoc) {
+  if (!initialized_ || !bytecode || len == 0) return -1;
 
   int32_t id = host_.load_module(bytecode, len);
-  if (id < 0) return 0;
+  if (id < 0) return -1;
 
   // Attach per-module host services before nano_module_main / module_init runs:
   // the GPU backend (shader compile) and the state doc (schema publish to the
@@ -83,9 +104,17 @@ int WasmEffectBundles::loadBundle(const uint8_t* bytecode, uint32_t len,
 
   // Bundles register their effects from nano_module_main. A non-effect module
   // (no such export) fails here and contributes nothing.
-  if (host_.call_function(id, "nano_module_main") != 0) return 0;
+  if (host_.call_function(id, "nano_module_main") != 0) {
+    unloadModule(id);
+    return -1;
+  }
+  return id;
+}
 
-  return registry.registerWasmBundle(host_, id);
+void WasmEffectBundles::unloadModule(int32_t moduleId) {
+  host_.unload_module(moduleId);
+  module_ids_.erase(std::remove(module_ids_.begin(), module_ids_.end(), moduleId),
+                    module_ids_.end());
 }
 
 void WasmEffectBundles::setStreamsTable(comp::StreamsTable* table,
@@ -112,15 +141,25 @@ int WasmEffectBundles::loadBundleFile(const std::string& path,
                                       ModuleRegistry& registry,
                                       gpu::GPUBackend* gpu,
                                       bridge::StateDocument* stateDoc) {
-  std::ifstream f(preferredBundlePath(path), std::ios::binary | std::ios::ate);
-  if (!f) return 0;
+  const int32_t id = loadModuleFile(path, gpu, stateDoc);
+  if (id < 0) return 0;
+  return registry.registerWasmBundle(host_, id);
+}
+
+int32_t WasmEffectBundles::loadModuleFile(const std::string& path,
+                                          gpu::GPUBackend* gpu,
+                                          bridge::StateDocument* stateDoc,
+                                          std::string* loadedFile) {
+  const std::string file = preferredBundlePath(path);
+  if (loadedFile) *loadedFile = file;
+  std::ifstream f(file, std::ios::binary | std::ios::ate);
+  if (!f) return -1;
   auto size = f.tellg();
-  if (size <= 0) return 0;
+  if (size <= 0) return -1;
   std::vector<uint8_t> buf(static_cast<size_t>(size));
   f.seekg(0);
-  if (!f.read(reinterpret_cast<char*>(buf.data()), size)) return 0;
-  return loadBundle(buf.data(), static_cast<uint32_t>(buf.size()), registry,
-                    gpu, stateDoc);
+  if (!f.read(reinterpret_cast<char*>(buf.data()), size)) return -1;
+  return loadModuleBytes(buf.data(), static_cast<uint32_t>(buf.size()), gpu, stateDoc);
 }
 
 }  // namespace sketch_executor

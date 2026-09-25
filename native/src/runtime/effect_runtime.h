@@ -370,6 +370,13 @@ class EffectRuntime {
   // Look up the type prototype by id. Returns nullptr if not registered.
   EffectInstance* find(const std::string& id);
 
+  // Remove an effect TYPE: destroys every pooled per-key instance of it, then
+  // its prototype. Used when a bundle is reloaded or unloaded (the module the
+  // descriptor points into must still be loaded — the destroys call into it).
+  // Caller must ensure the GPU is idle. Returns false if it wasn't registered.
+  // The type's shared GPU objects (PSOs, shader modules) are not released.
+  bool unregisterEffect(const std::string& id);
+
   // Get (creating on first use) the per-key render instance for a given
   // effect type + sketch instance_key. Lazily allocates the instance's
   // user_state via create() and runs its init() tail. Returns nullptr if

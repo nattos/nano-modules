@@ -41,6 +41,27 @@ class WasmEffectBundles {
   int loadBundleFile(const std::string& path, ModuleRegistry& registry,
                      gpu::GPUBackend* gpu, bridge::StateDocument* stateDoc);
 
+  // The first half of loadBundleFile: load the bundle (its AOT sidecar when
+  // that is current — preferredBundlePath) and run its nano_module_main, but
+  // register nothing. Returns the module id (-1 on any failure); its effects
+  // are host().registered_effects(id), for ModuleRegistry::registerWasmBundle.
+  // Split out so a RELOAD can prove the new copy loads before it tears the
+  // old one's effects down. `loadedFile` receives the file actually read.
+  int32_t loadModuleFile(const std::string& path, gpu::GPUBackend* gpu,
+                         bridge::StateDocument* stateDoc,
+                         std::string* loadedFile = nullptr);
+
+  // Unload a module loaded by loadModuleFile/loadBundle*. Unregister its
+  // effects first (ModuleRegistry::unregisterEffect) — their instances call
+  // into it as they are destroyed.
+  void unloadModule(int32_t moduleId);
+
+  // The file loadBundleFile would read for `wasmPath`: its `<base>-<arch>.aot`
+  // sidecar when AOT is compiled in, the sidecar exists, and it is not older
+  // than the .wasm (a stale sidecar would run the old code — the usual state
+  // right after rebuilding one bundle without build_aot.sh); else the .wasm.
+  static std::string preferredBundlePath(const std::string& wasmPath);
+
   wasm::WasmHost& host() { return host_; }
 
   // Publish the host frame clock (elapsed/dt/beat/viewport) to every loaded
@@ -63,6 +84,9 @@ class WasmEffectBundles {
   void setStreamsTable(comp::StreamsTable* table, const comp::WarpClock* clock);
 
  private:
+  int32_t loadModuleBytes(const uint8_t* bytecode, uint32_t len,
+                          gpu::GPUBackend* gpu, bridge::StateDocument* stateDoc);
+
   bridge::ParamCache cache_;  // declared before host_ (host_ binds to it)
   wasm::WasmHost host_;
   // One frame clock shared by all bundles. Its address is registered with each

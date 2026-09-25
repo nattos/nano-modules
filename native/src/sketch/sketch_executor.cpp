@@ -641,6 +641,27 @@ const RegisteredModule* SketchExecutor::findSchema(const std::string& mt) const 
   return it == moduleSchemas_.end() ? nullptr : &it->second;
 }
 
+void SketchExecutor::resetModuleSchemas() {
+  moduleSchemas_.clear();
+  cachedSchemasValid_ = false;
+  cachedExecDocValid_ = false;
+  planValid_ = false;
+  planStructSig_.clear();
+  plan_.clear();
+  for (auto& [_, pso] : fusedPSOs_) {
+    if (pso > 0) gpu_release(pso);
+  }
+  fusedPSOs_.clear();
+  for (int32_t sm : fusedShaderModules_) {
+    if (sm > 0) gpu_release(sm);
+  }
+  fusedShaderModules_.clear();
+  lastAppliedState_.clear();
+  lastAppliedEpoch_.clear();
+  ++stateEpoch_;
+  triggerSeqSeen_.clear();
+}
+
 SketchExecutor::~SketchExecutor() {
   for (int32_t h : intermediates_) {
     if (h > 0) gpu_release(h);

@@ -227,6 +227,17 @@ class SketchExecutor {
   void forceStateReassert() { lastAppliedState_.clear(); ++stateEpoch_; }
 
   /**
+   * The effect TYPES changed underneath this executor — a bundle was reloaded,
+   * swapped for another folder's copy, or unloaded. Drops everything derived
+   * from the old types: the schema cache (natively re-seeded from the registry
+   * on the next frame), the lowered exec doc, the plan (whose entries point
+   * into that cache), the fused kernels (compiled from the old fragments) and
+   * the applied-state + trigger watermarks of the destroyed instances, so the
+   * rebuilt ones get their authored state and fire from their first event.
+   */
+  void resetModuleSchemas();
+
+  /**
    * Prefix applied to every effect instance_key before it reaches the shared
    * EffectRuntime instance pool (via effrt_instance_for). Lets many executors
    * share ONE runtime without colliding: the FFGL barrel sets this to its

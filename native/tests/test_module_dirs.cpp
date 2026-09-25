@@ -14,7 +14,10 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <sys/utime.h>
+#else
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -147,6 +150,37 @@ TEST_CASE("module_paths.json: enabled directories in order, and junk is 'none ma
   CHECK(nano_modules::readMappedDirs(good) == std::vector<std::string>{"/a", "/c"});
   CHECK(nano_modules::readMappedDirs(d.touch("bad.json", "{not json")).empty());
   CHECK(nano_modules::readMappedDirs(nano_paths::joinPath(d.path, "missing.json")).empty());
+}
+
+TEST_CASE("an AOT sidecar older than its .wasm is not loaded", "[module_dirs]") {
+  using sketch_executor::WasmEffectBundles;
+  TempDir d("aot");
+  const std::string wasm = d.touch("x.wasm", "w");
+  // Whichever arch this build targets: find the name it would look for.
+  for (const char* arch : {"aarch64", "x86_64"}) d.touch(std::string("x-") + arch + ".aot", "a");
+  const std::string picked = WasmEffectBundles::preferredBundlePath(wasm);
+  if (picked == wasm) SKIP("AOT loading is not compiled into this build");
+  CHECK(picked != wasm);
+
+  // The .wasm rebuilt after its sidecar (build.sh without build_aot.sh): the
+  // sidecar holds the previous build's code, so the .wasm is what loads.
+  auto setMtime = [](const std::string& p, long long secondsFromNow) {
+    const auto t = (time_t)(std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() + secondsFromNow);
+#ifdef _WIN32
+    struct _utimbuf ut{t, t};
+    _utime(p.c_str(), &ut);
+#else
+    struct timeval tv[2] = {{t, 0}, {t, 0}};
+    ::utimes(p.c_str(), tv);
+#endif
+  };
+  setMtime(picked, -60);
+  CHECK(WasmEffectBundles::preferredBundlePath(wasm) == wasm);
+  // Written a moment BEFORE the .wasm, as a copy of both might be: still used.
+  setMtime(picked, -1);
+  setMtime(wasm, 0);
+  CHECK(WasmEffectBundles::preferredBundlePath(wasm) == picked);
 }
 
 #ifdef TESTONLY_WASM_PATH

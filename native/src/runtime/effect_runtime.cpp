@@ -597,6 +597,24 @@ EffectInstance* EffectRuntime::find(const std::string& id) {
   return it != by_id_.end() ? it->second : nullptr;
 }
 
+bool EffectRuntime::unregisterEffect(const std::string& id) {
+  auto found = by_id_.find(id);
+  if (found == by_id_.end()) return false;
+  EffectInstance* proto = found->second;
+  // Per-key instances first: their destroy() runs in the module the prototype's
+  // descriptor names, so the prototype outlives them.
+  const std::string prefix = id + "|";
+  for (auto it = instance_pool_.begin(); it != instance_pool_.end();) {
+    if (it->first.compare(0, prefix.size(), prefix) == 0) it = instance_pool_.erase(it);
+    else ++it;
+  }
+  by_id_.erase(found);
+  for (auto it = effects_.begin(); it != effects_.end(); ++it) {
+    if (it->get() == proto) { effects_.erase(it); break; }
+  }
+  return true;
+}
+
 EffectInstance* EffectRuntime::instanceFor(const std::string& type,
                                            const std::string& instanceKey) {
   const std::string key = poolKey(type, instanceKey);

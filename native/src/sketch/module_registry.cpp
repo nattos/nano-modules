@@ -119,6 +119,14 @@ bool ModuleRegistry::registerWasmEffect(
   return true;
 }
 
+bool ModuleRegistry::unregisterEffect(const std::string& moduleType) {
+  auto it = entries_.find(moduleType);
+  if (it == entries_.end()) return false;
+  entries_.erase(it);
+  if (rt_) rt_->unregisterEffect(moduleType);
+  return true;
+}
+
 int ModuleRegistry::registerWasmBundle(wasm::WasmHost& host, int32_t moduleId) {
   int count = 0;
   // Copy the descriptors: registerWasmEffect → registerEffect can mutate the

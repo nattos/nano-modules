@@ -92,6 +92,15 @@ class ModuleRegistry {
    */
   int registerWasmBundle(wasm::WasmHost& host, int32_t moduleId);
 
+  /**
+   * Remove a registered effect TYPE and everything the runtime holds for it —
+   * its pooled per-key instances and its prototype (EffectRuntime::
+   * unregisterEffect). For reloading a bundle: the module it came from must
+   * still be loaded. Caller must ensure the GPU is idle. Returns false if the
+   * type wasn't registered.
+   */
+  bool unregisterEffect(const std::string& moduleType);
+
   /** Look up by editor module_type. nullptr if not registered. */
   const RegisteredModule* find(const std::string& moduleType) const;
 

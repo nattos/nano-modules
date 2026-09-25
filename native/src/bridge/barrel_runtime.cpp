@@ -284,6 +284,185 @@ struct BarrelRuntime::Impl {
   };
   std::unordered_map<std::string, PerExecutor> executors;
 
+  // --- Effect bundles: what is loaded, and reloading it ----------------------
+  //
+  // The runtime lives for the whole host process, so a bundle rebuilt on disk,
+  // or a module folder checked/unchecked in Settings, used to need a Resolume
+  // restart. Instead an editor sends `reload_modules` (the web offers it when
+  // it sees a bundle change); the next render re-resolves the bundle set and
+  // swaps whatever changed. The action handler only QUEUES it: handlers run on
+  // the bridge pump under tick_mutex_, and render holds render_mu while taking
+  // tick_mutex_, so doing the work there would deadlock.
+  struct LoadedBundle {
+    std::string stem;
+    std::string path;          // the resolved <stem>.wasm
+    std::string file;          // what was actually read (maybe its .aot)
+    nano_modules::Origin origin = nano_modules::Origin::Builtin;
+    nano_paths::FileStamp wasmStamp, fileStamp;
+    int32_t moduleId = -1;
+    std::vector<std::string> effects;  // the types THIS bundle registered
+  };
+  std::string wasmDir;                          // the built-in dir from acquire
+  std::vector<LoadedBundle> loadedBundles;      // resolve order
+  std::atomic<uint64_t> reloadRequested{0};     // bumped by the action handler
+  uint64_t reloadServed = 0;                    // render thread only
+  uint64_t reloadCount = 0;
+  bool reload_handler_installed = false;
+
+  /// Load `src` and register what it declares.
+  bool loadBundle(const nano_modules::BundleSource& src, LoadedBundle& out) {
+    std::string file;
+    const int32_t id = bundles->loadModuleFile(src.path, gpu.get(), nullptr, &file);
+    if (id < 0) return false;
+    adoptBundle(src, file, id, out);
+    return true;
+  }
+
+  /// Register the effects of loaded module `id` (read from `file`) and record
+  /// it. The effects list keeps only the types it actually got — an id another
+  /// bundle already registered stays with that bundle (the registry is
+  /// first-wins).
+  void adoptBundle(const nano_modules::BundleSource& src, const std::string& file,
+                   int32_t id, LoadedBundle& out) {
+    out.stem = src.stem;
+    out.path = src.path;
+    out.file = file;
+    out.origin = src.origin;
+    out.wasmStamp = nano_paths::statFile(src.path);
+    out.fileStamp = nano_paths::statFile(file);
+    out.moduleId = id;
+    out.effects.clear();
+    const auto descs = bundles->host().registered_effects(id);
+    for (const auto& d : descs)
+      if (!registry->find(d.id)) out.effects.push_back(d.id);
+    registry->registerWasmBundle(bundles->host(), id);
+    out.effects.erase(std::remove_if(out.effects.begin(), out.effects.end(),
+                                     [&](const std::string& t) { return !registry->find(t); }),
+                      out.effects.end());
+  }
+
+  /// Unregister a bundle's effects (destroying their instances in every
+  /// executor), then unload its module — in that order, since the destroys
+  /// call into it.
+  void unloadBundle(LoadedBundle& b) {
+    for (const auto& t : b.effects) registry->unregisterEffect(t);
+    if (b.moduleId >= 0) bundles->unloadModule(b.moduleId);
+    b.moduleId = -1;
+    b.effects.clear();
+  }
+
+  /// Would loading `src` now read different bytes than what is loaded?
+  static bool changed(const LoadedBundle& b, const nano_modules::BundleSource& src) {
+    if (b.path != src.path) return true;
+    if (nano_paths::statFile(src.path) != b.wasmStamp) return true;
+    const std::string file = sketch_executor::WasmEffectBundles::preferredBundlePath(src.path);
+    return file != b.file || nano_paths::statFile(file) != b.fileStamp;
+  }
+
+  void publishModules() {
+    nlohmann::json loaded = nlohmann::json::array();
+    for (const auto& b : loadedBundles) {
+      loaded.push_back({{"id", "com.nano." + b.stem}, {"path", b.path}, {"file", b.file},
+                        {"origin", nano_modules::originName(b.origin)},
+                        {"effects", (int)b.effects.size()}});
+    }
+    BridgeServer::instance().set_at("/global/modules", loaded.dump());
+  }
+
+  /// Re-resolve the bundle set and bring the loaded one in line with it: a
+  /// bundle whose winning copy changed (another folder's, or the same file
+  /// rebuilt) is swapped, a new one loaded, one nothing provides any more
+  /// unloaded. A copy that fails to load leaves the old one running. Render
+  /// thread, under render_mu. Publishes /global/modules, every instance's
+  /// plugin_schemas, and the outcome at /global/modules_reload.
+  void reloadModules() {
+    const auto t0 = std::chrono::steady_clock::now();
+    nlohmann::json reloaded = nlohmann::json::array(), added = nlohmann::json::array(),
+                   removed = nlohmann::json::array(), failed = nlohmann::json::array();
+    int unchanged = 0;
+    const auto sources = nano_modules::resolveBundlesForHost(wasmDir);
+
+    std::vector<LoadedBundle> next;
+    for (const auto& src : sources) {
+      auto it = std::find_if(loadedBundles.begin(), loadedBundles.end(),
+                             [&](const LoadedBundle& b) { return b.stem == src.stem; });
+      const std::string id = "com.nano." + src.stem;
+      if (it != loadedBundles.end() && !changed(*it, src)) {
+        next.push_back(std::move(*it));
+        loadedBundles.erase(it);
+        ++unchanged;
+        continue;
+      }
+      // Prove the new copy loads before tearing the old one down: load it
+      // unregistered, then swap the registrations over.
+      std::string file;
+      const int32_t newId = bundles->loadModuleFile(src.path, gpu.get(), nullptr, &file);
+      if (newId < 0) {
+        failed.push_back({{"id", id}, {"path", src.path}, {"error", "did not load"}});
+        BRT_LOG("reload: %s from %s did not load; keeping what was loaded",
+                id.c_str(), src.path.c_str());
+        if (it != loadedBundles.end()) { next.push_back(std::move(*it)); loadedBundles.erase(it); }
+        continue;
+      }
+      nlohmann::json row = {{"id", id}, {"path", src.path}};
+      if (it != loadedBundles.end()) {
+        row["from"] = it->path;
+        unloadBundle(*it);
+        loadedBundles.erase(it);
+      }
+      LoadedBundle b;
+      adoptBundle(src, file, newId, b);
+      row["effects"] = (int)b.effects.size();
+      (row.contains("from") ? reloaded : added).push_back(row);
+      BRT_LOG("reload: %s %s: %d effect(s) from %s", id.c_str(),
+              row.contains("from") ? "swapped" : "added", (int)b.effects.size(), src.path.c_str());
+      next.push_back(std::move(b));
+    }
+    // Whatever is left, no folder provides any more.
+    for (auto& b : loadedBundles) {
+      removed.push_back({{"id", "com.nano." + b.stem}, {"path", b.path}});
+      BRT_LOG("reload: com.nano.%s removed (was %s)", b.stem.c_str(), b.path.c_str());
+      unloadBundle(b);
+    }
+    loadedBundles = std::move(next);
+    rt->drainConsoleLog();
+
+    const bool any = !reloaded.empty() || !added.empty() || !removed.empty();
+    auto& server = BridgeServer::instance();
+    if (any) {
+      // Every executor derived its schemas, plan and fused kernels from the
+      // old types; its instances of them are already gone.
+      for (auto& [key, pe] : executors) {
+        pe.executor->resetModuleSchemas();
+        pe.haveLastPluginStates = false;
+      }
+      const std::string schemas = catalogJson();
+      for (auto& [key, pe] : executors)
+        server.set_at("/plugins/" + key + "/state/plugin_schemas", schemas);
+    }
+    publishModules();
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    server.set_at("/global/modules_reload",
+        nlohmann::json{{"seq", ++reloadCount}, {"ms", ms},
+                       {"reloaded", reloaded}, {"added", added}, {"removed", removed},
+                       {"failed", failed}, {"unchanged", unchanged}}.dump());
+    BRT_LOG("reload: %zu swapped, %zu added, %zu removed, %zu failed, %d unchanged (%.0f ms)",
+            reloaded.size(), added.size(), removed.size(), failed.size(), unchanged, ms);
+  }
+
+  void installReloadHandler() {
+    if (reload_handler_installed) return;
+    reload_handler_installed = true;
+    BridgeServer::instance().set_action_handler("reload_modules",
+        [this](int, const std::string&) {
+          reloadRequested.fetch_add(1, std::memory_order_relaxed);
+        });
+  }
+
+  /// { module_type: {key,id,version,schema,...metadata} } — BarrelRuntime::schemasJson.
+  std::string catalogJson();
+
   // --- MIDI library/sim sync (render thread, under render_mu) ---
   /// Last alias edge union handed to the MidiHost, as its comparison key.
   std::string lastAliasKey;
@@ -1138,19 +1317,23 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
   // the user mapped — see bridge/module_dirs.h for the precedence rules. What
   // loaded (and what didn't) is published at /global/modules for Settings.
   int total = 0;
-  nlohmann::json loaded = nlohmann::json::array();
+  impl_->wasmDir = wasm_dir;
   if (impl_->bundles->init()) {
     for (const auto& src : nano_modules::resolveBundlesForHost(wasm_dir)) {
-      int n = impl_->bundles->loadBundleFile(src.path, *impl_->registry, impl_->gpu.get(), nullptr);
+      Impl::LoadedBundle b;
+      if (!impl_->loadBundle(src, b)) {
+        BRT_LOG("wasm bundle '%s' (%s): failed to load %s", src.stem.c_str(),
+                nano_modules::originName(src.origin), src.path.c_str());
+        continue;
+      }
+      const int n = (int)b.effects.size();
       BRT_LOG("wasm bundle '%s' (%s): %d effect(s) from %s", src.stem.c_str(),
-              nano_modules::originName(src.origin), n, src.path.c_str());
-      loaded.push_back({{"id", "com.nano." + src.stem}, {"path", src.path},
-                        {"origin", nano_modules::originName(src.origin)},
-                        {"effects", n}});
+              nano_modules::originName(src.origin), n, b.file.c_str());
       total += n;
+      impl_->loadedBundles.push_back(std::move(b));
     }
   }
-  BridgeServer::instance().set_at("/global/modules", loaded.dump());
+  impl_->publishModules();
   if (total == 0) {
     BRT_LOG("ERROR: no WASM effects loaded (wasm_dir=%s)", wasm_dir.c_str());
     impl_->bundles.reset();
@@ -1160,6 +1343,7 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
 
   impl_->startSendWorker();
   impl_->installSurfaceReleaseHandler();
+  if (impl_->bundles) impl_->installReloadHandler();
   impl_->rt->drainConsoleLog();
   impl_->usable = (total > 0);
 
@@ -1199,9 +1383,13 @@ void* BarrelRuntime::gpuDevice() {
 
 std::string BarrelRuntime::schemasJson() {
   std::lock_guard<std::mutex> lk(impl_->render_mu);
+  return impl_->catalogJson();
+}
+
+std::string BarrelRuntime::Impl::catalogJson() {
   nlohmann::json out = nlohmann::json::object();
-  if (!impl_->registry) return out.dump();
-  for (const auto& [module_type, reg] : impl_->registry->entries()) {
+  if (!registry) return out.dump();
+  for (const auto& [module_type, reg] : registry->entries()) {
     nlohmann::json entry = {
       {"key", module_type},
       {"id", module_type},
@@ -1310,6 +1498,13 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // why the host's own pool cannot be relied on. Every exit below is a `return`,
   // so it drains on each.
   nano_platform::ScopedPool pool;
+  // A queued `reload_modules` (see Impl::reloadModules) is served by whichever
+  // instance renders next — between frames, under the render lock.
+  if (const uint64_t want = impl_->reloadRequested.load(std::memory_order_relaxed);
+      want != impl_->reloadServed) {
+    impl_->reloadServed = want;
+    impl_->reloadModules();
+  }
   ++pe.frame;
   // Best-effort present proxy: a new frame is being produced, so the previous
   // one was consumed by Resolume (it asked for the next). Bump the process-global
