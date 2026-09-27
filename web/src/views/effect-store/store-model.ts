@@ -51,6 +51,12 @@ export function toggleReaction(reactions: readonly string[] | undefined, emoji: 
   return cur.includes(emoji) ? cur.filter((e) => e !== emoji) : [...cur, emoji];
 }
 
+/** A category's place in the canonical domain order; unknown domains after. */
+function domainRank(domain: string): number {
+  const i = (CATEGORY_DOMAINS as readonly string[]).indexOf(domain);
+  return i < 0 ? CATEGORY_DOMAINS.length : i;
+}
+
 const byName = <T extends AvailableEffect>(a: T, b: T) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 
 /** The order cards take within a group. Null for 'relevance', which keeps the
@@ -62,6 +68,11 @@ export function effectComparator<T extends AvailableEffect>(
   switch (sort) {
     case 'relevance': return null;
     case 'name': return byName;
+    // Domain order (as Group by Category lays it out), then A–Z inside each.
+    case 'category': return (a, b) => {
+      const da = effectDomain(a.id), db = effectDomain(b.id);
+      return domainRank(da) - domainRank(db) || da.localeCompare(db) || byName(a, b);
+    };
     // Newest release first; untagged last. Ties: newest first-shipped, then A–Z.
     case 'newest': return (a, b) =>
       compareVersions(b.changedIn, a.changedIn) || compareVersions(b.addedIn, a.addedIn) || byName(a, b);
@@ -112,12 +123,7 @@ export function groupEffects<T extends AvailableEffect>(
         const d = effectDomain(e.id);
         add(d, d.charAt(0).toUpperCase() + d.slice(1), e);
       }
-      const known = CATEGORY_DOMAINS as readonly string[];
-      order = [...groups.keys()].sort((a, b) => {
-        const ia = known.indexOf(a), ib = known.indexOf(b);
-        if (ia >= 0 || ib >= 0) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-        return a.localeCompare(b);
-      });
+      order = [...groups.keys()].sort((a, b) => domainRank(a) - domainRank(b) || a.localeCompare(b));
       break;
     }
     case 'bundle': {

@@ -81,6 +81,7 @@ describe('store model', () => {
     const reactions = { 'source.noise': ['🔥', '⭐'], 'color.tone.levels': ['⭐'] };
     expect(flat({})).toEqual([['All effects', ['color.tone.brightness_contrast', 'color.tone.levels', 'mod.source.lfo', 'source.noise']]]);
     expect(flat({ sort: 'newest' })).toEqual([['All effects', ['color.tone.brightness_contrast', 'color.tone.levels', 'mod.source.lfo', 'source.noise']]]);
+    expect(flat({ sort: 'category' })).toEqual([['All effects', ['source.noise', 'color.tone.brightness_contrast', 'color.tone.levels', 'mod.source.lfo']]]);
     expect(flat({ sort: 'reacted' })).toEqual([['All effects', ['source.noise', 'color.tone.levels', 'color.tone.brightness_contrast', 'mod.source.lfo']]]);
     // Within a category group too.
     expect(shape(groupEffects(ALL, view({ sort: 'newest', query: 'color.' }), kindOf, {}, []))).toEqual([

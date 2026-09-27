@@ -192,9 +192,17 @@ describe('Effects store', () => {
       return null; })()`;
     // No reactions yet: the card spends no room on them.
     expect(await page.evaluate(`!!${card}.shadowRoot.querySelector('.reactions')`)).toBe(false);
-    // The floating button opens the popup; its quick row reacts in one click.
+    // The floating button opens the compact quick row; its "+" expands it into
+    // the full picker, which keeps the quick row on top.
+    const pickerState = `(() => { const p = ${card}.shadowRoot.querySelector('emoji-picker');
+      return p && { quick: p.shadowRoot.querySelectorAll('.quick button:not(.more)').length,
+        more: !!p.shadowRoot.querySelector('.quick .more'), search: !!p.shadowRoot.querySelector('input') }; })()`;
     await page.evaluate(`${card}.shadowRoot.querySelector('.react-btn').click()`);
     await sleep(100);
+    expect(await page.evaluate(pickerState)).toEqual({ quick: 6, more: true, search: false });
+    await page.evaluate(`${card}.shadowRoot.querySelector('emoji-picker').shadowRoot.querySelector('.quick .more').click()`);
+    await sleep(100);
+    expect(await page.evaluate(pickerState)).toEqual({ quick: 6, more: false, search: true });
     const reacted = await page.evaluate(`(() => {
       const picker = ${card}.shadowRoot.querySelector('emoji-picker');
       const b = picker && picker.shadowRoot.querySelector('.quick button');

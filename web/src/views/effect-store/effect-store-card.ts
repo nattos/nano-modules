@@ -4,8 +4,9 @@
  * Shows the effect's cached thumbnail (baked on the preview engine the first
  * time the card scrolls into view), swaps it for the effect running LIVE while
  * the pointer rests on the card, and carries the Use / Preview actions. Hovering
- * also shows a floating "add reaction" button (the chat-app pattern) that opens
- * the emoji popup; reactions already given show as chips under the title, and
+ * also shows a floating "add reaction" button (the chat-app pattern): it opens
+ * the six recent emoji as a quick row, whose "+" expands into the full picker;
+ * reactions already given show as chips under the title, and
  * take no room until there is one. Double-click is Use.
  */
 
@@ -24,9 +25,10 @@ import { categoryColor, effectDomain } from '../../widgets/category-color';
 import { bundleLabel } from '../../effect-bundles';
 import { pushRecentEmoji, toggleReaction, versionBadge } from './store-model';
 
-/** The emoji popup's footprint, for placing it inside the viewport. */
-const PICKER_W = 320;
-const PICKER_H = 380;
+/** The emoji popup's footprints — compact quick row, then expanded — for
+ *  keeping it inside the viewport. */
+const QUICK_SIZE = { w: 270, h: 48 };
+const PICKER_SIZE = { w: 320, h: 380 };
 import '../../widgets/ui-icon';
 import '../../widgets/emoji-picker';
 
@@ -40,7 +42,10 @@ export class EffectStoreCard extends MobxLitElement {
   @property({ attribute: false }) thumbs!: Thumbnails;
   /** Where the emoji picker opens (viewport px), or null when closed. It is
    *  position:fixed so no scroll container or card edge clips it. */
-  @state() private pickerAt: { left: number; top: number } | null = null;
+  @state() private pickerAt: { right: number; top: number } | null = null;
+  /** The add-reaction button's rect when the popup opened (it is placed
+   *  against it, and again when it expands). */
+  private pickerAnchor: DOMRect | null = null;
 
   private io: IntersectionObserver | null = null;
   private visible = false;
@@ -271,16 +276,22 @@ export class EffectStoreCard extends MobxLitElement {
     });
   }
 
-  /** Open the popup under the button (right edges aligned), or above it when
-   *  there is no room below. */
   private togglePicker = (ev: MouseEvent) => {
     ev.stopPropagation();
     if (this.pickerAt) { this.pickerAt = null; return; }
-    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-    const left = Math.max(8, Math.min(r.right - PICKER_W, innerWidth - PICKER_W - 8));
-    const top = r.bottom + 6 + PICKER_H <= innerHeight - 8 ? r.bottom + 6 : Math.max(8, r.top - PICKER_H - 6);
-    this.pickerAt = { left, top };
+    this.pickerAnchor = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    this.placePicker(QUICK_SIZE);
   };
+
+  /** Put the popup under the button, right edges aligned (so its actual
+   *  width never matters), or above it when there is no room below. */
+  private placePicker(size: { w: number; h: number }) {
+    const r = this.pickerAnchor;
+    if (!r) return;
+    const right = Math.max(8, Math.min(innerWidth - r.right, innerWidth - size.w - 8));
+    const top = r.bottom + 6 + size.h <= innerHeight - 8 ? r.bottom + 6 : Math.max(8, r.top - size.h - 6);
+    this.pickerAt = { right, top };
+  }
 
   private react(emoji: string) {
     const s = appState.local.userSettings;
@@ -334,10 +345,11 @@ export class EffectStoreCard extends MobxLitElement {
           @click=${this.togglePicker} @dblclick=${(ev: Event) => ev.stopPropagation()}>
           <ui-icon icon="la-smile"></ui-icon>
         </button>
-        ${this.pickerAt ? html`<emoji-picker style="left:${this.pickerAt.left}px;top:${this.pickerAt.top}px"
+        ${this.pickerAt ? html`<emoji-picker style="right:${this.pickerAt.right}px;top:${this.pickerAt.top}px"
             .quick=${appState.local.userSettings.recentEmoji} .selected=${mine}
             .anchor=${this.renderRoot.querySelector('.react-btn')}
             @dblclick=${(ev: Event) => ev.stopPropagation()}
+            @expand=${() => this.placePicker(PICKER_SIZE)}
             @pick=${(ev: CustomEvent<string>) => { this.pickerAt = null; this.react(ev.detail); }}
             @close=${() => { this.pickerAt = null; }}></emoji-picker>` : nothing}
       </div>

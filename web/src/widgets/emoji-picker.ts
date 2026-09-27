@@ -6,11 +6,13 @@
  * a segmented bar (one per emoji group, labelled by a representative emoji);
  * typing searches every group by name and tag instead.
  *
- * `quick` puts a row of one-click picks above the search (the effect store
- * passes the recently used reactions); any emoji in `selected` shows as on,
- * and picking it again is how the host toggles it off.
+ * With `quick` emoji (the effect store passes the recently used reactions) it
+ * opens COMPACT: just that row and a "+"; "+" expands it into the full picker
+ * (quick row kept on top) and only then loads the data. Any emoji in
+ * `selected` shows as on, and picking it again is how the host toggles it off.
  *
- * Fires `pick` ({detail: emoji}) and `close`. The host positions it.
+ * Fires `pick` ({detail: emoji}), `expand` (the host may re-place it for the
+ * bigger size) and `close`. The host positions it.
  */
 
 import { LitElement, html, css, nothing } from 'lit';
@@ -50,6 +52,8 @@ export function loadEmojiGroups(): Promise<EmojiGroup[]> {
 
 @customElement('emoji-picker')
 export class EmojiPicker extends LitElement {
+  /** Full picker vs. the compact quick row. Reflected, for the host's CSS. */
+  @property({ type: Boolean, reflect: true }) expanded = false;
   @property({ attribute: false }) quick: readonly string[] = [];
   @property({ attribute: false }) selected: readonly string[] = [];
   /** The button that opened the picker: pressing it is not an "outside" press,
@@ -92,6 +96,10 @@ export class EmojiPicker extends LitElement {
       padding: 0;
     }
     .quick button:hover { background: var(--app-tint-3); }
+    :host(:not([expanded])) { width: max-content; }
+    :host(:not([expanded])) .quick { padding: 5px; }
+    :host(:not([expanded])) .quick button { flex: none; width: 34px; }
+    .quick .more { color: var(--app-text-color2); font-size: 18px; }
     .quick button[on] { border-color: var(--app-hi-color2, #4169e1); background: rgba(65, 105, 225, 0.2); }
     input {
       margin: 8px;
@@ -147,10 +155,6 @@ export class EmojiPicker extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    void loadEmojiGroups().then((g) => {
-      this.groups = g;
-      this.groupId = g[0]?.id ?? 0;
-    });
     window.addEventListener('pointerdown', this.onOutside, true);
     window.addEventListener('keydown', this.onKey, true);
   }
@@ -161,8 +165,25 @@ export class EmojiPicker extends LitElement {
     window.removeEventListener('keydown', this.onKey, true);
   }
 
-  firstUpdated() {
-    this.input?.focus();
+  willUpdate() {
+    if (!this.quick.length) this.expanded = true; // nothing to be compact about
+  }
+
+  updated(changed: Map<string, unknown>) {
+    if (changed.has('expanded') && this.expanded) {
+      if (!this.groups) {
+        void loadEmojiGroups().then((g) => {
+          this.groups = g;
+          this.groupId = g[0]?.id ?? 0;
+        });
+      }
+      this.input?.focus();
+    }
+  }
+
+  private expand() {
+    this.expanded = true;
+    this.dispatchEvent(new CustomEvent('expand'));
   }
 
   private onOutside = (e: PointerEvent) => {
@@ -203,7 +224,14 @@ export class EmojiPicker extends LitElement {
         <div class="quick">
           ${this.quick.map((e) => html`<button ?on=${on(e)} title=${on(e) ? 'Remove reaction' : 'React'}
             @click=${() => this.pick(e)}>${e}</button>`)}
+          ${this.expanded ? nothing : html`<button class="more" title="More emoji" @click=${() => this.expand()}>+</button>`}
         </div>` : nothing}
+      ${this.expanded ? this.renderFull(list, on) : nothing}
+    `;
+  }
+
+  private renderFull(list: EmojiEntry[], on: (e: string) => boolean) {
+    return html`
       <input
         placeholder="Search emoji"
         .value=${this.search}

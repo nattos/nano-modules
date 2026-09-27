@@ -175,7 +175,7 @@ export interface DatabaseState {
 export type EffectStoreCollection = 'none' | 'category' | 'bundle' | 'updated' | 'favs';
 /** How the Effects tab orders cards within each group. 'relevance' keeps a
  *  search's match order (and is A–Z when there is no search). */
-export type EffectStoreSort = 'relevance' | 'name' | 'newest' | 'reacted';
+export type EffectStoreSort = 'relevance' | 'name' | 'category' | 'newest' | 'reacted';
 /** Which kinds of effect the Effects tab lists. */
 export type EffectStoreShow = 'all' | 'image' | 'generator' | 'modulation';
 

@@ -43,6 +43,7 @@ const COLLECTIONS: SegOption<EffectStoreSettings['collection']>[] = [
 const SORTS: SegOption<EffectStoreSettings['sort']>[] = [
   { value: 'relevance', label: 'Relevance' },
   { value: 'name', label: 'A–Z' },
+  { value: 'category', label: 'Category' },
   { value: 'newest', label: 'Newest' },
   { value: 'reacted', label: 'Most reacted' },
 ];
