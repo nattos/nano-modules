@@ -17,6 +17,7 @@
  */
 
 #include <module_api.h>
+#include <preview_scenario.h>
 #include <cstddef>
 
 // ---- Effects that also exist in core (duplicated here for test access) ----
@@ -123,17 +124,25 @@ __attribute__((export_name("nano_module_main")))
 void nano_module_main() {
     // Duplicates of core effects — same source, registered separately so
     // tests don't have to load `core` to exercise them.
-    nano::registerEffect({
-        2,
-        "color.tone.brightness_contrast",
-        "Brightness & Contrast",
-        "Adjusts brightness and contrast of a texture input",
-        "color",
-        "color,adjust,filter",
-        "la-adjust",
-        NANO_INSTANCE_LIFECYCLE(brightness_contrast),
-        &brightness_contrast::is_identity,
-    });
+    {
+        nano::PreviewScenario pv;
+        brightness_contrast::preview(pv);
+        nano::EffectDesc_v2 d{
+            2,
+            "color.tone.brightness_contrast",
+            "Brightness & Contrast",
+            "Adjusts brightness and contrast of a texture input",
+            "color",
+            "color,adjust,filter",
+            "la-adjust",
+            NANO_INSTANCE_LIFECYCLE(brightness_contrast),
+            &brightness_contrast::is_identity,
+        };
+        d.preview = pv.json();
+        d.added_in = "1.0.0";
+        d.changed_in = "1.0.0";
+        nano::registerEffect(d);
+    }
 
     nano::registerEffect({
         2,
@@ -146,16 +155,24 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(solid_color),
     });
 
-    nano::registerEffect({
-        2,
-        "composite.blend",
-        "Blend",
-        "A/B crossfader with a blend-mode transition flavor",
-        "composite",
-        "blend,mix,composite,opacity",
-        "la-layer-group",
-        NANO_INSTANCE_LIFECYCLE(video_blend),
-    });
+    {
+        nano::PreviewScenario pv;
+        video_blend::preview(pv);
+        nano::EffectDesc_v2 d{
+            2,
+            "composite.blend",
+            "Blend",
+            "A/B crossfader with a blend-mode transition flavor",
+            "composite",
+            "blend,mix,composite,opacity",
+            "la-layer-group",
+            NANO_INSTANCE_LIFECYCLE(video_blend),
+        };
+        d.preview = pv.json();
+        d.added_in = "1.0.0";
+        d.changed_in = "1.0.0";
+        nano::registerEffect(d);
+    }
 
     nano::registerEffect({
         2,

@@ -29,6 +29,8 @@ import './devices/devices-float-monitor';
 import './canvas/sketch-canvas-view';
 import { canvasModeToggle, wiresModeToggle } from '../widgets/rail-modes';
 import './devices/device-wire-overlay';
+import './effect-store/effect-store';
+import { effectStore, STORE_TAB_ID } from '../state/effect-store-controller';
 
 @customElement('sketch-app')
 export class SketchApp extends MobxLitElement {
@@ -44,6 +46,15 @@ export class SketchApp extends MobxLitElement {
       background: var(--app-bg-color1);
     }
   `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    effectStore.bindSurface({
+      currentTab: () => appState.local.userSettings.activeTab ?? 'edit',
+      selectTab: (id) => appController.setActiveTab(id as 'organize' | 'edit' | 'devices' | 'store' | 'settings'),
+      currentSketchId: () => appState.local.editingSketchId,
+    });
+  }
 
   render() {
     const sketchId = appState.local.editingSketchId;
@@ -89,12 +100,14 @@ export class SketchApp extends MobxLitElement {
           // has nowhere to open — the device grid holds the right panel.
           enabledToggles: ['wires'],
         },
+        // The Effects store: a catalog of every effect, taking over both panels.
+        { id: STORE_TAB_ID, icon: 'la-store', title: 'Effects', kind: 'full-takeover', render: () => html`<effect-store></effect-store>` },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
       toggles: [wiresModeToggle(), canvasModeToggle()],
       activeTabSettingKey: 'activeTab',
       panelWidthSettingKey: 'editLeftPanelWidth',
-      onSelectTab: (id) => appController.setActiveTab(id as 'organize' | 'edit' | 'devices' | 'settings'),
+      onSelectTab: (id) => appController.setActiveTab(id as 'organize' | 'edit' | 'devices' | 'store' | 'settings'),
       renderMonitor: () => html`
         <sketch-monitor
           .sketchId=${sketchId}
@@ -111,7 +124,10 @@ export class SketchApp extends MobxLitElement {
     // bottom-right overlay. It reuses the SAME 'edit_preview' trace point the
     // inline monitor uses, and renderRight replaces renderMonitor, so there is
     // never a double mount and no extra readback.
-    const monitorFloats = devicesActive || (canvasOpen && activeTab === 'edit');
+    // The Effects store floats it too while it's placing an effect (a
+    // breadcrumb target, or a hot-swap preview), so the change is visible.
+    const storePlacing = activeTab === STORE_TAB_ID && (effectStore.target.get() !== null || effectStore.preview.get() !== null);
+    const monitorFloats = devicesActive || (canvasOpen && activeTab === 'edit') || storePlacing;
     return html`
       <app-titlebar label=${appState.local.barrelMode ? 'Nano Modules — Remote Control' : 'Nano Modules'}></app-titlebar>
       <app-shell .config=${config}></app-shell>

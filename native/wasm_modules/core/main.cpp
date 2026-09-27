@@ -11,6 +11,7 @@
  */
 
 #include <module_api.h>
+#include <preview_scenario.h>
 #include <cstddef>
 
 NANO_DECLARE_INSTANCE_EFFECT(brightness_contrast)
@@ -211,6 +212,8 @@ void nano_module_main() {
     // is registered by name, so optional ones are simply mentioned (or omitted)
     // at the call site rather than positioned in a struct. Equivalent to the
     // registerEffect({...}) form the other effects below still use.
+    nano::PreviewScenario bcPreview;
+    brightness_contrast::preview(bcPreview);
     nano::EffectBuilder("color.tone.brightness_contrast")
         .name("Brightness & Contrast")
         .description("Adjusts brightness and contrast of a texture input")
@@ -225,6 +228,10 @@ void nano_module_main() {
         .render(&brightness_contrast::render)
         .onStatePatched(&brightness_contrast::on_state_patched)
         .isIdentity(&brightness_contrast::is_identity)
+        // Effect store: how its card previews, and which release last changed it.
+        .preview(bcPreview.json())
+        .addedIn("1.0.0")
+        .changedIn("1.0.0")
         .register_();
 
     nano::registerEffect({
@@ -249,16 +256,24 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(video_file),
     });
 
-    nano::registerEffect({
-        2,
-        "composite.blend",
-        "Blend",
-        "A/B crossfader with a blend-mode transition flavor",
-        "composite",
-        "blend,mix,composite,opacity",
-        "la-layer-group",
-        NANO_INSTANCE_LIFECYCLE(video_blend),
-    });
+    {
+        nano::PreviewScenario pv;
+        video_blend::preview(pv);
+        nano::EffectDesc_v2 d{
+            2,
+            "composite.blend",
+            "Blend",
+            "A/B crossfader with a blend-mode transition flavor",
+            "composite",
+            "blend,mix,composite,opacity",
+            "la-layer-group",
+            NANO_INSTANCE_LIFECYCLE(video_blend),
+        };
+        d.preview = pv.json();
+        d.added_in = "1.0.0";
+        d.changed_in = "1.0.0";
+        nano::registerEffect(d);
+    }
 
     nano::registerEffect({
         2,

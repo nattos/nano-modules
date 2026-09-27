@@ -47,11 +47,13 @@ describe('output trace thumbnails', () => {
       ac.setTappingMode(false);
     })()`);
 
+    // Poll until both thumbnails show their colours: the first frames can
+    // still be blank while the instance comes up.
     let t: any = null;
     for (let i = 0; i < 40; i++) {
       await new Promise(r => setTimeout(r, 250));
       t = await page.evaluate(thumbs);
-      if (t?.tex_out?.px && t?.side_out?.px) break;
+      if (t?.tex_out?.px?.[0] > 200 && t?.side_out?.px?.[2] > 200) break;
     }
     expect(t?.tex_out?.px).toBeTruthy();
     expect(t?.side_out?.px).toBeTruthy();

@@ -1,0 +1,320 @@
+/**
+ * <effect-store-card> — one effect in the Effects tab's grid.
+ *
+ * Shows the effect's cached thumbnail (baked on the preview engine the first
+ * time the card scrolls into view), swaps it for the effect running LIVE while
+ * the pointer rests on the card, and carries the Use / Preview actions and the
+ * reaction bar. Double-click is Use.
+ */
+
+import { html, css, nothing } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+import { autorun, type IReactionDisposer } from 'mobx';
+import { MobxLitElement } from '../../mobx-lit-element';
+import type { AvailableEffect } from '../../state/types';
+import type { PreviewEngine } from '../../preview/preview-engine';
+import { drawPlot } from '../../preview/preview-engine';
+import type { Thumbnails } from '../../preview/thumbnails';
+import { appState } from '../../state/app-state';
+import { appController } from '../../state/controller';
+import { effectStore } from '../../state/effect-store-controller';
+import { categoryColor, effectDomain } from '../../widgets/category-color';
+import { bundleLabel } from '../../effect-bundles';
+import { pushRecentEmoji, toggleReaction, versionBadge } from './store-model';
+import '../../widgets/ui-icon';
+import '../../widgets/emoji-picker';
+
+/** Pointer must rest this long before a card starts running live. */
+const HOVER_DELAY_MS = 180;
+
+@customElement('effect-store-card')
+export class EffectStoreCard extends MobxLitElement {
+  @property({ attribute: false }) effect!: AvailableEffect;
+  @property({ attribute: false }) engine!: PreviewEngine;
+  @property({ attribute: false }) thumbs!: Thumbnails;
+  /** Where the emoji picker opens (viewport px), or null when closed. It is
+   *  position:fixed so no scroll container or card edge clips it. */
+  @state() private pickerAt: { left: number; top: number } | null = null;
+
+  private io: IntersectionObserver | null = null;
+  private visible = false;
+  private hoverTimer = 0;
+  private liveDisposer: IReactionDisposer | null = null;
+
+  static styles = css`
+    :host { display: block; min-width: 0; }
+    .card {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--app-bg-color2, #1b1d22);
+      border: 1px solid var(--app-tint-3);
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: default;
+      transition: border-color 0.12s;
+    }
+    .card:hover { border-color: var(--app-tint-5, #555); }
+    .card[previewing] { border-color: var(--app-hi-color2, #4169e1); }
+    .thumb {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      background: #0e0f12;
+      overflow: hidden;
+    }
+    .thumb img, .thumb canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .shimmer {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.05) 50%, transparent 80%) #121318;
+      background-size: 200% 100%;
+      animation: shimmer 1.4s linear infinite;
+    }
+    @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+    .badge {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: var(--app-hi-color2, #4169e1);
+      color: white;
+    }
+    .badge.updated { background: #8a6d1d; }
+    .live-dot {
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ff4d5e;
+      box-shadow: 0 0 6px #ff4d5e;
+    }
+    .actions {
+      position: absolute;
+      bottom: 6px;
+      right: 6px;
+      display: flex;
+      gap: 4px;
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+    .card:hover .actions, .card[previewing] .actions { opacity: 1; }
+    .actions button {
+      padding: 3px 9px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(12, 13, 16, 0.82);
+      color: var(--app-text-color1);
+      font: inherit;
+      font-size: var(--app-fs-sm);
+      cursor: pointer;
+    }
+    .actions button:hover:not(:disabled) { background: var(--app-hi-color2, #4169e1); }
+    .actions button.use { background: var(--app-hi-color2, #4169e1); border-color: transparent; }
+    .actions button:disabled { opacity: 0.4; cursor: default; }
+    .meta { padding: 7px 9px 4px; min-width: 0; }
+    .title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .name { overflow: hidden; text-overflow: ellipsis; }
+    .sub {
+      margin-top: 2px;
+      font-size: var(--app-fs-xs, 11px);
+      color: var(--app-text-color3, #777);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .desc {
+      margin-top: 4px;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    :host([size='s']) .desc { display: none; }
+    .reactions {
+      position: relative;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 3px;
+      padding: 4px 8px 8px;
+      margin-top: auto;
+      min-height: 22px;
+    }
+    .reaction {
+      display: inline-flex;
+      align-items: center;
+      padding: 0 5px;
+      height: 20px;
+      border-radius: 10px;
+      border: 1px solid var(--app-tint-4);
+      background: var(--app-tint-2);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .reaction.on { border-color: var(--app-hi-color2, #4169e1); background: rgba(65, 105, 225, 0.2); }
+    .reaction.offer { opacity: 0; border-style: dashed; background: transparent; transition: opacity 0.12s; }
+    .card:hover .reaction.offer { opacity: 0.8; }
+    .reaction.offer:hover { opacity: 1; }
+    .reaction.plus { font-size: 13px; color: var(--app-text-color2); }
+    emoji-picker { position: fixed; z-index: 1000; }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    if (typeof IntersectionObserver !== 'undefined') {
+      this.io = new IntersectionObserver((entries) => {
+        this.visible = entries[entries.length - 1]?.isIntersecting ?? false;
+        if (this.visible) this.thumbs?.request(this.effect);
+      }, { rootMargin: '300px' });
+      this.io.observe(this);
+    } else {
+      this.thumbs?.request(this.effect);
+    }
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.io?.disconnect();
+    this.io = null;
+    this.leave();
+  }
+
+  updated(changed: Map<string, unknown>) {
+    // Re-pointed at another effect while on screen (no intersection change
+    // fires for that): ask for the new one's thumbnail.
+    if (changed.has('effect') && changed.get('effect') !== undefined && this.visible) this.thumbs?.request(this.effect);
+  }
+
+  private enter = () => {
+    clearTimeout(this.hoverTimer);
+    this.hoverTimer = window.setTimeout(() => {
+      void this.engine.startLive(this.effect);
+      this.watchLive();
+    }, HOVER_DELAY_MS);
+  };
+
+  private leave = () => {
+    clearTimeout(this.hoverTimer);
+    this.liveDisposer?.();
+    this.liveDisposer = null;
+    if (this.engine?.liveEffect.get() === this.effect?.id) void this.engine.stopLive(this.effect.id);
+  };
+
+  /** Draw the live frame (or plot) into the thumbnail canvas as it arrives. */
+  private watchLive() {
+    this.liveDisposer?.();
+    this.liveDisposer = autorun(() => {
+      this.engine.liveGeneration.get();
+      if (this.engine.liveEffect.get() !== this.effect.id) return;
+      const canvas = this.renderRoot.querySelector('canvas.live') as HTMLCanvasElement | null;
+      if (!canvas) return;
+      const samples = this.engine.liveSamples;
+      const frame = this.engine.liveFrame.get();
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      if (samples) {
+        canvas.width = 320; canvas.height = 180;
+        drawPlot(ctx, samples.values, samples.min, samples.max, canvas.width, canvas.height);
+      } else if (frame) {
+        if (canvas.width !== frame.width) canvas.width = frame.width;
+        if (canvas.height !== frame.height) canvas.height = frame.height;
+        ctx.drawImage(frame, 0, 0);
+      }
+    });
+  }
+
+  private togglePicker = (ev: MouseEvent) => {
+    if (this.pickerAt) { this.pickerAt = null; return; }
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const W = 320, H = 340;
+    const left = Math.max(8, Math.min(r.left, innerWidth - W - 8));
+    const top = r.top - H - 6 >= 8 ? r.top - H - 6 : Math.min(r.bottom + 6, innerHeight - H - 8);
+    this.pickerAt = { left, top };
+  };
+
+  private react(emoji: string) {
+    const s = appState.local.userSettings;
+    const next = toggleReaction(s.effectReactions[this.effect.id], emoji);
+    const reactions = { ...s.effectReactions };
+    if (next.length) reactions[this.effect.id] = next; else delete reactions[this.effect.id];
+    appController.setUserSetting('effectReactions', reactions);
+    if (next.includes(emoji)) appController.setUserSetting('recentEmoji', pushRecentEmoji(s.recentEmoji, emoji));
+  }
+
+  render() {
+    const e = this.effect;
+    const view = this.thumbs?.views.get(e.id);
+    const live = this.engine?.liveEffect.get() === e.id;
+    const previewing = effectStore.preview.get()?.effectId === e.id;
+    const canPlace = effectStore.canPlace();
+    const target = effectStore.target.get();
+    const badge = versionBadge(e);
+    const domain = effectDomain(e.id);
+    const mine = appState.local.userSettings.effectReactions[e.id] ?? [];
+    const recent = appState.local.userSettings.recentEmoji.filter((x) => !mine.includes(x));
+    const useLabel = target?.kind === 'retype' ? 'Use here' : 'Insert';
+    const placeHint = canPlace ? '' : ' — open a sketch in Edit first';
+    return html`
+      <div class="card" ?previewing=${previewing}
+        @pointerenter=${this.enter} @pointerleave=${this.leave}
+        @dblclick=${() => { if (canPlace) effectStore.use(e.id); }}>
+        <div class="thumb">
+          ${view ? html`<img src=${view.url} alt="" draggable="false" />` : html`<div class="shimmer"></div>`}
+          ${live ? html`<canvas class="live"></canvas><span class="live-dot" title="Running live"></span>` : nothing}
+          ${badge ? html`<span class="badge ${badge}">${badge === 'new' ? 'New' : 'Updated'}</span>` : nothing}
+          <div class="actions">
+            <button title=${`Preview in place without committing${placeHint}`} ?disabled=${!canPlace}
+              @click=${() => effectStore.togglePreview(e.id)}>${previewing ? 'Stop' : 'Preview'}</button>
+            <button class="use" title=${`${useLabel}${placeHint}`} ?disabled=${!canPlace}
+              @click=${() => effectStore.use(e.id)}>${useLabel}</button>
+          </div>
+        </div>
+        <div class="meta">
+          <div class="title">
+            <span class="dot" style="background:${categoryColor(domain)}"></span>
+            <span class="name" title=${e.id}>${e.name || e.id}</span>
+          </div>
+          <div class="sub">${e.id}${e.bundle ? html` · ${bundleLabel(e.bundle)}` : nothing}</div>
+          ${e.description ? html`<div class="desc">${e.description}</div>` : nothing}
+        </div>
+        <div class="reactions">
+          ${mine.map((x) => html`<span class="reaction on" title="Remove reaction" @click=${() => this.react(x)}>${x}</span>`)}
+          ${recent.map((x) => html`<span class="reaction offer" title="React" @click=${() => this.react(x)}>${x}</span>`)}
+          <span class="reaction offer plus" title="More emoji" @click=${this.togglePicker}>+</span>
+          ${this.pickerAt ? html`<emoji-picker style="left:${this.pickerAt.left}px;top:${this.pickerAt.top}px"
+              @pick=${(ev: CustomEvent<string>) => { this.pickerAt = null; if (!mine.includes(ev.detail)) this.react(ev.detail); }}
+              @close=${() => { this.pickerAt = null; }}></emoji-picker>` : nothing}
+        </div>
+      </div>
+    `;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap { 'effect-store-card': EffectStoreCard }
+}

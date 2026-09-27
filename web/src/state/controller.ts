@@ -1447,7 +1447,7 @@ export class AppController {
   // Local state changes (ephemeral, no undo)
   // ========================================================================
 
-  setActiveTab(tab: 'organize' | 'edit' | 'devices' | 'settings') {
+  setActiveTab(tab: 'organize' | 'edit' | 'devices' | 'store' | 'settings') {
     runInAction(() => { appState.local.activeTab = tab; });
     this.setUserSetting('activeTab', tab);   // remember across reloads
   }

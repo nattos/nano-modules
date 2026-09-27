@@ -43,7 +43,14 @@ function db(): Promise<IDBDatabase | null> {
       req.onupgradeneeded = () => {
         if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE, { keyPath: 'effectId' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const d = req.result;
+        // Someone else wants to delete / upgrade the database (clearing site
+        // data, another tab, tests): let go, or their request blocks forever
+        // and every later open here queues behind it. Reopen on next use.
+        d.onversionchange = () => { d.close(); dbPromise = null; };
+        resolve(d);
+      };
       req.onerror = () => resolve(null);
       req.onblocked = () => resolve(null);
     } catch {

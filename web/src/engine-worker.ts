@@ -659,7 +659,12 @@ async function init(width: number, height: number) {
 // ========================================================================
 
 async function frame() {
-  if (!running || frameInFlight) return;
+  if (!running) return;
+  // A stepFrame (or other in-flight tick) owns this moment: skip it, but KEEP
+  // the loop armed. Returning without re-arming killed the rAF chain for good
+  // whenever a rAF landed mid-step — a stepped-then-resumed engine (the effect
+  // store's preview engine, the IDE's frame-step) never rendered again.
+  if (frameInFlight) { requestAnimationFrame(frame); return; }
   frameInFlight = true;
 
   if (paused) {

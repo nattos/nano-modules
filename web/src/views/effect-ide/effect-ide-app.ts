@@ -27,6 +27,9 @@ import '../devices/devices-float-monitor';
 import '../canvas/sketch-canvas-view';
 import { canvasModeToggle, wiresModeToggle } from '../../widgets/rail-modes';
 import '../devices/device-wire-overlay';
+import '../effect-store/effect-store';
+import { effectStore, STORE_TAB_ID } from '../../state/effect-store-controller';
+import type { UserSettings } from '../../state/types';
 
 @customElement('effect-ide-app')
 export class EffectIdeApp extends MobxLitElement {
@@ -42,6 +45,11 @@ export class EffectIdeApp extends MobxLitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    effectStore.bindSurface({
+      currentTab: () => appState.local.userSettings.ideLeftTab,
+      selectTab: (id) => appController.setUserSetting('ideLeftTab', id as UserSettings['ideLeftTab']),
+      currentSketchId: () => appState.local.userSettings.selectedProjectId,
+    });
     // Page-level file-drop fallback. Listening on the host catches drops from
     // anywhere in the IDE (drag events are composed and bubble out of the inner
     // shadow trees), so a video dropped anywhere loads into the selected
@@ -111,6 +119,8 @@ export class EffectIdeApp extends MobxLitElement {
           renderRight: () => html`<devices-tab></devices-tab>`,
           enabledToggles: ['wires'],
         },
+        // The Effects store: a catalog of every effect, taking over both panels.
+        { id: STORE_TAB_ID, icon: 'la-store', title: 'Effects', kind: 'full-takeover', render: () => html`<effect-store></effect-store>` },
         { id: 'debug_info', icon: 'la-bug', title: 'Debug Info', kind: 'inline', render: () => html`<ide-debug-info></ide-debug-info>` },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
@@ -135,7 +145,10 @@ export class EffectIdeApp extends MobxLitElement {
     const devicesActive = leftTab === 'devices';
     // Whenever something else owns the monitor AREA, the output floats out —
     // reusing this surface's own trace point, so no extra registration.
-    const monitorFloats = devicesActive || (canvasOpen && leftTab === 'project_editor');
+    // The Effects store floats it while placing an effect (breadcrumb target
+    // or hot-swap preview), so the change shows.
+    const storePlacing = leftTab === STORE_TAB_ID && (effectStore.target.get() !== null || effectStore.preview.get() !== null);
+    const monitorFloats = devicesActive || (canvasOpen && leftTab === 'project_editor') || storePlacing;
     return html`
       <app-titlebar label="Nano Modules — Effect Dev"></app-titlebar>
       <app-shell .config=${config}></app-shell>

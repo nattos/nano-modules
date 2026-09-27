@@ -45,12 +45,13 @@
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.41.0",
     "codemirror": "^6.0.2",
+    "emojibase-data": "^17.0.0",
     "immer": "^11.1.4",
     "line-awesome": "^1.3.0",
     "marked": "^12.0.2",
     "mp4-muxer": "^5.2.2"
   },
-  "description": "Nano Repatch \u2014 live visual synthesis",
+  "description": "Nano Repatch — live visual synthesis",
   "author": "nattos",
   "main": "electron/main.cjs"
 }

@@ -171,6 +171,23 @@ export interface DatabaseState {
 
 // --- User settings (persisted to IndexedDB, never in undo history) ---
 
+/** How the Effects tab groups its cards. */
+export type EffectStoreCollection = 'category' | 'bundle' | 'updated' | 'favs';
+/** Which kinds of effect the Effects tab lists. */
+export type EffectStoreShow = 'all' | 'image' | 'generator' | 'modulation';
+
+/** The Effects (store) tab's sticky view settings. */
+export interface EffectStoreSettings {
+  collection: EffectStoreCollection;
+  show: EffectStoreShow;
+  size: 's' | 'm' | 'l';
+  /** List debug.* / test-only effects too. */
+  showDebug: boolean;
+  /** The "Settings & filters" area is expanded. */
+  filtersOpen: boolean;
+  query: string;
+}
+
 /**
  * Per-user UI preferences. Lives in `appState.local.userSettings`. Auto-saved
  * via a debounced autorun. Never modified through `appController.mutate`.
@@ -179,13 +196,13 @@ export interface UserSettings {
   /** Width in pixels of the IDE's left details panel. */
   ideLeftPanelWidth: number;
   /** Currently active left tab in the IDE. */
-  ideLeftTab: 'explorer' | 'project_editor' | 'devices' | 'debug_info' | 'settings';
+  ideLeftTab: 'explorer' | 'project_editor' | 'devices' | 'store' | 'debug_info' | 'settings';
   /** Currently selected project id (`default:<effectId>` or `user:<uuid>`). */
   selectedProjectId: string | null;
   /** Whether the engine is paused. */
   paused: boolean;
   /** Resolume sketch-IDE: last active top tab (create/organize/edit/devices/settings). */
-  activeTab: 'create' | 'organize' | 'edit' | 'devices' | 'settings';
+  activeTab: 'create' | 'organize' | 'edit' | 'devices' | 'store' | 'settings';
   /**
    * Devices-tab group filters — which sections of the MIDI device library
    * show: connected units, disconnected user forks, unrecognized (plugged-in
@@ -198,6 +215,14 @@ export interface UserSettings {
   };
   /** Height (px) of the Devices tab's floating output monitor (aspect-locked). */
   devicesMonitorHeight: number;
+  /** The Effects (store) tab's view: grouping, filters, card size, query. */
+  effectStore: EffectStoreSettings;
+  /** The user's emoji reactions on effects (effect id → emoji, in order added).
+   *  The store's "Favs" collection groups by them. */
+  effectReactions: Record<string, string[]>;
+  /** The emoji most recently used for a reaction, newest first (at most 6) —
+   *  offered on every card's reaction bar. */
+  recentEmoji: string[];
   /**
    * Unknown-MIDI-device ports (`manufacturer|name`) whose define-offer
    * snackbar has already been shown — once EVER, across sessions; the
@@ -353,7 +378,7 @@ export interface EngineStatus {
 }
 
 export interface LocalState {
-  activeTab: 'organize' | 'edit' | 'devices' | 'settings';
+  activeTab: 'organize' | 'edit' | 'devices' | 'store' | 'settings';
   plugins: PluginInfo[];
   availableEffects: AvailableEffect[];
   editingSketchId: string | null;

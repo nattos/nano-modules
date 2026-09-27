@@ -37,57 +37,11 @@ import type { AvailableEffect } from '../state/types';
 import { effectDomain, categoryColor } from './category-color';
 import { bundleLabel } from '../effect-bundles';
 import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
+import { fuzzyMatch, matchScore, searchEffects, shortName } from '../state/effect-search';
 import './ui-icon';
-
-function shortName(id: string) { return id.split('.').pop() ?? id; }
 
 /** Human-readable label for a bundle folder row (falls back to the raw id). */
 function bundleName(id: string): string { return bundleLabel(id); }
-
-/** Simple fuzzy match: all query chars must appear in order in the target. */
-function fuzzyMatch(q: string, t: string): boolean {
-  let qi = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) qi++;
-  }
-  return qi === q.length;
-}
-
-/** Score a match — lower is better. Returns -1 for no match. */
-function matchScore(query: string, effect: AvailableEffect): number {
-  const q = query.toLowerCase();
-  const id = effect.id.toLowerCase();
-  const name = effect.name.toLowerCase();
-  const short = shortName(effect.id).toLowerCase();
-
-  // Full dotted-id matches first, so a path-style query ("color.tone.bright")
-  // resolves straight to its effect (drives live preview + express commit when
-  // the field is seeded with a full identifier).
-  if (id === q || short === q) return 0;
-  if (id.startsWith(q)) return 1;
-  if (short.startsWith(q)) return 1;
-  if (name === q) return 2;
-  if (name.startsWith(q)) return 3;
-  if (fuzzyMatch(q, short)) return 4;
-  if (fuzzyMatch(q, name)) return 5;
-  for (const kw of effect.keywords) {
-    if (kw.toLowerCase().startsWith(q)) return 6;
-    if (fuzzyMatch(q, kw)) return 7;
-  }
-  if (fuzzyMatch(q, effect.category.toLowerCase())) return 8;
-  return -1;
-}
-
-/** Search effects and return scored results (best first). */
-function searchEffects(effects: AvailableEffect[], query: string): AvailableEffect[] {
-  const q = query.trim();
-  if (q.length === 0) return [...effects];
-  return effects
-    .map(e => ({ effect: e, score: matchScore(q, e) }))
-    .filter(x => x.score >= 0)
-    .sort((a, b) => a.score - b.score)
-    .map(x => x.effect);
-}
 
 @customElement('smart-input')
 export class SmartInput extends LitElement {

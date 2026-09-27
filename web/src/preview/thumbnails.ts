@@ -27,6 +27,10 @@ export class Thumbnails {
   private checked = new Set<string>();
   private running = false;
   private disposed = false;
+  /** Newly visible cards jump the queue as a BATCH, in reading order: requests
+   *  within one burst insert after each other at the front. */
+  private batchAt = 0;
+  private batchTime = 0;
 
   constructor(private engine: PreviewEngine) {}
 
@@ -61,7 +65,10 @@ export class Thumbnails {
     if (rec) this.show(effect.id, rec.blob, rec.kind);
     if (rec?.key === key) return;
     this.queued.add(effect.id);
-    this.queue.unshift(effect);
+    const now = performance.now();
+    if (now - this.batchTime > 120) this.batchAt = 0;
+    this.batchTime = now;
+    this.queue.splice(Math.min(this.batchAt++, this.queue.length), 0, effect);
     void this.pump();
   }
 

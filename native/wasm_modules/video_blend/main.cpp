@@ -34,6 +34,7 @@
 #include <val.h>
 #include <sketch/xfade_shape.h>
 #include "video_blend_shaders.h"
+#include <preview_scenario.h>
 
 namespace video_blend {
 
@@ -192,3 +193,20 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace video_blend
+
+namespace video_blend {
+
+// Effect store preview: blend needs a SECOND picture — the motion picture is
+// A (the chain input), hard-edged motion graphics are B, and an LFO sweeps the
+// crossfade so both show.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .auxGenerator("b", "edges")
+      .wire("b.output", "$self.tex_b")
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.25f)
+      .wire("lfo.output", "$self.opacity")
+      .capture(1.5f);
+}
+
+}  // namespace video_blend

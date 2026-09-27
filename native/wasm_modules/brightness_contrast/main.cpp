@@ -11,6 +11,7 @@
 #include <host.h>
 #include <val.h>
 #include "brightness_contrast_shaders.h"
+#include <preview_scenario.h>
 
 #include <cmath>
 
@@ -170,3 +171,18 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace brightness_contrast
+
+namespace brightness_contrast {
+
+// Effect store preview: a smooth hue/luma gradient, with an LFO sweeping
+// contrast across its whole range so the thumbnail shows both ends.
+void preview(nano::PreviewScenario& s) {
+  s.input("gradient")
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.35f)
+      .wire("lfo.output", "$self.contrast")
+      .param("brightness", 0.05f)
+      .capture(1.2f);
+}
+
+}  // namespace brightness_contrast

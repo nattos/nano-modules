@@ -156,6 +156,12 @@ export interface ColumnController {
   beginInsertEffect(sketchId: string, colIdx: number, insertIdx: number, moduleType: string): { edit: EditHandle; instanceKey: string };
   updateInsertEffect(edit: EditHandle, sketchId: string, colIdx: number, insertIdx: number, instanceKey: string, newModuleType: string): void;
   cancelInsertEffect(edit: EditHandle): void;
+  /** Open the Effects store to choose the type for a card being retyped, or
+   *  for a linear insert in progress (the type editor's Browse…). Optional:
+   *  a surface without the store omits it and the button doesn't show. */
+  browseEffects?(target:
+    | { kind: 'retype'; sketchId: string; instanceKey: string }
+    | { kind: 'insert'; sketchId: string; index: number }): void;
   /** Sidecar-canvas insertion (optional — only surfaces that HAVE a canvas
    *  implement these; the placement is what makes the entry a canvas node). */
   beginInsertCanvasEffect?(sketchId: string, pos: { x: number; y: number }, moduleType: string):

@@ -56,6 +56,8 @@ export class PreviewEngine {
   readonly liveGeneration = observable.box(0);
   /** The effect currently running live, or null. */
   readonly liveEffect = observable.box<string | null>(null);
+  /** Bumps when effect schemas arrive (kindOf answers change). */
+  readonly schemaGeneration = observable.box(0);
   /** A modulation effect's live output samples (null for image effects). */
   liveSamples: LiveSamples | null = null;
 
@@ -88,12 +90,24 @@ export class PreviewEngine {
         if (bundle) {
           for (const [id, e] of this.catalog) if (e.bundle === bundle && !effects.some((x) => x.id === id)) this.catalog.delete(id);
         }
-        for (const e of effects) this.catalog.set(e.id, { ...e, bundle: e.bundle ?? bundle });
+        // First registration wins, as in the editor's list (setAvailableEffects):
+        // a later bundle declaring the same id (testonly duplicates core's
+        // effects) must not take the card over.
+        for (const e of effects) {
+          const cur = this.catalog.get(e.id);
+          if (!cur || cur.bundle === (e.bundle ?? bundle)) this.catalog.set(e.id, { ...e, bundle: e.bundle ?? bundle });
+        }
       });
       if (bundle) this.reported.add(bundle);
     };
     proxy.onStateUpdate = (state) => {
-      for (const p of state.plugins ?? []) if (p.schema) this.plugins.set(p.id, p);
+      let added = false;
+      for (const p of state.plugins ?? []) {
+        if (!p.schema) continue;
+        if (!this.plugins.has(p.id)) added = true;
+        this.plugins.set(p.id, p);
+      }
+      if (added) runInAction(() => this.schemaGeneration.set(this.schemaGeneration.get() + 1));
     };
     proxy.onTracedFrames = (frames) => {
       // The plugin-state diff of the same frame arrives next; resolve then.
@@ -220,8 +234,10 @@ export class PreviewEngine {
   }
 
   private async step(t: number): Promise<Frames | null> {
-    this.proxy!.setTime(t);
-    this.proxy!.stepFrame();
+    // The store may close (disposing this engine) mid-bake.
+    if (!this.proxy || this.disposed) return null;
+    this.proxy.setTime(t);
+    this.proxy.stepFrame();
     return this.nextFrame();
   }
 
@@ -244,7 +260,7 @@ export class PreviewEngine {
         for (let i = 0; i < WARMUP_FRAMES; i++) {
           const f = await this.step(0);
           if (f) for (const b of Object.values(f)) b.close();
-          if (this.liveWanted) return null;
+          if (this.liveWanted || this.disposed) return null;
         }
         const until = plot ? m.compiled.loopSec : m.compiled.captureSec;
         const steps = Math.max(1, Math.round(until * STEP_HZ));
@@ -252,7 +268,7 @@ export class PreviewEngine {
         let last: ImageBitmap | null = null;
         for (let i = 1; i <= steps; i++) {
           const f = await this.step(i / STEP_HZ);
-          if (this.liveWanted) { last?.close(); if (f) for (const b of Object.values(f)) b.close(); return null; }
+          if (this.liveWanted || this.disposed) { last?.close(); if (f) for (const b of Object.values(f)) b.close(); return null; }
           if (!f) continue;
           for (const [id, b] of Object.entries(f)) {
             if (id === TRACE_ID) { last?.close(); last = b; } else b.close();

@@ -10,6 +10,7 @@
 import { appState } from './app-state';
 import { appController } from './controller';
 import { tapsConnect } from '../widgets/taps-connect';
+import { effectStore } from './effect-store-controller';
 import { applyHidden, hiddenFieldsFor } from './field-visibility';
 import type {
   ColumnAdapter,
@@ -111,6 +112,7 @@ const controller: ColumnController = {
     appController.updateChangeEffectType(e as LongEdit, s, c, ch, t),
   cancelChangeEffectType: (e: EditHandle) => appController.cancelChangeEffectType(e as LongEdit),
   beginInsertEffect: (s, c, idx, t) => appController.beginInsertEffect(s, c, idx, t),
+  browseEffects: (target) => effectStore.browseFor(target),
   updateInsertEffect: (e: EditHandle, s, c, idx, key, t) =>
     appController.updateInsertEffect(e as LongEdit, s, c, idx, key, t),
   cancelInsertEffect: (e: EditHandle) => appController.cancelInsertEffect(e as LongEdit),

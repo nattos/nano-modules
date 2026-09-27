@@ -15,7 +15,7 @@
  */
 
 import { toJS } from 'mobx';
-import type { UserSettings } from './types';
+import type { EffectStoreSettings, UserSettings } from './types';
 import { idbGet, idbPut, STORE_SETTINGS } from './idb-store';
 import {
   readSection, settingsFilesAvailable, SETTINGS_FILES, watchSection, writeSection,
@@ -41,7 +41,17 @@ export function defaultUserSettings(): UserSettings {
     deviceFilters: { connected: true, disconnected: true, unrecognized: true, templates: true, deleted: false },
     devicesMonitorHeight: 180,
     midiOfferedPorts: [],
+    effectStore: defaultEffectStoreSettings(),
+    effectReactions: {},
+    recentEmoji: [...DEFAULT_RECENT_EMOJI],
   };
+}
+
+/** The reaction bar's starting set, before the user has picked any. */
+export const DEFAULT_RECENT_EMOJI = ['⭐', '❤️', '🔥', '✨', '🎛️', '🧪'];
+
+export function defaultEffectStoreSettings(): EffectStoreSettings {
+  return { collection: 'category', show: 'all', size: 'm', showDebug: false, filtersOpen: false, query: '' };
 }
 
 const SETTINGS_KEY = 'settings';
@@ -62,6 +72,7 @@ export function mergeUserSettings(stored: Partial<UserSettings> | null | undefin
     ...defaults,
     ...stored,
     deviceFilters: { ...defaults.deviceFilters, ...stored.deviceFilters },
+    effectStore: { ...defaults.effectStore, ...stored.effectStore },
   };
 }
 

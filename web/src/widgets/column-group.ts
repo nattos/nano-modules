@@ -13,9 +13,10 @@
 import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
+import { defaultInsertIndex } from '../state/insert-position';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, FieldConnectInfo, SketchOutputFormat, SketchResolutionOverride } from '../sketch-types';
 import { sketchChain, chainEntryAt, isCanvasEntry, linearChainLength, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat, isDeviceOff } from '../sketch-types';
-import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
+import type { ColumnAdapter, ColumnController, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { beginDragGesture } from '../utils/drag-gesture';
@@ -684,6 +685,20 @@ export class ColumnGroup extends MobxLitElement {
        * single-line target. */
       align-self: stretch;
     }
+    /* Browse… beside the type editor: opens the Effects store for this card. */
+    .type-browse {
+      flex: 0 0 auto;
+      margin-left: 4px;
+      padding: 1px 5px;
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      background: var(--app-tint-2);
+      color: var(--app-text-color2);
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .type-browse:hover { color: var(--app-text-color1); background: var(--app-tint-3); }
     .effect-card-name-wrapper > smart-input {
       flex: 1;
       min-width: 0;
@@ -1648,6 +1663,11 @@ export class ColumnGroup extends MobxLitElement {
                   @delete-request=${() => this.handleTypeDeleteRequest(chainIdx, session)}
                   @cancel=${(e: CustomEvent) => this.handleTypeCancel(chainIdx, session, e.detail)}
                 ></smart-input>
+                ${this.ctl.browseEffects && !this.insertCtx?.canvasPos ? html`
+                  <button class="type-browse" title="Browse every effect, with previews, in the Effects tab"
+                    @pointerdown=${(e: Event) => e.preventDefault() /* keep the editor focused: a blur commits an insert */}
+                    @click=${(e: Event) => { e.stopPropagation(); this.handleTypeBrowse(chainIdx, session); }}
+                  ><ui-icon icon="la-store"></ui-icon></button>` : nothing}
               ` : html`
                 <span class="effect-card-name"
                   @dblclick=${(e: Event) => { e.stopPropagation(); this.beginEditType(chainIdx); }}
@@ -1926,6 +1946,29 @@ export class ColumnGroup extends MobxLitElement {
       this.ctl.removeEffectFromChain(this.sketchId, this.colIdx, chainIdx);
     }
     this.endTypeEdit();
+  }
+
+  /**
+   * Browse… — hand this type choice to the Effects store. The in-progress edit
+   * is backed out (a retype reverts, an insert placeholder disappears) and the
+   * store opens with a breadcrumb back to this card / position, where its Use
+   * and Preview act instead.
+   */
+  private handleTypeBrowse(chainIdx: number, session: number) {
+    if (session !== this.editSession || !this.ctl.browseEffects) return;
+    const sketch = this.ds.getSketch(this.sketchId);
+    const ctx = this.insertCtx;
+    let target: Parameters<NonNullable<ColumnController['browseEffects']>>[0] | null = null;
+    if (ctx) {
+      if (!ctx.canvasPos) target = { kind: 'insert', sketchId: this.sketchId, index: ctx.insertIdx };
+      if (this.typeLongEdit) this.ctl.cancelInsertEffect(this.typeLongEdit);
+    } else {
+      const entry = sketch ? sketchChain(sketch)[chainIdx] : undefined;
+      if (entry) target = { kind: 'retype', sketchId: this.sketchId, instanceKey: entry.instance_key };
+      if (this.typeLongEdit) this.ctl.cancelChangeEffectType(this.typeLongEdit);
+    }
+    this.endTypeEdit();
+    if (target) this.ctl.browseEffects(target);
   }
 
   /** Tear down the type-editing session state and re-render. */
@@ -3077,15 +3120,8 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Insert point like "+ Track": below the selected card, else at the end. */
   private computeInsertIdx(): number {
-    const sketch = this.ds.getSketch(this.sketchId);
-    const chain = sketch ? sketchChain(sketch) : [];
-    for (let i = 0; i < chain.length; i++) {
-      if (isCanvasEntry(chain[i])) continue;
-      if (this.ctl.isSelected(`effect/${this.sketchId}/${this.colIdx}/${i}`)) return i + 1;
-    }
-    // Append at the END OF THE LINEAR LIST — never past it, or the insert lands
-    // among the tail-partitioned canvas entries.
-    return sketch ? linearChainLength(sketch) : 0;
+    return defaultInsertIndex(this.ds.getSketch(this.sketchId), this.sketchId, this.colIdx,
+      (p) => this.ctl.isSelected(p));
   }
 
   /** Best temporary effect id for a category (preferred default → first in

@@ -23,6 +23,8 @@
 
 #include <cstdint>
 
+namespace nano { class PreviewScenario; }  // preview_scenario.h
+
 // ── Host↔effect ABI version ────────────────────────────────────────────────
 // Version of the host<->effect CONTRACT: which host imports exist (and their
 // signatures) and which effect callbacks the host drives. This is DISTINCT
@@ -392,4 +394,8 @@ private:
        declared for every effect, defined only by those that opt in. */       \
     void  eval_visibility(int n, const char* pb, const int* off,             \
                           const int* len, const int* ops);                    \
+    /* Optional effect-store preview scenario (EffectDesc_v2.preview): fill   \
+       the builder in (preview_scenario.h). Declared for every effect,        \
+       defined only by those that opt in. */                                  \
+    void  preview(nano::PreviewScenario& scenario);                           \
   }
