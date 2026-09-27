@@ -10,6 +10,8 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-live-monitor
  */
 
+import { CENTER, sampleMonitor } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
@@ -24,17 +26,7 @@ describe('Arrangement live monitor + transport (GPU)', () => {
     );
   });
 
-  const readMonitorCenter = () =>
-    page.evaluate(() => {
-      const app = document.querySelector('arrangement-app') as any;
-      const mon = app?.shadowRoot?.querySelector('arr-monitor') as any;
-      const canvas = mon?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-      const ctx = canvas.getContext('2d')!;
-      const x = Math.floor(canvas.width / 2);
-      const y = Math.floor(canvas.height / 2);
-      const d = ctx.getImageData(x, y, 1, 1).data;
-      return { r: d[0], g: d[1], b: d[2], a: d[3] };
-    });
+  const readMonitorCenter = async () => (await sampleMonitor(page, [CENTER]))![0];
 
   it('renders the selected clip into the monitor through the real executor', async () => {
     const errors: string[] = [];

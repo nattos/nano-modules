@@ -21,6 +21,7 @@
  */
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
+import { releaseFrame } from './views/arrangement/engine/comp-engine';
 import { discoverEffectBundles } from './effect-bundles';
 import type { CompFrameInfo } from './engine-types';
 import { CompTestPump, type PumpClipTelemetry } from './comp-test-pump';
@@ -301,7 +302,7 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
       // The bitmaps are checkerboarded and unusable for comparison — close them
       // so the page doesn't leak one per frame. Real pixels come from
       // readbackTrace at capture points.
-      for (const id in bitmaps) bitmaps[id].close();
+      for (const id in bitmaps) releaseFrame(bitmaps[id]);
       const r = resolveFrame;
       resolveFrame = null;
       r?.(last.info);

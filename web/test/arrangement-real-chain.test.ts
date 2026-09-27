@@ -9,6 +9,8 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-real-chain
  */
 
+import { luma, sampleMonitor, waitForMonitor, type MonitorSample, type UV } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
@@ -65,38 +67,14 @@ describe('Arrangement real clip chain (GPU)', () => {
     // A real param edit reaches the engine: the composition executor re-syncs
     // the document mirror (docRev) and the rendered pixels move. lightness 0.9
     // pushes the HSL output toward white — the monitor mean must rise.
-    const meanLuma = () => page.evaluate(() => {
-      const app = document.querySelector('arrangement-app') as any;
-      const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-      if (!cv || !cv.width) return null;
-      const ctx = cv.getContext('2d')!;
-      let sum = 0, n = 0;
-      for (let i = 0; i < 5; i++) {
-        const d = ctx.getImageData(Math.floor((cv.width * (i + 0.5)) / 5), Math.floor(cv.height / 2), 1, 1).data;
-        sum += 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]; n++;
-      }
-      return sum / n;
-    });
-    const before = await meanLuma();
+    // Five points across the middle row.
+    const ROW: UV[] = [0, 1, 2, 3, 4].map((i) => [(i + 0.5) / 5, 0.5] as UV);
+    const mean = (s: MonitorSample[]) => s.reduce((a, p) => a + luma(p), 0) / s.length;
+    const before = mean((await sampleMonitor(page, ROW))!);
     await page.evaluate((ids) => {
       (window as any).arrangementStore.setClipDeviceField(ids.trackId, ids.clipId, ids.deviceId, 'lightness', 0.9);
     }, ids);
-    await page.waitForFunction(
-      async (b0) => {
-        const app = document.querySelector('arrangement-app') as any;
-        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-        if (!cv || !cv.width) return false;
-        const ctx = cv.getContext('2d')!;
-        let sum = 0, n = 0;
-        for (let i = 0; i < 5; i++) {
-          const d = ctx.getImageData(Math.floor((cv.width * (i + 0.5)) / 5), Math.floor(cv.height / 2), 1, 1).data;
-          sum += 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]; n++;
-        }
-        return sum / n > (b0 as number) + 40;
-      },
-      { timeout: 20_000 },
-      before,
-    );
+    await waitForMonitor(page, ROW, (s) => mean(s) > before + 40, { timeout: 20_000 });
 
     expect(errors).toEqual([]);
   });

@@ -12,28 +12,20 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-transparency
  */
 
+import { lumaSpread, sampleMonitor, waitForMonitor, type UV } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
 /** Spread of luma over a sub-rectangle of the monitor (fx0..fx1, fy0..fy1). */
-const regionSpread = (fx0: number, fy0: number, fx1: number, fy1: number) =>
-  page.evaluate(
-    (a) => {
-      const app = document.querySelector('arrangement-app') as any;
-      const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-      const ctx = cv.getContext('2d')!;
-      const ls: number[] = [];
-      for (let i = 0; i <= 4; i++)
-        for (let j = 0; j <= 4; j++) {
-          const x = Math.floor(cv.width * (a.fx0 + ((a.fx1 - a.fx0) * i) / 4));
-          const y = Math.floor(cv.height * (a.fy0 + ((a.fy1 - a.fy0) * j) / 4));
-          const d = ctx.getImageData(x, y, 1, 1).data;
-          ls.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-        }
-      return Math.max(...ls) - Math.min(...ls);
-    },
-    { fx0, fy0, fx1, fy1 },
-  );
+const regionUVs = (fx0: number, fy0: number, fx1: number, fy1: number): UV[] => {
+  const out: UV[] = [];
+  for (let i = 0; i <= 4; i++)
+    for (let j = 0; j <= 4; j++) out.push([fx0 + ((fx1 - fx0) * i) / 4, fy0 + ((fy1 - fy0) * j) / 4]);
+  return out;
+};
+const regionSpread = async (fx0: number, fy0: number, fx1: number, fy1: number) =>
+  lumaSpread((await sampleMonitor(page, regionUVs(fx0, fy0, fx1, fy1))) ?? []);
 
 describe('Arrangement source-clip transparency (GPU)', () => {
   jest.setTimeout(60_000);
@@ -90,22 +82,7 @@ describe('Arrangement source-clip transparency (GPU)', () => {
     // The top-left quadrant is OUTSIDE the centre crop, so it shows the track
     // below (noise → spatially varied). The old blend baked it to opaque black
     // (spread ≈ 0).
-    await page.waitForFunction(
-      () => {
-        const app = document.querySelector('arrangement-app') as any;
-        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-        if (!cv) return false;
-        const ctx = cv.getContext('2d')!;
-        const ls: number[] = [];
-        for (let i = 0; i <= 4; i++)
-          for (let j = 0; j <= 4; j++) {
-            const d = ctx.getImageData(Math.floor((cv.width * i) / 16), Math.floor((cv.height * j) / 16), 1, 1).data;
-            ls.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-          }
-        return Math.max(...ls) - Math.min(...ls) > 4;
-      },
-      { timeout: 30_000 },
-    );
+    await waitForMonitor(page, regionUVs(0, 0, 0.25, 0.25), (s) => lumaSpread(s) > 4);
     // Corner (outside crop) reveals the varied track below — not flat black.
     expect(await regionSpread(0, 0, 0.25, 0.25)).toBeGreaterThan(4);
 

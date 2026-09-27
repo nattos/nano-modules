@@ -8,6 +8,8 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-transport
  */
 
+import { CENTER, sampleMonitor } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
@@ -35,14 +37,11 @@ const publishedTime = (key: string) => page.evaluate(
     return st && typeof st.transport_time_sec === 'number' ? st.transport_time_sec : null;
   }, key);
 
-const meanRgb = () => page.evaluate(() => {
-  const app = document.querySelector('arrangement-app') as any;
-  const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-  if (!cv || cv.width === 0) return null;
-  const ctx = cv.getContext('2d')!;
-  const d = ctx.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
-  return { r: d[0], g: d[1], b: d[2] };
-});
+/** The monitor's centre pixel. */
+const meanRgb = async () => {
+  const s = await sampleMonitor(page, [CENTER]);
+  return s ? { r: s[0].r, g: s[0].g, b: s[0].b } : null;
+};
 
 describe('Transport-controller effects (GPU)', () => {
   jest.setTimeout(180_000);

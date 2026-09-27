@@ -9,22 +9,13 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-layer-pipeline
  */
 
+import { interiorGridUVs, lumaSpread, sampleMonitor, waitForMonitor } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
-const spread = () =>
-  page.evaluate(() => {
-    const app = document.querySelector('arrangement-app') as any;
-    const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-    const ctx = cv.getContext('2d')!;
-    const ls: number[] = [];
-    for (let i = 1; i < 6; i++)
-      for (let j = 1; j < 6; j++) {
-        const d = ctx.getImageData(Math.floor((cv.width * i) / 6), Math.floor((cv.height * j) / 6), 1, 1).data;
-        ls.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-      }
-    return Math.max(...ls) - Math.min(...ls);
-  });
+const GRID = interiorGridUVs(6);
+const spread = async () => lumaSpread((await sampleMonitor(page, GRID)) ?? []);
 
 describe('Arrangement layer pipeline (GPU)', () => {
   jest.setTimeout(60_000);
@@ -76,22 +67,7 @@ describe('Arrangement layer pipeline (GPU)', () => {
 
     // The composite stays spatially varied → the invert processed the noise from
     // the track above (a gray stand-in would be a flat fill, spread ≈ 0).
-    await page.waitForFunction(
-      () => {
-        const app = document.querySelector('arrangement-app') as any;
-        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-        if (!cv) return false;
-        const ctx = cv.getContext('2d')!;
-        const ls: number[] = [];
-        for (let i = 1; i < 6; i++)
-          for (let j = 1; j < 6; j++) {
-            const d = ctx.getImageData(Math.floor((cv.width * i) / 6), Math.floor((cv.height * j) / 6), 1, 1).data;
-            ls.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-          }
-        return Math.max(...ls) - Math.min(...ls) > 8;
-      },
-      { timeout: 30_000 },
-    );
+    await waitForMonitor(page, GRID, (s) => lumaSpread(s) > 8);
     expect(await spread()).toBeGreaterThan(8);
 
     expect(errors).toEqual([]);

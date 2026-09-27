@@ -26,6 +26,8 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-comp-mode
  */
 
+import { CENTER, gridUVs, luma, sampleMonitor, waitForMonitor } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
@@ -52,23 +54,17 @@ const buildScenario = () => page.evaluate(() => {
   store.positionBeat = 42;
 });
 
-/** 5×5 RGB grid over the monitor canvas. */
-const sampleGrid = () => page.evaluate(() => {
-  const app = document.querySelector('arrangement-app') as any;
-  const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-  if (!cv) return null;
-  const ctx = cv.getContext('2d')!;
-  const px: number[] = [];
-  for (let i = 0; i <= 4; i++) {
-    for (let j = 0; j <= 4; j++) {
-      const x = Math.max(0, Math.min(cv.width - 1, Math.floor((cv.width * (i + 0.5)) / 5)));
-      const y = Math.max(0, Math.min(cv.height - 1, Math.floor((cv.height * (j + 0.5)) / 5)));
-      const d = ctx.getImageData(x, y, 1, 1).data;
-      px.push(d[0], d[1], d[2]);
-    }
-  }
-  return px;
-});
+/** 5×5 RGB grid over the monitor (flattened r,g,b per cell). */
+const sampleGrid = async (): Promise<number[] | null> => {
+  const s = await sampleMonitor(page, gridUVs(5));
+  return s ? s.flatMap((p) => [p.r, p.g, p.b]) : null;
+};
+
+/** Monitor luma at the centre, or null before the engine boots. */
+const centerLuma = async (): Promise<number | null> => {
+  const s = await sampleMonitor(page, [CENTER]);
+  return s ? luma(s[0]) : null;
+};
 
 /** Wait until the monitor shows a stable non-blank frame, then sample it. */
 async function renderAndSample(url: string): Promise<number[]> {
@@ -91,13 +87,7 @@ async function renderAndSample(url: string): Promise<number[]> {
   await buildScenario();
 
   // Wait for a painted, non-black monitor (the composite committed).
-  await page.waitForFunction(() => {
-    const app = document.querySelector('arrangement-app') as any;
-    const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-    if (!cv || cv.width === 0) return false;
-    const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
-    return d[0] + d[1] + d[2] > 10;
-  }, { timeout: 30_000 });
+  await waitForMonitor(page, [CENTER], ([c]) => c.r + c.g + c.b > 10);
   // Let a few more frames settle (steady state), then sample twice and require
   // stability so we never compare a mid-transition frame.
   await new Promise((r) => setTimeout(r, 500));
@@ -276,13 +266,7 @@ describe('Arrangement composition executor (GPU)', () => {
     const lumas: number[] = [];
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, 300));
-      const l = await page.evaluate(() => {
-        const app = document.querySelector('arrangement-app') as any;
-        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-        if (!cv || !cv.width) return null;
-        const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
-        return Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-      });
+      const l = await centerLuma();
       if (l !== null) lumas.push(l);
     }
     await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
@@ -337,13 +321,7 @@ describe('Arrangement composition executor (GPU)', () => {
     const lumas: number[] = [];
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, 300));
-      const l = await page.evaluate(() => {
-        const app = document.querySelector('arrangement-app') as any;
-        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-        if (!cv || !cv.width) return null;
-        const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
-        return Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-      });
+      const l = await centerLuma();
       if (l !== null) lumas.push(l);
     }
     // The bridge mirrored the build's layer resolution (band addressing).
@@ -395,19 +373,11 @@ describe('Arrangement composition executor (GPU)', () => {
       store.setPosition(1); // before the crossing: the white layer renders
     });
 
-    const luma = async () => await page.evaluate(() => {
-      const app = document.querySelector('arrangement-app') as any;
-      const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-      if (!cv || !cv.width) return null;
-      const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
-      return Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-    });
-
     await new Promise((r) => setTimeout(r, 1200));
-    const before = await luma();
+    const before = await centerLuma();
     await page.evaluate(() => { (window as any).arrangementStore.setPosition(7); });
     await new Promise((r) => setTimeout(r, 1200));
-    const after = await luma();
+    const after = await centerLuma();
 
     expect(before).not.toBeNull();
     expect(before!).toBeGreaterThan(200);  // white layer renders before the crossing

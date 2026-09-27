@@ -20,56 +20,29 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-sequence
  */
 
+import { interiorGridUVs, lumaSpread, sampleMonitor, waitForMonitor } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
 const GENERATOR = 'source.noise';
 
-/** Sample a coarse grid of the monitor canvas; spread = non-uniformity of luma. */
-const sampleScene = () =>
-  page.evaluate(() => {
-    const app = document.querySelector('arrangement-app') as any;
-    const canvas = app?.shadowRoot
-      ?.querySelector('arr-monitor')
-      ?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-    if (!canvas) return null;
-    const ctx = canvas.getContext('2d')!;
-    const lumas: number[] = [];
-    const N = 6;
-    for (let iy = 1; iy < N; iy++) {
-      for (let ix = 1; ix < N; ix++) {
-        const x = Math.floor((canvas.width * ix) / N);
-        const y = Math.floor((canvas.height * iy) / N);
-        const d = ctx.getImageData(x, y, 1, 1).data;
-        lumas.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-      }
-    }
-    return { spread: Math.max(...lumas) - Math.min(...lumas) };
-  });
+const GRID = interiorGridUVs(6);
+
+/** Sample a coarse grid of the monitor; spread = non-uniformity of luma. */
+const sampleScene = async () => {
+  const s = await sampleMonitor(page, GRID);
+  return s ? { spread: lumaSpread(s) } : null;
+};
 
 /**
  * Poll until the monitor carries structured pixels. Real footage passes through
  * near-uniform frames and a freshly injected frame takes a beat to composite,
- * so a single sample proves nothing either way; a flat canvas for the whole
+ * so a single sample proves nothing either way; a flat frame for the whole
  * window is what transparency actually looks like.
  */
 const waitForStructuredPixels = (timeout = 20_000) =>
-  page.waitForFunction(() => {
-    const app = document.querySelector('arrangement-app') as any;
-    const c = app?.shadowRoot?.querySelector('arr-monitor')
-      ?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-    const ctx = c?.getContext('2d');
-    if (!ctx) return false;
-    const lum: number[] = [];
-    for (let i = 1; i < 6; i++) {
-      for (let j = 1; j < 6; j++) {
-        const d = ctx.getImageData(
-          Math.floor((c.width * j) / 6), Math.floor((c.height * i) / 6), 1, 1).data;
-        lum.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-      }
-    }
-    return Math.max(...lum) - Math.min(...lum) > 8;
-  }, { timeout }).then(() => true).catch(() => false);
+  waitForMonitor(page, GRID, (s) => lumaSpread(s) > 8, { timeout }).then(() => true).catch(() => false);
 
 /** The engine's current composite chain instance keys (`clip_<clipId>_<devId>`). */
 const chainKeys = () =>

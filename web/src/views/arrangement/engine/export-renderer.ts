@@ -24,6 +24,7 @@
  */
 
 import { ArrEngine } from './arr-engine';
+import { isGpuPreviewFrame } from '../../../preview-gpu';
 import { ExportVideoPump } from './export-video-pump';
 import { videoDescFor } from './video-compositor';
 import { makeWarpClock, type WarpClock } from './warp-clock';
@@ -211,7 +212,9 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   engine.onFrameSet = (frames) => {
     const r = resolveFrame;
     resolveFrame = null;
-    r?.(frames[COMPOSITE_ID]);
+    // A worker engine only ever delivers ImageBitmaps.
+    const f = frames[COMPOSITE_ID];
+    r?.(f && !isGpuPreviewFrame(f) ? f : undefined);
   };
 
   // Boot the comp executor: warm every shipping bundle, wait for effect discovery

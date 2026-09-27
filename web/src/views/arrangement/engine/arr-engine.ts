@@ -16,7 +16,9 @@
 import { EngineProxy } from '../../../engine-proxy';
 import { initFontProvider, requestFont } from '../../../font-access';
 import type { Sketch } from '../../../sketch-types';
-import type { TracePoint, StateDiff, PluginInfo, CompFrameInfo, WorkerCommand } from '../../../engine-types';
+import type { TracePoint, StateDiff, PluginInfo, CompFrameInfo } from '../../../engine-types';
+import type { PreviewFrame } from '../../../preview-gpu';
+import type { CompControlMsg, CompEngine, CompOpMsg } from './comp-engine';
 
 /** One parameter-automation write for a frame: the host's evaluated curve value
  *  for a composite instance's field, plus how it folds in (tap_mod vocab). */
@@ -52,7 +54,7 @@ function plainSketch(sketch: Sketch): Sketch {
   return JSON.parse(JSON.stringify(sketch)) as Sketch;
 }
 
-export class ArrEngine {
+export class ArrEngine implements CompEngine {
   private proxy: EngineProxy;
   private readyPromise: Promise<void>;
 
@@ -61,9 +63,10 @@ export class ArrEngine {
   /**
    * Fired once per rendered frame with ALL traced layers ({traceId → bitmap}).
    * Used by the compositor (multi-track output). When set it REPLACES the
-   * per-frame `onFrame` fan-out (the receiver owns/closes every bitmap).
+   * per-frame `onFrame` fan-out (the receiver owns/closes every bitmap — this
+   * engine only ever delivers ImageBitmaps).
    */
-  onFrameSet: ((frames: Record<string, ImageBitmap>) => void) | null = null;
+  onFrameSet: ((frames: Record<string, PreviewFrame>) => void) | null = null;
   onFps: ((fps: number) => void) | null = null;
   /** Per-frame GPU time (ms) the worker reported (diagnostic). */
   onGpuTime: ((gpuMs: number) => void) | null = null;
@@ -78,6 +81,8 @@ export class ArrEngine {
   onCompInfo: ((info: CompFrameInfo) => void) | null = null;
   /** Union of effect ids discovered across loaded bundles (diagnostic). */
   readonly discovered = new Set<string>();
+  /** The main-thread pump (engine-bridge's VideoCompositor) feeds this engine. */
+  readonly ownsVideoPump = false;
   /** Last debug stats (when debug mode on; diagnostic). */
   lastDebugStats: unknown = null;
 
@@ -270,11 +275,11 @@ export class ArrEngine {
   /** Full composition document replace (open/undo/redo/structural edits). */
   compLoadDoc(json: string) { this.proxy.compLoadDoc(json); }
   /** Transport + Precise-gate commands. */
-  compControl(msg: Omit<Extract<WorkerCommand, { type: 'compControl' }>, 'type'>) {
+  compControl(msg: CompControlMsg) {
     this.proxy.compControl(msg);
   }
   /** Cheap edit ops (drag fast paths). */
-  compOp(msg: Omit<Extract<WorkerCommand, { type: 'compOp' }>, 'type'>) {
+  compOp(msg: CompOpMsg) {
     this.proxy.compOp(msg);
   }
 

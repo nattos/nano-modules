@@ -88,6 +88,8 @@ import {
   duplicateDocIds,
 } from './lane-resolve';
 import { buildMultiEditModel, multiSketchId } from './multi-edit';
+import { releaseFrame } from '../engine/comp-engine';
+import type { PreviewFrame } from '../../../preview-gpu';
 
 /** Resolve a lane (top-level track OR a sequence clip's interior lane) inside an
  *  immer draft. The draft twin of `store.laneById` — same resolver underneath. */
@@ -807,7 +809,7 @@ export class ArrangementStore {
    * arrangement TraceSource. `traceGeneration` bumps each frame so the monitors'
    * autoruns re-draw. Not persisted.
    */
-  tracedFrames: Record<string, ImageBitmap> = {};
+  tracedFrames: Record<string, PreviewFrame> = {};
   traceGeneration = 0;
 
   /**
@@ -1590,9 +1592,11 @@ export class ArrangementStore {
   }
 
   /** Replace the per-device traced textures (closes the previous frame's). */
-  setTracedFrames(frames: Record<string, ImageBitmap>) {
+  setTracedFrames(frames: Record<string, PreviewFrame>) {
     runInAction(() => {
-      for (const k in this.tracedFrames) this.tracedFrames[k]?.close();
+      for (const k in this.tracedFrames) {
+        if (this.tracedFrames[k] !== frames[k]) releaseFrame(this.tracedFrames[k]);
+      }
       this.tracedFrames = frames;
       this.traceGeneration++;
     });

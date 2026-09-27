@@ -34,14 +34,12 @@ const INK: Record<Ink, { rgba: number[]; hit: string }> = {
 
 /** Matching-ink pixel counts in the upper and lower thirds of the monitor. */
 const bandInk = (ink: Ink) =>
-  page.evaluate((hitSrc: string) => {
-    const app = document.querySelector('arrangement-app') as any;
-    const canvas = app?.shadowRoot
-      ?.querySelector('arr-monitor')
-      ?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-    if (!canvas || !canvas.width) return null;
-    const ctx = canvas.getContext('2d')!;
-    const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  page.evaluate(async (hitSrc: string) => {
+    // What the monitor shows (see arr-test-helpers.ts), as a whole image.
+    const img = await (window as any).__engineBridge?.compositeImage();
+    if (!img) return null;
+    const canvas = { width: img.width as number, height: img.height as number };
+    const d = img.pixels as Uint8ClampedArray;
     // eslint-disable-next-line no-new-func
     const hit = new Function('r', 'g', 'b', `return ${hitSrc};`) as
       (r: number, g: number, b: number) => boolean;

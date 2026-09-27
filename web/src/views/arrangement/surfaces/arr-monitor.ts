@@ -20,6 +20,7 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { beginDragGesture } from '../../../utils/drag-gesture';
 import { engineBridge } from '../engine/engine-bridge';
+import { previewGpu, isGpuPreviewFrame } from '../../../preview-gpu';
 import { debugPerf } from '../state/debug-perf';
 
 @customElement('arr-monitor')
@@ -61,6 +62,12 @@ export class ArrMonitor extends MobxLitElement {
       /* Neutral dark-gray backdrop (transparent areas + letterbox bars read here). */
       background-color: #222;
     }
+    canvas.gpu {
+      /* The GPU-resident composite, stacked over the backdrop canvas; the page
+         composites its premultiplied alpha over the fill beneath. */
+      pointer-events: none;
+    }
+    canvas.gpu[hidden] { display: none; }
     canvas {
       position: absolute;
       inset: 0;
@@ -88,11 +95,15 @@ export class ArrMonitor extends MobxLitElement {
    *  wrapper — the wrapper owns the size/resize. */
   @property({ type: Boolean }) floating = false;
 
-  @query('canvas') private canvas!: HTMLCanvasElement;
+  /** The backdrop — and, for an ImageBitmap composite, the frame too (2D). */
+  @query('canvas.base') private canvas!: HTMLCanvasElement;
+  /** A GPU-resident composite (a WebGPU context, so it must be its own
+   *  canvas); hidden whenever the composite isn't one. */
+  @query('canvas.gpu') private gpuCanvas!: HTMLCanvasElement;
   private ro?: ResizeObserver;
   private compositeOff?: () => void;
   private drawRaf = 0;
-  private lastDrawnBmp?: ImageBitmap;
+  private lastDrawnSeq = -1;
   // Presentation telemetry (logged when globalThis.__arrVideoLog is on).
   private telLastMs = 0; private telDraws = 0; private telNew = 0; private telArrivals = 0;
   private telGapSum = 0; private telGapMax = 0; private telLastNewMs = 0;
@@ -120,9 +131,9 @@ export class ArrMonitor extends MobxLitElement {
     if (this.drawRaf) return;
     const tick = () => {
       this.drawRaf = requestAnimationFrame(tick);
-      const bmp = engineBridge.engineComposite();
-      const isNew = !!bmp && bmp !== this.lastDrawnBmp;
-      if (isNew) { this.lastDrawnBmp = bmp; this.redraw(); }
+      const seq = engineBridge.compositeSeq;
+      const isNew = !!engineBridge.engineComposite() && seq !== this.lastDrawnSeq;
+      if (isNew) { this.lastDrawnSeq = seq; this.redraw(); }
       this.maybeLogPresentation(isNew);
     };
     this.drawRaf = requestAnimationFrame(tick);
@@ -252,7 +263,7 @@ export class ArrMonitor extends MobxLitElement {
     if (this.floating) {
       // The floating wrapper (in arrangement-app) is sized to the composition
       // aspect, so the stage fills it edge-to-edge with no letterbox.
-      return html`<div class="stage" style="height:100%"><canvas></canvas></div>`;
+      return html`<div class="stage" style="height:100%">${this.canvases()}</div>`;
     }
     return html`
       <div class="mon-resize" @pointerdown=${this.onResize}></div>
@@ -261,9 +272,13 @@ export class ArrMonitor extends MobxLitElement {
         <span>${res.width}×${res.height}</span>
       </div>
       <div class="stage" style="height:${store.monitorHeight}px">
-        <canvas></canvas>
+        ${this.canvases()}
       </div>
     `;
+  }
+
+  private canvases() {
+    return html`<canvas class="base"></canvas><canvas class="gpu" hidden></canvas>`;
   }
 
   /** What the monitor is showing: the composition (MAIN BUS), or — when a track
@@ -319,12 +334,18 @@ export class ArrMonitor extends MobxLitElement {
     // color, or transparent (canvas left clear → the stage checkerboard shows).
     const fill = this.bgFill();
     if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, w, h); }
-    if (!engineBridge.hasContent) return;        // backdrop only — no clips yet
-    const bmp = engineBridge.engineComposite();
-    if (!bmp) return;                            // booting — backdrop only
+    const frame = engineBridge.hasContent ? engineBridge.engineComposite() : undefined;
+    const gpu = this.gpuCanvas;
+    if (frame && isGpuPreviewFrame(frame)) {
+      // Same aspect as the base canvas, so both contain-fit to the same box.
+      if (gpu) { gpu.hidden = false; previewGpu.blitToCanvas(gpu, frame); }
+      return;
+    }
+    if (gpu) gpu.hidden = true;
+    if (!frame) return;                          // no clips yet / booting — backdrop only
     // Both the canvas and the engine output are at the composition aspect, so fill
-    // the whole frame (opacity/blend already baked into bmp).
-    ctx.drawImage(bmp, 0, 0, w, h);
+    // the whole frame (opacity/blend already baked into the bitmap).
+    ctx.drawImage(frame, 0, 0, w, h);
   }
 
   /** The composite backdrop fill, or null for transparent (checkerboard). */

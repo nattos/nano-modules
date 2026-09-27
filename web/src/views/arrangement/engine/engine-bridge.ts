@@ -23,6 +23,8 @@
  */
 
 import { ArrEngine } from './arr-engine';
+import { releaseFrame, type CompEngine } from './comp-engine';
+import type { PreviewFrame } from '../../../preview-gpu';
 import type { CompFrameInfo } from '../../../engine-types';
 import { debugPerf } from '../state/debug-perf';
 import { clipInstanceKey } from './instance-keys';
@@ -38,7 +40,13 @@ import type { TraceRegistration, TraceSource } from '../../../state/trace-contro
 /** Fired once per rendered frame after the latest engine frame is retained. */
 export type CompositeListener = () => void;
 /** Best-effort capture of the composite frame (Component D). */
-export type FrameTap = (clipId: string, bitmap: ImageBitmap) => void;
+export type FrameTap = (clipId: string, frame: PreviewFrame) => void;
+/** Builds the engine on first use (see `setEngineFactory`). */
+export type CompEngineFactory = (width: number, height: number) => CompEngine;
+
+/** A sampled monitor pixel at (u, v) — RGB composited over the monitor's
+ *  backdrop, 0..255; alpha is 255 unless the backdrop is transparent. */
+export interface MonitorSample { u: number; v: number; r: number; g: number; b: number; a: number }
 
 /** Longest-edge cap for the live preview render (keeps multi-layer compositing
  *  responsive; the composition's true resolution is the export target, not this
@@ -50,7 +58,9 @@ const COMPOSITE_ID = 'arr-composite';
 const LOOKAHEAD_BEATS = 8;
 
 export class EngineBridge {
-  private engine: ArrEngine | null = null;
+  private engine: CompEngine | null = null;
+  /** How the engine is built — the browser worker unless replaced. */
+  private engineFactory: CompEngineFactory = (w, h) => new ArrEngine(w, h);
   /** store.docRev of the last document mirror pushed to the comp executor. */
   private sentDocRev = -1;
   private sentClipTiming: boolean | null = null;
@@ -92,7 +102,7 @@ export class EngineBridge {
    *  (else the held composite goes transparent → the layers beneath flash through). */
   private displayedVideoDescs: VideoClipDesc[] = [];
   /** Latest retained composite frame (the monitor draws this). */
-  private compositeFrame: ImageBitmap | null = null;
+  private compositeFrame: PreviewFrame | null = null;
   /** Number of active ENGINE layers folded into the composite (diagnostic). */
   private engineLayerN = 0;
 
@@ -158,6 +168,10 @@ export class EngineBridge {
   error: string | null = null;
   /** Count of composited frames delivered (test/diagnostic hook). */
   framesSeen = 0;
+  /** Bumps each time a new composite frame is retained. A GPU-resident frame
+   *  is the SAME object every frame (its texture is reused), so consumers
+   *  detect a new frame by this, not by identity. */
+  compositeSeq = 0;
 
   /** Number of active engine layers in the composite (diagnostic). */
   layerCount(): number { return this.engineLayerN; }
@@ -265,10 +279,19 @@ export class EngineBridge {
     this.video?.setRenderSize(w, h, Math.max(1, r.width), Math.max(1, r.height));
   }
 
+  /**
+   * Replace how the engine is built. Takes effect on the next boot: a running
+   * engine is torn down first, and the next sync boots the new one.
+   */
+  setEngineFactory(factory: CompEngineFactory) {
+    this.engineFactory = factory;
+    if (this.engine) this.destroy();
+  }
+
   /** Boot the engine on first real use; idempotent. */
-  private ensureEngine(): ArrEngine {
+  private ensureEngine(): CompEngine {
     if (this.engine) return this.engine;
-    const e = new ArrEngine(this.renderW, this.renderH);
+    const e = this.engineFactory(this.renderW, this.renderH);
     e.onFrameSet = (frames) => this.onFrameSet(frames);
     e.onFps = (f) => { this.fps = f; };
     e.onGpuTime = (g) => { if (debugPerf.active) debugPerf.lastGpuMs = g; };
@@ -374,38 +397,39 @@ export class EngineBridge {
   }
 
   /** Retain the combined composite frame, tap it, then notify. */
-  private onFrameSet(frames: Record<string, ImageBitmap>) {
+  private onFrameSet(frames: Record<string, PreviewFrame>) {
     this.framesSeen++;
     const bmp = frames[COMPOSITE_ID];
     if (bmp) {
       if (this.hasContent) {
         if (this.tap) this.tap(COMPOSITE_ID, bmp); // Component D capture, before retain
-        this.compositeFrame?.close();              // drop the previous composite
-        this.compositeFrame = bmp;                 // retain (closed on replace)
+        if (this.compositeFrame !== bmp) releaseFrame(this.compositeFrame); // drop the previous composite
+        this.compositeFrame = bmp;                 // retain (released on replace)
+        this.compositeSeq++;
       } else {
         // Background-only (nothing committed): ignore a stale composite frame still in
         // flight from a just-deleted composite — else it lingers as the retained frame
         // and the next clip's commit draws it for a frame (the video→video flash).
-        bmp.close();
+        if (bmp !== this.compositeFrame) releaseFrame(bmp);
       }
     }
     // Per-device traced textures (output trace cards) → the store (which closes
     // the previous frame's bitmaps and bumps the trace generation).
-    const deviceFrames: Record<string, ImageBitmap> = {};
+    const deviceFrames: Record<string, PreviewFrame> = {};
     for (const id in frames) if (id !== COMPOSITE_ID) deviceFrames[id] = frames[id];
     store.setTracedFrames(deviceFrames);
     this.onCompositeCb?.();
   }
 
   /** The latest combined composite frame (all engine layers), or undefined. */
-  engineComposite(): ImageBitmap | undefined {
+  engineComposite(): PreviewFrame | undefined {
     return this.compositeFrame ?? undefined;
   }
 
   /** Bind a decoded video frame to a `source.video.file` instance (the video
    *  pump → the composite chain). No-op until the engine has booted. */
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
-    if (this.engine) this.engine.setInstanceTexture(instanceKey, bitmap);
+    if (this.engine && !this.engine.ownsVideoPump) this.engine.setInstanceTexture(instanceKey, bitmap);
     else bitmap?.close();
     // A video frame just landed — the native Precise gate may now have all its
     // inputs: push the readiness edge immediately.
@@ -424,6 +448,8 @@ export class EngineBridge {
    *  decoded frame — i.e. the disk is busy (regardless of transport mode). Drives
    *  the transport bar's "D" light. */
   decodePending(): boolean {
+    // An engine with its own pump reports the stall itself (the Precise hold).
+    if (this.engine?.ownsVideoPump) return !!this.lastCompInfo?.holding;
     return this.lastVideoDescs.length > 0 && !this.videoInputsReady();
   }
 
@@ -540,7 +566,7 @@ export class EngineBridge {
     }
     const precise = store.transportMode === 'precise';
     if (precise !== this.sentPrecise) {
-      if (this.sentPrecise === null) {
+      if (this.sentPrecise === null && !e.ownsVideoPump) {
         // First control push of this comp session: announce that a readiness
         // feed exists (pushCompVideoReadiness) — the engine may then DEFER
         // scene launches until the incoming video is decoded (gapless
@@ -594,7 +620,7 @@ export class EngineBridge {
    */
   private pushCompVideoReadiness() {
     const e = this.engine;
-    if (!e) return;
+    if (!e || e.ownsVideoPump) return;
     const bpm = store.composition.meta.baseBPM;
     const liveIds = new Set<string>();
     // The worker-reported pump set is authoritative in comp mode — it includes
@@ -631,6 +657,7 @@ export class EngineBridge {
 
   /** Reconcile the video decode pump with `descs` (active target + lookahead). */
   private reconcilePump(descs: VideoClipDesc[]) {
+    if (this.engine?.ownsVideoPump) return; // the engine decodes for itself
     if (descs.length > 0 || this.video) {
       this.refreshWarpResolver();
       this.videoCompositor().setActiveClips(descs);
@@ -653,9 +680,74 @@ export class EngineBridge {
     this.onCompositeCb = null;
     this.tap = null;
     this.engineLayerN = 0;
-    this.compositeFrame?.close();
+    releaseFrame(this.compositeFrame);
     this.compositeFrame = null;
   }
+
+  /**
+   * The live composite the way the monitor shows it: the engine's raw readback
+   * (no checkerboard, true alpha) composited over the monitor's backdrop
+   * (`store.backgroundMode`; a transparent backdrop keeps the raw alpha), at
+   * the engine's render size. With nothing composited the monitor shows only
+   * the backdrop, and so does this (as a 1×1 image). Null before the engine
+   * boots or if the readback fails.
+   *
+   * The test-facing way to ask "what is on screen", on any engine: it doesn't
+   * depend on the monitor's canvas kind (2D bitmap vs WebGPU surface).
+   */
+  async compositeImage(): Promise<{ width: number; height: number; pixels: Uint8ClampedArray } | null> {
+    const e = this.engine;
+    if (!e) return null;
+    const bg = backdropRgb();
+    if (!this.hasContent) {
+      return { width: 1, height: 1, pixels: new Uint8ClampedArray(bg ? [...bg, 255] : [0, 0, 0, 0]) };
+    }
+    const px = await e.readbackTrace(COMPOSITE_ID).catch(() => null);
+    if (!px || !px.width || !px.height) return null;
+    const out = new Uint8ClampedArray(px.pixels);
+    if (bg) {
+      // Straight-alpha source over an opaque backdrop — what drawImage does.
+      for (let o = 0; o < out.length; o += 4) {
+        const t = out[o + 3] / 255;
+        out[o] = out[o] * t + bg[0] * (1 - t);
+        out[o + 1] = out[o + 1] * t + bg[1] * (1 - t);
+        out[o + 2] = out[o + 2] * t + bg[2] * (1 - t);
+        out[o + 3] = 255;
+      }
+    }
+    return { width: px.width, height: px.height, pixels: out };
+  }
+
+  /** `compositeImage` sampled at normalized frame coordinates (u, v in 0..1,
+   *  origin top-left). */
+  async sampleComposite(points: ReadonlyArray<{ u: number; v: number }>): Promise<MonitorSample[] | null> {
+    const img = await this.compositeImage();
+    if (!img) return null;
+    return points.map(({ u, v }) => {
+      const tx = Math.min(img.width - 1, Math.max(0, Math.floor(u * img.width)));
+      const ty = Math.min(img.height - 1, Math.max(0, Math.floor(v * img.height)));
+      const o = (ty * img.width + tx) * 4;
+      const p = img.pixels;
+      return { u, v, r: p[o], g: p[o + 1], b: p[o + 2], a: p[o + 3] };
+    });
+  }
+}
+
+/** The monitor's backdrop as RGB 0..255, or null when transparent — the same
+ *  choice `arr-monitor`'s `bgFill` makes. */
+function backdropRgb(): [number, number, number] | null {
+  const mode = store.backgroundMode;
+  if (mode === 'transparent') return null;
+  if (mode === 'custom') return parseHexColor(store.backgroundColor) ?? [0, 0, 0];
+  return [0, 0, 0];
+}
+
+/** `#rgb` / `#rrggbb` → RGB; anything else → null. */
+function parseHexColor(css: string): [number, number, number] | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(css.trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].split('').map((c) => c + c).join('') : m[1];
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
 }
 
 /** App-wide singleton (mirrors the `store` singleton). Engine boots lazily. */

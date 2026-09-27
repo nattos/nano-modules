@@ -8,6 +8,8 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-scenes
  */
 
+import { gridUVs, sampleMonitor } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
@@ -43,23 +45,17 @@ const buildScenario = () => page.evaluate(() => {
   return { sceneTrackId: st, red, green };
 });
 
-/** Mean RGB over a 5×5 grid of the monitor canvas. */
-const meanRgb = () => page.evaluate(() => {
-  const app = document.querySelector('arrangement-app') as any;
-  const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
-  if (!cv || cv.width === 0) return null;
-  const ctx = cv.getContext('2d')!;
-  let r = 0, g = 0, b = 0, n = 0;
-  for (let i = 0; i <= 4; i++) {
-    for (let j = 0; j <= 4; j++) {
-      const x = Math.max(0, Math.min(cv.width - 1, Math.floor((cv.width * (i + 0.5)) / 5)));
-      const y = Math.max(0, Math.min(cv.height - 1, Math.floor((cv.height * (j + 0.5)) / 5)));
-      const d = ctx.getImageData(x, y, 1, 1).data;
-      r += d[0]; g += d[1]; b += d[2]; n++;
-    }
-  }
-  return { r: r / n, g: g / n, b: b / n };
-});
+/** Mean RGB over a 5×5 grid of the monitor. */
+const meanRgb = async () => {
+  const s = await sampleMonitor(page, gridUVs(5));
+  if (!s) return null;
+  const n = s.length;
+  return {
+    r: s.reduce((a, p) => a + p.r, 0) / n,
+    g: s.reduce((a, p) => a + p.g, 0) / n,
+    b: s.reduce((a, p) => a + p.b, 0) / n,
+  };
+};
 
 /** Wait until the monitor's mean RGB satisfies `pred` (evaluated host-side). */
 async function waitForColor(pred: (c: { r: number; g: number; b: number }) => boolean, label: string) {

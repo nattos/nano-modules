@@ -10,34 +10,23 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-generator
  */
 
+import { interiorGridUVs, luma, lumaSpread, sampleMonitor, waitForMonitor, type UV } from './arr-test-helpers';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
 const GENERATOR = 'source.noise';
 
+const SCENE_UVS = interiorGridUVs(6);
+/** The diagonal of the same split. */
+const DIAGONAL_UVS: UV[] = [1, 2, 3, 4, 5].map((i) => [i / 6, i / 6] as UV);
+
 /** Sample a coarse grid and report spread (non-uniformity) of luma. */
-const sampleScene = () =>
-  page.evaluate(() => {
-    const app = document.querySelector('arrangement-app') as any;
-    const canvas = app?.shadowRoot
-      ?.querySelector('arr-monitor')
-      ?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-    if (!canvas) return null;
-    const ctx = canvas.getContext('2d')!;
-    const lumas: number[] = [];
-    const N = 6;
-    for (let iy = 1; iy < N; iy++) {
-      for (let ix = 1; ix < N; ix++) {
-        const x = Math.floor((canvas.width * ix) / N);
-        const y = Math.floor((canvas.height * iy) / N);
-        const d = ctx.getImageData(x, y, 1, 1).data;
-        lumas.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-      }
-    }
-    const min = Math.min(...lumas);
-    const max = Math.max(...lumas);
-    return { spread: max - min, sig: lumas.map((l) => Math.round(l)).join(',') };
-  });
+const sampleScene = async () => {
+  const s = await sampleMonitor(page, SCENE_UVS);
+  if (!s) return null;
+  return { spread: lumaSpread(s), sig: s.map(luma).join(',') };
+};
 
 describe('Arrangement renders a core generator (testonly dropped)', () => {
   jest.setTimeout(60_000);
@@ -91,25 +80,7 @@ describe('Arrangement renders a core generator (testonly dropped)', () => {
     expect(discovered).toContain(GENERATOR);
 
     // Scene structure: animated noise is spatially non-uniform.
-    await page.waitForFunction(
-      () => {
-        const app = document.querySelector('arrangement-app') as any;
-        const canvas = app?.shadowRoot
-          ?.querySelector('arr-monitor')
-          ?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement;
-        if (!canvas) return false;
-        const ctx = canvas.getContext('2d')!;
-        const ls: number[] = [];
-        for (let i = 1; i < 6; i++) {
-          const x = Math.floor((canvas.width * i) / 6);
-          const y = Math.floor((canvas.height * i) / 6);
-          const d = ctx.getImageData(x, y, 1, 1).data;
-          ls.push(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
-        }
-        return Math.max(...ls) - Math.min(...ls) > 8;
-      },
-      { timeout: 30_000 },
-    );
+    await waitForMonitor(page, DIAGONAL_UVS, (s) => lumaSpread(s) > 8);
 
     const a = await sampleScene();
     expect(a).not.toBeNull();
