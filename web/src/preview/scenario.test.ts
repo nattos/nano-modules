@@ -101,6 +101,14 @@ describe('compileScenario', () => {
     expect(compileScenario('fx', undefined, 'image').thumb).toBe('auto');
   });
 
+  it('stamps instance versions so scenario params are never migrated as legacy', () => {
+    const json = JSON.stringify({ aux: [{ key: 'lfo', effect: 'mod.source.lfo', params: { rate: 0.25 } }] });
+    const c = compileScenario('fx', json, 'image', 'p', (id) => ({ module: [1, 0, 0], effect: id === 'fx' ? [2, 0, 0] : [1, 2, 0] }));
+    expect(c.sketch.instances!['p:self'].version).toEqual({ module: [1, 0, 0], effect: [2, 0, 0] });
+    expect(c.sketch.instances!['p:lfo'].version).toEqual({ module: [1, 0, 0], effect: [1, 2, 0] });
+    expect(compileScenario('fx', json, 'image').sketch.instances!['pv:lfo'].version).toBeUndefined();
+  });
+
   it('hashString is stable and discriminating', () => {
     expect(hashString('abc')).toBe(hashString('abc'));
     expect(hashString('abc')).not.toBe(hashString('abd'));

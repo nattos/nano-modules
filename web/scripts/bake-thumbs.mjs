@@ -10,11 +10,13 @@
  *
  *   npm run thumbs -- [--only 'color.*,mod.shaper.remap'] [--no-debug]
  *                     [--out /tmp/effect-thumbs] [--base-url http://localhost:5173]
- *                     [--scenario <id>=<file.json>]...
+ *                     [--scenario <id>=<file.json>]... [--scenarios <map.json>]
  *
  * --scenario runs a scenario JSON (the format in
  * native/wasm_modules/include/preview_scenario.h) instead of the effect's
  * own — iterate on a scene here, then port it to the effect's preview() hook.
+ * --scenarios does the same for many at once: a JSON object {id: scenario}
+ * (and --only defaults to exactly those ids).
  * The dev server's port comes from devindex (http://localhost:4999) when
  * --base-url / GPU_TEST_BASE_URL aren't given.
  */
@@ -45,6 +47,10 @@ function parseArgs(argv) {
       const text = fs.readFileSync(v.slice(eq + 1), 'utf8');
       JSON.parse(text); // fail early on a typo
       opts.scenarios[v.slice(0, eq)] = text;
+    } else if (a === '--scenarios') {
+      const map = JSON.parse(fs.readFileSync(next(), 'utf8'));
+      for (const [id, sc] of Object.entries(map)) opts.scenarios[id] = JSON.stringify(sc);
+      opts.mapOnly = true;
     } else if (a === '--help' || a === '-h') {
       console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('*/')[0]);
       process.exit(0);
@@ -135,6 +141,7 @@ async function main() {
     console.log(`${count} effects loaded from ${baseUrl}`);
 
     if (opts.noDebug) catalog = catalog.filter((e) => !isDebug(e.id));
+    if (opts.mapOnly && !opts.only.length) opts.only = Object.keys(opts.scenarios);
     if (opts.only.length) {
       const res = opts.only.map(globRe);
       catalog = catalog.filter((e) => res.some((re) => re.test(e.id)));

@@ -22,6 +22,7 @@ import { observable, runInAction } from 'mobx';
 import { EngineProxy } from '../engine-proxy';
 import { discoverEffectBundles } from '../effect-bundles';
 import type { EffectInfo, PluginInfo, StateDiff } from '../engine-types';
+import { parseVersion } from '../version';
 import { compileScenario, type CompiledScenario, type PreviewKind } from './scenario';
 
 export const PREVIEW_W = 320;
@@ -291,7 +292,10 @@ export class PreviewEngine {
     const proxy = this.proxy!;
     const id = ++this.runId;
     const sketchId = `pv${id}`;
-    const compiled = compileScenario(effect.id, opts.scenario ?? effect.preview, this.kindOf(effect.id), sketchId);
+    const compiled = compileScenario(effect.id, opts.scenario ?? effect.preview, this.kindOf(effect.id), sketchId, (id) => {
+      const p = this.plugins.get(id);
+      return { module: parseVersion(p?.moduleVersion), effect: parseVersion(p?.version) };
+    });
     if (opts.bypassSelf) {
       const self = compiled.sketch.instances?.[compiled.selfKey];
       if (self) self.state = { ...self.state, __enable__: 0 };

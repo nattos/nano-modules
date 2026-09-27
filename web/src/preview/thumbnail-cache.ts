@@ -23,7 +23,10 @@ import { hashString } from './scenario';
 
 const DB_NAME = 'nano-effect-thumbs';
 const STORE = 'thumbs';
-const FORMAT_VERSION = 1;
+/** Bump when the bake itself changes what an unchanged scenario renders
+ *  (2: instances stamped with their version — legacy migrations no longer
+ *  rescale scenario params; graph ghosts / colour strips). */
+const FORMAT_VERSION = 2;
 
 export interface ThumbRecord {
   effectId: string;

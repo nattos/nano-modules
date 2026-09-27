@@ -19,7 +19,7 @@
  * dropped piecewise, never thrown.
  */
 
-import type { Sketch, ChainEntry, Wire, TapCombine, WireMagnitude } from '../sketch-types';
+import type { Sketch, ChainEntry, Wire, TapCombine, WireMagnitude, InstanceState } from '../sketch-types';
 import { computeExecOrder } from '../state/exec-order';
 import { DEFAULT_GENERATOR, GENERATORS } from './generators';
 
@@ -103,12 +103,18 @@ function knownGenerator(v: unknown): string | null {
 /**
  * Build the preview sketch for `effectId`. `prefix` namespaces the instance
  * keys (the preview engine is one worker, and keys must be unique in it).
+ *
+ * `versionOf` stamps each instance with its effect's CURRENT version, as the
+ * editor does for a fresh insert: a scenario's params are written in today's
+ * units, and an unversioned instance would count as legacy and be migrated
+ * (the LFO's old 0..1 `rate` would be multiplied up tenfold).
  */
 export function compileScenario(
   effectId: string,
   previewJson: string | undefined,
   kind: PreviewKind,
   prefix = 'pv',
+  versionOf?: (effectId: string) => InstanceState['version'],
 ): CompiledScenario {
   const raw = parse(previewJson);
   const selfKey = `${prefix}:self`;
@@ -196,6 +202,9 @@ export function compileScenario(
     if (ep && plotSeries.length < 4) plotSeries.push(ep);
   }
 
+  if (versionOf) {
+    for (const inst of Object.values(instances)) inst.version = versionOf(inst.module_type);
+  }
   const sketch: Sketch = { anchor: null, chain, instances };
   if (wires.length) sketch.wires = wires;
   if (chain.length > 1) {
