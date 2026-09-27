@@ -55,8 +55,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "bridge/comp_media_resolver.h"
-#include "media/video_pump.h"
+#include "bridge/comp_host.h"
+#include "bridge/library_paths.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/text_host.h"
@@ -71,15 +71,6 @@
 #ifndef NANO_WASM_DIR
 #error "NANO_WASM_DIR must be defined"
 #endif
-
-namespace effect_runtime {
-// Setters defined in host_impls.cpp.
-void setHostTime(double t);
-void setHostDeltaTime(double dt);
-void setHostBarPhase(double p);
-void setHostBpm(double bpm);
-void setHostViewport(int w, int h);
-}
 
 using json = nlohmann::json;
 
@@ -263,109 +254,33 @@ int main(int argc, char** argv) {
       return 1;
     }
 
-    comp::CompExecutor cx(&rt, &registry, backend.get());
-    // Seed the catalog from the loaded registry — the native analogue of the
-    // web worker's comp_register_schema per discovered plugin. Every referenced
-    // module type must be known before the first update() or it degrades to a
-    // stand-in.
-    for (const auto& [moduleType, fields] : registry.schemas()) {
-      cx.registerSchema(moduleType, fields);
-      const auto* reg = registry.find(moduleType);
-      json caps = json::array();
-      if (reg) {
-        for (const auto& t : reg->capabilities) caps.push_back(t);
-      }
-      cx.registerCapabilities(moduleType, caps);
-    }
-
-    // Bind the seekable-streams registry into every loaded bundle (and every
-    // one loaded later). Without this the effect-facing `streams` module reads
-    // an absent table, which is SILENT: a transport controller sees parent
-    // position 0 forever and publishes a frozen `transport_time_sec` while its
-    // analytically-differenced `rate` still looks perfectly correct. Same call
-    // test_comp_render.cpp's Harness makes.
-    bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
-
-    // Media resolution. A scenario document is authored the way a SAVED one
-    // looks — `clip.source.ref`, no runtime `url` — so without the roots and
-    // the resolver every video clip would parse as effect-only. Install before
-    // loadDocument: the flag is decided at parse time.
+    // Media roots a clip's `source.ref` resolves against: a scenario document
+    // is authored the way a SAVED one looks (no runtime `url`). Before the
+    // host: it installs the resolver, and loadDocument decides at parse time.
     if (cfg.contains("libraries")) {
       nano_assets::LibraryPaths::instance().setRoots(cfg["libraries"]);
     }
-    nano_assets::installLibraryMediaResolver();
 
-    cx.loadDocument(doc);
+    // Everything around the executor — catalog seeding, the streams table,
+    // the decode pump, the frame order — is the SAME host the nano_compositor
+    // process runs (bridge/comp_host.h), so this runner exercises what ships.
+    bridge::CompHost::Config hostCfg;
+    hostCfg.width = W;
+    hostCfg.height = H;
+    hostCfg.readAheadDepth = cfg.value("readAheadDepth", nano_media::kReadAheadDepth);
+    bridge::CompHost host(backend.get(), &rt, &registry, &bundles, hostCfg);
+    comp::CompExecutor& cx = host.executor();
+    nano_media::VideoPump& pump = host.pump();
+
+    host.loadDocument(doc);
     cx.pause();
-    // Fluid by default: with no decode pump on this side there is nothing to
-    // feed the Precise gate, and a held transport would freeze the beat.
+    // Fluid by default: a held transport would freeze the beat.
     cx.setTransportMode(cfg.value("precise", false));
     if (cfg.contains("ignoreSolo")) cx.setIgnoreSolo(cfg["ignoreSolo"].get<bool>());
 
-    effect_runtime::setHostViewport(W, H);
-    effect_runtime::setHostBpm(cx.bpm());
-
-    const int32_t inTex = backend->createTexture((uint32_t)W, (uint32_t)H, /*RGBA8*/ 1);
-    const int32_t outTex = backend->createTexture((uint32_t)W, (uint32_t)H, /*RGBA8*/ 1);
-    if (inTex < 0 || outTex < 0) {
-      fail("failed to create textures");
-      return 1;
-    }
-    backend->setSurface(outTex, (uint32_t)W, (uint32_t)H);
-
-    double hostTime = 0.0;
-    uint32_t lastFlags = 0;
-    int frames = 0;
-    int stalledFrames = 0;
-    std::string lastChainKeys = "[]";
-
-    // The decode pump. comp never decodes: it publishes a desc set and blocks
-    // on setVideoReady, and this is the host half of that contract.
-    // setVideoReadyFeed tells the Precise gate a pump EXISTS — without it the
-    // gate assumes there's nobody to wait for and never holds.
-    nano_media::VideoPump::Config pumpCfg;
-    pumpCfg.renderW = W;
-    pumpCfg.renderH = H;
-    pumpCfg.readAheadDepth = cfg.value("readAheadDepth", nano_media::kReadAheadDepth);
-    nano_media::VideoPump pump(backend.get(), pumpCfg);
-    pump.setInjectSink([&cx](const std::string& instanceKey, int32_t tex) {
-      if (auto* ex = cx.sketchExecutor()) ex->setInjectedTexture(instanceKey, tex);
-    });
-    pump.setReadySink([&cx](const std::string& clipId, bool ready) {
-      cx.setVideoReady(clipId, ready);
-    });
-    cx.setVideoReadyFeed();
-
-    // One comp frame: pump → update → transportResolve → render. The last three
-    // are the host contract (see comp_executor.h) — transportResolve must sit
-    // between update and render so plugin timing lands same-frame.
-    //
-    // The pump runs FIRST, on the position the last frame left us at, so this
-    // frame renders what was decoded for the previous one. That one-frame lag is
-    // deliberate: web can't avoid it (its pump is on the main thread while
-    // update+render run inside the worker, which is also how the app behaves),
-    // so injecting mid-frame here would make every mid-play frame differ by one
-    // decoded frame and the pixel comparison would be meaningless. Consequence
-    // when writing scenarios: a single step after a seek renders BEFORE anything
-    // has been decoded — video scenarios need at least two.
-    auto stepFrame = [&](double dt) -> int32_t {
-      if (lastFlags & comp::kCompVideoSetChanged) {
-        pump.setActiveClips(json::parse(cx.videoDescsJson(), nullptr, false));
-      }
-      pump.pump(cx.positionBeat(), cx.bpm());
-      hostTime += dt;
-      effect_runtime::setHostTime(hostTime);
-      effect_runtime::setHostDeltaTime(dt);
-      lastFlags = cx.update(dt);
-      cx.transportResolve(dt);
-      const int32_t handle = cx.render(inTex, outTex, W, H, dt);
-      if (lastFlags & comp::kCompStructureChanged) lastChainKeys = cx.chainKeysJson();
-      frames++;
-      // A Precise hold is the transport refusing to advance because a clip's
-      // media isn't decoded yet — the stall metric the perf suite gates on.
-      if (lastFlags & comp::kCompHoldingPrecise) stalledFrames++;
-      return handle;
-    };
+    const int32_t outTex = host.outputTexture();
+    auto stepFrame = [&](double dt) -> int32_t { return host.step(dt); };
+    auto lastFlags = [&]() { return host.lastFlags(); };
 
     json captures = json::object();
     json err;
@@ -391,29 +306,17 @@ int main(int argc, char** argv) {
 
       // Prime the desc set before the loop. It is published by update(), and
       // every export frame pumps BEFORE its update — so without this warm-up
-      // pass frame 0 renders before anything has been decoded. One thrown-away
-      // update, no render. (The web exporter doesn't need it only because it
-      // derives descs from the store, which the runner deliberately excludes.)
-      cx.seekBeat(startBeat);
-      lastFlags = cx.update(0.0);
+      // pass frame 0 renders before anything has been decoded. (The web
+      // exporter doesn't need it only because it derives descs from the
+      // store, which the runner deliberately excludes.)
+      host.primeExport(startBeat);
 
       json stats = json::array();
       int engineFrames = 0;
       for (const auto& fr : plan) {
         // Decode + inject the exact frame this beat wants, THEN seek + step.
-        if (lastFlags & comp::kCompVideoSetChanged) {
-          pump.setActiveClips(json::parse(cx.videoDescsJson(), nullptr, false));
-        }
-        pump.pump(fr.beat, cx.bpm());
-        cx.seekBeat(fr.beat);
-        hostTime = fr.tSec;
-        effect_runtime::setHostTime(hostTime);
-        effect_runtime::setHostDeltaTime(1.0 / fps);
-        lastFlags = cx.update(0.0);
-        cx.transportResolve(0.0);
-        const int32_t handle = cx.render(inTex, outTex, W, H, 1.0 / fps);
-        if (lastFlags & comp::kCompStructureChanged) lastChainKeys = cx.chainKeysJson();
-        if (lastFlags & comp::kCompHasContent) engineFrames++;
+        const int32_t handle = host.stepExport(fr.beat, fr.tSec, fps);
+        if (lastFlags() & comp::kCompHasContent) engineFrames++;
 
         const auto px = backend->readbackTexture(handle >= 0 ? handle : outTex,
                                                  (uint32_t)W, (uint32_t)H);
@@ -425,7 +328,7 @@ int main(int argc, char** argv) {
         stats.push_back({{"index", fr.index},
                          {"beat", fr.beat},
                          {"meanLuma", meanLuma},
-                         {"hasContent", (lastFlags & comp::kCompHasContent) != 0}});
+                         {"hasContent", (lastFlags() & comp::kCompHasContent) != 0}});
         if (!dir.empty()) {
           // Raw RGBA8, not PNG: no encoder in this target, and a raw dump is
           // what a pixel comparison wants anyway.
@@ -498,7 +401,7 @@ int main(int argc, char** argv) {
           // A structural edit is a document reload on both sides — the transport
           // position survives it (loadDocument doesn't reset the playhead).
           const double beat = cx.positionBeat();
-          cx.loadDocument(doc);
+          host.loadDocument(doc);
           cx.seekBeat(beat);
           stepFrame(0.0);
 
@@ -529,12 +432,12 @@ int main(int argc, char** argv) {
               {"width", W},
               {"height", H},
               {"samples", samples},
-              {"hasContent", (lastFlags & comp::kCompHasContent) != 0},
-              {"holding", (lastFlags & comp::kCompHoldingPrecise) != 0},
+              {"hasContent", (lastFlags() & comp::kCompHasContent) != 0},
+              {"holding", (lastFlags() & comp::kCompHoldingPrecise) != 0},
               {"positionBeat", cx.positionBeat()},
               {"positionSec", cx.positionSec()},
-              {"layerCount", layerCountFrom(lastChainKeys)},
-              {"chainKeys", json::parse(lastChainKeys, nullptr, false)},
+              {"layerCount", layerCountFrom(host.chainKeysJson())},
+              {"chainKeys", json::parse(host.chainKeysJson(), nullptr, false)},
               // {trackId: {sceneId, launchBeat}} — the launched-scene set.
               {"sceneStates", json::parse(cx.sceneStatesJson(), nullptr, false)},
               // trackId → incoming {sceneId, ...} while a handover is deferred.
@@ -554,8 +457,8 @@ int main(int argc, char** argv) {
     // Decode telemetry rides the RESULT, not each capture: it's cumulative over
     // the whole run, which is what the perf comparison wants.
     json video{{"totalDecodes", pump.totalDecodes()},
-               {"frames", frames},
-               {"stalledFrames", stalledFrames},
+               {"frames", host.frames()},
+               {"stalledFrames", host.stalledFrames()},
                {"clips", json::object()},
                {"skipped", json::object()}};
     for (const auto& [clipId, t] : pump.telemetry()) {

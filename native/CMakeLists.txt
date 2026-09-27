@@ -1338,6 +1338,19 @@ if(NANO_HAS_GPU_BACKEND)
     target_compile_definitions(sketch_executor PRIVATE NANO_WASM_AOT_ENABLED=1)
   endif()
 
+  # --- Composition host (bridge/comp_host.h) ---
+  # Everything around comp::CompExecutor a native process needs: catalog
+  # seeding, the streams table, the decode pump, the frame order. Shared by
+  # comp_test_runner and the shared runtime's comp instance (nano_compositor),
+  # so the parity runner exercises what ships. Needs the decode pump, which is
+  # Apple-only for now. NANO_COMP_HOST=1 tells barrel_runtime.cpp it exists.
+  if(TARGET nano_media)
+    add_library(comp_host STATIC src/bridge/comp_host.cpp)
+    target_include_directories(comp_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(comp_host PUBLIC sketch_executor nano_media nlohmann_json::nlohmann_json)
+    target_compile_options(comp_host PRIVATE -Wno-attributes)
+  endif()
+
   # --- Shared render engine inside the dylib ---
   # The whole effect runtime lives in libbridge_server.dylib as a process
   # singleton (BarrelRuntime), so every NanoBarrel instance shares ONE Metal
@@ -1352,6 +1365,10 @@ if(NANO_HAS_GPU_BACKEND)
     ${NANO_MIDI_PORT_BACKEND}
     src/artnet/artnet_host.cpp)
   target_link_libraries(bridge_server PRIVATE sketch_executor)
+  if(TARGET comp_host)
+    target_link_libraries(bridge_server PRIVATE comp_host)
+    target_compile_definitions(bridge_server PRIVATE NANO_COMP_HOST=1)
+  endif()
   if(APPLE)
     target_link_libraries(bridge_server PRIVATE "-framework CoreMIDI")
     set_source_files_properties(${NANO_MIDI_PORT_BACKEND}
@@ -1421,9 +1438,9 @@ if(NANO_HAS_GPU_BACKEND)
     ${CMAKE_SOURCE_DIR}/src
   )
   target_link_libraries(comp_test_runner PRIVATE
-    sketch_executor   # CompExecutor + ModuleRegistry + WasmEffectBundles
+    comp_host         # CompExecutor + the decode pump, as the compositor runs them
+    sketch_executor   # ModuleRegistry + WasmEffectBundles
     effect_runtime
-    nano_media        # the DXV decode pump
     gpu_backend
     nlohmann_json::nlohmann_json
   )
