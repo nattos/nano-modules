@@ -1151,7 +1151,15 @@ async function simulateTick(dt: number, execDt: number = dt) {
     } else if (tp.target.type === 'chain_entry') {
       const key = `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`;
       const entry = exec.chainEntryHandles.get(key);
-      if (entry) {
+      if (tp.target.field && tp.target.side === 'output') {
+        // A non-primary texture output: the chain-entry hook only reports the
+        // stage's primary, so read what the instance published on the field
+        // itself (state::setGpuTexture — effect-owned, live past the frame).
+        const ce = chainEntryAt(sketches.get(tp.target.sketchId), tp.target.chainIdx);
+        if (ce && ce.type === 'module') {
+          handle = exec.getInstance(ce.instance_key)?.host.textureFields.get(tp.target.field) ?? -1;
+        }
+      } else if (entry) {
         handle = tp.target.side === 'input' ? entry.input : entry.output;
       }
       // Generator-led chains (the arrangement's per-clip video chains) inject the
@@ -1161,7 +1169,7 @@ async function simulateTick(dt: number, execDt: number = dt) {
       // fall back to that injected texture so the trace previews the actual video
       // frame instead of an empty (transparent) image. `instanceTextures` only
       // holds video-source instances, so this never fires for a plain effect.
-      if (handle < 0) {
+      if (handle < 0 && !tp.target.field) {
         const ce = chainEntryAt(sketches.get(tp.target.sketchId), tp.target.chainIdx);
         if (ce && ce.type === 'module') {
           const inj = instanceTextures.get(ce.instance_key);

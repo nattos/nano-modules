@@ -206,7 +206,7 @@ export function isSidechannelThumbTraceId(traceId: string): boolean {
 export interface BarrelPreviewRequest {
   target:
     | { type: 'sketch_output'; sketchId: string }
-    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: string }
+    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: string; field?: string }
     | { type: 'sidechannel'; channel: string };
   width: number;
   height: number;
@@ -245,6 +245,7 @@ export function groupPreviewRequests(
         colIdx: target.colIdx,
         chainIdx: target.chainIdx,
         side: target.side,
+        ...(target.field ? { field: target.field } : {}),
       };
     } else if (target.type === 'sidechannel') {
       serialized = { type: 'sidechannel', channel: target.channel };

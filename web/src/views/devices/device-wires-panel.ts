@@ -10,6 +10,11 @@
  * as the editor's wire popup (shared widgets/wire-mod-inspector.ts), plus a
  * locate button that opens the right instance, scrolls its editor to the dest
  * field, and flashes it.
+ *
+ * In Live mode the editor DB holds only the instances opened this session, so
+ * the panel reads ghostScan's composition-wide view (every live instance's
+ * sketch, prefetched over the bridge). Edits only reach Resolume for the
+ * EDITED instance, so the others' rows are read-only: locate opens them.
  */
 
 import { html, css, nothing } from 'lit';
@@ -26,6 +31,7 @@ import { scrollToAndFlashField } from '../../widgets/field-anchor-lookup';
 import {
   collectDeviceWires, type DeviceAliasWireRow, type DeviceModWireRow, type DeviceWireRow,
 } from './device-wires-model';
+import { ghostScan } from './ghost-scan';
 import '../../widgets/ui-icon';
 
 @customElement('device-wires-panel')
@@ -53,6 +59,10 @@ export class DeviceWiresPanel extends MobxLitElement {
       color: var(--app-text-color2);
     }
     .group-head:first-child { margin-top: 2px; }
+    .group-head .readonly {
+      letter-spacing: 0;
+      text-transform: none;
+    }
     .group-head .current {
       color: var(--app-hi-color2);
       letter-spacing: 0;
@@ -107,6 +117,31 @@ export class DeviceWiresPanel extends MobxLitElement {
    * list), then every instance the Instances tab shows — pg:* sketches in
    * Playground, cached/connected barrel UUIDs in Live.
    */
+  /** Editing instance the last composition prefetch was taken against. */
+  private scannedFor: string | null | undefined = undefined;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.scannedFor = undefined;
+  }
+
+  protected updated() {
+    // Re-prefetch whenever the edited instance changes: the one just left is
+    // now served from that prefetch, and the one entered from the DB.
+    const editing = appState.local.editingSketchId;
+    if (editing !== this.scannedFor) {
+      this.scannedFor = editing;
+      void ghostScan.refresh();
+    }
+  }
+
+  /** Can this instance's wires be edited from here? Everywhere in
+   *  Playground (the worker runs every instance); in Live only the edited
+   *  instance pushes its sketch to Resolume. */
+  private editable(sketchId: string): boolean {
+    return !appState.local.barrelMode || sketchId === appState.local.editingSketchId;
+  }
+
   private scanIds(): string[] {
     const editing = appState.local.editingSketchId;
     return [
@@ -144,7 +179,7 @@ export class DeviceWiresPanel extends MobxLitElement {
     const moduleName = moduleType.split('.').pop() ?? moduleType;
     const field = row.wire.dest.field;
     if (moduleType === DASHBOARD_MODULE_TYPE && field.startsWith('knob_')) {
-      const st = appState.database.sketches[sketchId]?.instances?.[row.dest.instance_key]?.state as
+      const st = ghostScan.compositionSketches()[sketchId]?.instances?.[row.dest.instance_key]?.state as
           Record<string, any> | undefined;
       const label = st?.[`label_${field.slice('knob_'.length)}`];
       if (typeof label === 'string' && label.trim() !== '') return `${moduleName}.${label}`;
@@ -194,7 +229,7 @@ export class DeviceWiresPanel extends MobxLitElement {
   render() {
     if (!this.deviceId) return nothing;
     const groups = collectDeviceWires(
-      appState.database.sketches, this.scanIds(), this.deviceId, this.controlIds);
+      ghostScan.compositionSketches(), this.scanIds(), this.deviceId, this.controlIds);
     if (groups.length === 0) {
       return html`<div class="empty">
         No wires — in W wire mode, drag ${this.controlIds ? 'this control' : 'a control'}
@@ -207,7 +242,10 @@ export class DeviceWiresPanel extends MobxLitElement {
       ${groups.map(g => html`
         <div class="group-head">
           <span>${instanceDisplayLabel(g.sketchId)}</span>
-          ${g.sketchId === editing ? html`<span class="current">· editing</span>` : nothing}
+          ${g.sketchId === editing ? html`<span class="current">· editing</span>`
+            : !this.editable(g.sketchId)
+              ? html`<span class="readonly" title="Open this instance to edit its wires">· locate to edit</span>`
+              : nothing}
         </div>
         ${g.rows.map(row => row.kind === 'alias'
           ? this.renderAliasRow(g.sketchId, row, showControl)
@@ -227,10 +265,10 @@ export class DeviceWiresPanel extends MobxLitElement {
           @click=${() => this.locate(sketchId, row)}>
           <ui-icon icon="la-crosshairs"></ui-icon>
         </button>
-        <button title="Remove wire"
-          @click=${() => appController.removeWire(sketchId, row.wire.id)}>×</button>
+        ${this.editable(sketchId) ? html`<button title="Remove wire"
+          @click=${() => appController.removeWire(sketchId, row.wire.id)}>×</button>` : nothing}
       </div>
-      ${renderWireModInspector(row.wire,
+      ${!this.editable(sketchId) ? nothing : renderWireModInspector(row.wire,
         wireModBinding(`devwire/${sketchId}/${row.wire.id}`, this.wireOps(sketchId, row.wire.id)),
         this.destIsRaw(row), this.destDef(row))}
     `;
@@ -248,8 +286,8 @@ export class DeviceWiresPanel extends MobxLitElement {
             class="gesture">${row.gesture}</span> ↔ ${this.peerLabel(row)}<span
             class="gesture"> ${row.peer.gesture}</span>
         </span>
-        <button title="Remove alias"
-          @click=${() => appController.removeWire(sketchId, row.wire.id)}>×</button>
+        ${this.editable(sketchId) ? html`<button title="Remove alias"
+          @click=${() => appController.removeWire(sketchId, row.wire.id)}>×</button>` : nothing}
       </div>
     `;
   }

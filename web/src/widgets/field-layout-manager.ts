@@ -143,6 +143,12 @@ export class FieldLayoutManager {
    *  arrangement wire overlay's rAF loop) and want the freshest geometry without
    *  waiting for the next recalculate. Reads `entries` untracked — see
    *  keysUntracked() for why. */
+  /** The registered element for `key`, if still connected (untracked read). */
+  liveElement(key: string): HTMLElement | null {
+    const entry = untracked(() => this.entries.get(key));
+    return entry?.element.isConnected ? entry.element : null;
+  }
+
   liveRect(key: string): DOMRect | null {
     const entry = untracked(() => this.entries.get(key));
     if (!entry) return null;

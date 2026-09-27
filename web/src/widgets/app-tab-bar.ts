@@ -41,6 +41,10 @@ export interface AppToggleDef {
   onToggle: () => void;
   /** Colour when lit. Defaults to the rail's own active accent. */
   accent?: string;
+  /** Shown but inert — the mode means nothing on the current tab. The pill
+   *  stays in place (so the rail never reflows on a tab switch) and keeps its
+   *  lit state, dimmed, so a mode left on still reads as on. */
+  disabled?: boolean;
 }
 
 export interface AppTabDef {
@@ -56,8 +60,8 @@ export interface AppTabDef {
 export class AppTabBar extends LitElement {
   @property({ attribute: false }) tabs: AppTabDef[] = [];
   @property({ attribute: false }) activeId = '';
-  /** Mode pills rendered under the top tab group. Usually the ACTIVE tab's — a
-   *  mode that only means something on one surface shouldn't outlive it. */
+  /** Mode pills rendered under the top tab group. Always the surface's whole
+   *  set; the ones the active tab doesn't host come in `disabled`. */
   @property({ attribute: false }) toggles: AppToggleDef[] = [];
 
   static styles = css`
@@ -128,8 +132,12 @@ export class AppTabBar extends LitElement {
       cursor: pointer;
       transition: color 0.15s, border-color 0.15s;
     }
-    .mode-btn:hover {
+    .mode-btn:hover:not(:disabled) {
       background: var(--app-tint-2);
+    }
+    .mode-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
     }
     .mode-btn[active] {
       color: var(--mode-accent);
@@ -172,7 +180,8 @@ export class AppTabBar extends LitElement {
     return html`
       <button class="mode-btn"
         ?active=${t.active}
-        title=${t.title}
+        ?disabled=${t.disabled === true}
+        title=${t.disabled ? `${t.title} — not available on this tab` : t.title}
         style=${`--mode-accent: ${t.accent ?? 'var(--app-hi-color2)'}`}
         @click=${() => t.onToggle()}>
         <ui-icon .icon=${t.icon}></ui-icon>${t.letter}

@@ -163,6 +163,7 @@ wasm_build \
   ../atomic_test/main.cpp \
   ../rw_storage_test/main.cpp \
   ../clear_copy_test/main.cpp \
+  ../secondary_output/main.cpp \
   ../mrt_test/main.cpp \
   ../lut3d_test/main.cpp \
   ../motion_rect/main.cpp \

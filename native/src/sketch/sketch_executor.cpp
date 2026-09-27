@@ -2411,6 +2411,26 @@ void SketchExecutor::copyToOutput(int32_t src, int32_t dst, int W, int H) {
   }
 }
 
+int32_t SketchExecutor::chainEntryFieldTexture(int colIdx, int chainIdx,
+                                               const std::string& field) const {
+  if (!cachedExecDocValid_ || colIdx < 0 || chainIdx < 0 || field.empty()) return -1;
+  const auto cols = cachedExecDoc_.find("columns");
+  if (cols == cachedExecDoc_.end() || !cols->is_array() ||
+      (size_t)colIdx >= cols->size()) return -1;
+  const auto chain = (*cols)[(size_t)colIdx].find("chain");
+  if (chain == (*cols)[(size_t)colIdx].end() || !chain->is_array() ||
+      (size_t)chainIdx >= chain->size()) return -1;
+  const json& entry = (*chain)[(size_t)chainIdx];
+  if (!entry.is_object() || entry.value("type", std::string()) != "module") return -1;
+  const std::string mt = entry.value("module_type", std::string());
+  const std::string key = entry.value("instance_key", std::string());
+  if (mt.empty() || key.empty()) return -1;
+  EffectRef inst = instanceRef(mt, nsPrefix_ + key);
+  if (!inst.valid()) return -1;
+  const int32_t h = inst.textureField(field);
+  return h > 0 ? h : -1;
+}
+
 int32_t SketchExecutor::nextIntermediate(int W, int H) {
   if (W != intermediates_w_ || H != intermediates_h_ ||
       internalFmt_ != intermediates_fmt_) {

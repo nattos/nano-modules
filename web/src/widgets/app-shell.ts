@@ -33,11 +33,10 @@ export interface ShellTabConfig extends AppTabDef {
    */
   renderRight?: () => TemplateResult;
   /**
-   * Mode pills for the tab rail, live only while THIS tab is active — a mode
-   * that changes nothing on the other tabs shouldn't sit lit next to them.
-   * Built fresh each render, so `active` tracks the observable it reads.
+   * Ids of the shell's mode pills (`ShellConfig.toggles`) this tab hosts. The
+   * rest stay on the rail but disabled while this tab is active.
    */
-  toggles?: AppToggleDef[];
+  enabledToggles?: string[];
 }
 
 export interface ShellConfig {
@@ -50,6 +49,12 @@ export interface ShellConfig {
   onSelectTab?: (id: string) => void;
   /** Right panel content for 'inline' tabs. */
   renderMonitor: () => TemplateResult;
+  /**
+   * Mode pills for the tab rail — ALWAYS shown, so the rail doesn't reflow on
+   * a tab switch; a tab enables the ones it hosts via `enabledToggles`. Built
+   * fresh each render, so `active` tracks the observable it reads.
+   */
+  toggles?: AppToggleDef[];
   /** Optional content below the monitor, for 'inline' tabs. */
   renderStatus?: () => TemplateResult | typeof nothing;
 }
@@ -123,7 +128,8 @@ export class AppShell extends MobxLitElement {
       <app-tab-bar
         .tabs=${cfg.tabs}
         .activeId=${active?.id ?? ''}
-        .toggles=${active?.toggles ?? []}
+        .toggles=${(cfg.toggles ?? []).map(t =>
+          active?.enabledToggles?.includes(t.id) ? t : { ...t, disabled: true })}
         @tab-select=${(e: CustomEvent<{ id: string }>) => onSelect(e.detail.id)}
       ></app-tab-bar>
       ${active?.kind === 'full-takeover'

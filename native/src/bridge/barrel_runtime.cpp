@@ -62,7 +62,9 @@ constexpr unsigned kNumMacros = 16;
 
 // One active preview subscription (an editor monitor). Mirrors the web's
 // trace-controller request shape; targetKey is resolved to the executor hook's
-// capture-map key ("so" or "ce:<col>/<chain>/<side>").
+// capture-map key ("so" or "ce:<col>/<chain>/<side>"), or — for a chain entry's
+// NON-primary texture output — "cef:<col>/<chain>/<field>", which no hook
+// captures: it is resolved from the executor at publish time.
 struct PreviewRequest {
   std::string traceId;
   std::string targetKey;
@@ -1015,10 +1017,16 @@ struct BarrelRuntime::Impl {
         const int col   = target.value("colIdx",   -1);
         const int chain = target.value("chainIdx", -1);
         const std::string side = target.value("side", std::string("output"));
+        const std::string field = target.value("field", std::string());
         if (col < 0 || chain < 0) continue;
         char buf[64];
-        snprintf(buf, sizeof(buf), "ce:%d/%d/%s", col, chain, side.c_str());
-        req.targetKey = buf;
+        if (!field.empty() && side == "output") {
+          snprintf(buf, sizeof(buf), "cef:%d/%d/", col, chain);
+          req.targetKey = std::string(buf) + field;
+        } else {
+          snprintf(buf, sizeof(buf), "ce:%d/%d/%s", col, chain, side.c_str());
+          req.targetKey = buf;
+        }
       } else {
         continue;
       }
@@ -1212,6 +1220,17 @@ struct BarrelRuntime::Impl {
         // handle is stable and this frame's bus copy has been encoded).
         const auto r = sidechannel_bus::peek(req.targetKey.c_str() + 3);
         slot = {r.tex, r.w, r.h};
+      } else if (req.targetKey.rfind("cef:", 0) == 0) {
+        // A non-primary texture output: ask the executor what the stage's
+        // instance published on that field this frame (effect-owned, so it
+        // outlives the frame's intermediate pool anyway).
+        int col = -1, chain = -1, n = 0;
+        if (std::sscanf(req.targetKey.c_str(), "cef:%d/%d/%n", &col, &chain, &n) < 2 || n <= 0)
+          continue;
+        const int32_t h = pe.executor->chainEntryFieldTexture(
+            col, chain, req.targetKey.substr((size_t)n));
+        if (h <= 0) continue;
+        slot = {h, gpu->getTextureWidth(h), gpu->getTextureHeight(h)};
       } else {
         auto it = pe.frame_captures.find(req.targetKey);
         if (it == pe.frame_captures.end()) continue;

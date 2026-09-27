@@ -40,6 +40,7 @@ interface SketchCanvasHost extends HTMLElement {
 }
 import { execPositions, wireIsDelayed } from '../state/exec-order';
 import { connectGestureActive, tapsConnect } from './taps-connect';
+import { forwardWheelBeneath } from './wheel-passthrough';
 import './spark-chart';
 
 type Pt = { x: number; y: number };
@@ -150,6 +151,22 @@ export class TapsOverlay extends MobxLitElement {
   }
 
   /**
+   * A wheel over a wire (or a proxy pip) scrolls whatever is beneath it. This
+   * layer is a SIBLING of the editor's scroll containers, so without this the
+   * list stopped scrolling whenever the pointer crossed a wire.
+   *
+   * Bound on each hit element, not once on the shadow root: Chrome only routes
+   * a wheel to the main thread where it knows a blocking listener sits, and it
+   * learns that from the listening ELEMENT's box — a shadow root has none, so
+   * the event never arrived. (A passive listener anywhere on the page, e.g. a
+   * devtools snippet on window, masks this by routing everything.)
+   */
+  private readonly wheelThrough = {
+    handleEvent: (e: WheelEvent) => { forwardWheelBeneath(e, this); },
+    passive: false,
+  };
+
+  /**
    * Click-away: dismiss the field/wire options popup (it's selection-driven) when
    * the pointer lands outside the popup itself or an element that sets its own
    * selection. Crucially the effect card swallows its own clicks
@@ -202,6 +219,9 @@ export class TapsOverlay extends MobxLitElement {
     }
     /* Escape the panel's overflow clip so cross-panel arcs are visible. Above
      * the panels, below the floating monitor (z-index 200). */
+    /* Set only for the instant forwardWheelBeneath hit-tests THROUGH this
+     * layer, to find what a wheel over a wire should scroll. */
+    :host([wheel-passthrough]) * { pointer-events: none !important; }
     :host([viewportfixed]) {
       position: fixed;
       z-index: 150;
@@ -497,7 +517,8 @@ export class TapsOverlay extends MobxLitElement {
             <circle class="wire-proxy-pip ${sel ? 'selected' : ''}" r="5"
               data-from=${cn.from} data-to=${cn.to}
               data-proxy-end=${proxyEnd} data-wire-id=${cn.wireId}
-              @click=${() => this.onProxyPipClick(cn.proxy!.chainIdx)}>
+              @click=${() => this.onProxyPipClick(cn.proxy!.chainIdx)}
+              @wheel=${this.wheelThrough}>
               <title>On the sidecar canvas — click to open it</title>
             </circle>` : nothing;
           const hitPath = (fine: boolean) => svg`
@@ -505,7 +526,8 @@ export class TapsOverlay extends MobxLitElement {
               data-proxy-end=${proxyEnd ?? nothing}
               data-from=${cn.from} data-to=${cn.to}
               @click=${(e: MouseEvent) => this.onWireClick(e, cn.wireId)}
-              @dblclick=${(e: MouseEvent) => this.onWireDblClick(e, cn.wireId)}></path>`;
+              @dblclick=${(e: MouseEvent) => this.onWireDblClick(e, cn.wireId)}
+              @wheel=${this.wheelThrough}></path>`;
           const hit = svg`${hitPath(false)}${hitPath(true)}`;
           // A 1-frame-delayed (feedback) wire: drawn in two halves that animate
           // alternately, with a dot at the relay point — and in the output-pip red.

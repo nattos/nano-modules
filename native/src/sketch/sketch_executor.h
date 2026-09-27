@@ -211,6 +211,15 @@ class SketchExecutor {
    * the stringify → copy → parse round-trip entirely on clean frames.
    * Passthrough when nothing is cached yet (host misuse guard).
    */
+  /**
+   * The texture the chain entry at (colIdx, chainIdx) of the last execute()
+   * publishes on output `field` (-1 if none). The chain-entry hook only ever
+   * reports a stage's PRIMARY output; this is how a host previews an effect's
+   * other texture outputs. Valid until the next execute(), like the hook's
+   * handles.
+   */
+  int32_t chainEntryFieldTexture(int colIdx, int chainIdx, const std::string& field) const;
+
   int32_t executeCached(int32_t inTex, int32_t outTex, int W, int H, double dt) {
     if (!cachedExecDocValid_) return inTex;
     return execute(cachedExecDoc_, inTex, outTex, W, H, dt, /*sketchDirty=*/false);

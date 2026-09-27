@@ -19,6 +19,12 @@ export function deviceAnchorRect(key: string): DOMRect | null {
   return layout.liveRect(key);
 }
 
+/** The element behind a device anchor — for clipping its end of a wire to the
+ *  device grid's visible area. */
+export function deviceAnchorElement(key: string): HTMLElement | null {
+  return layout.liveElement(key);
+}
+
 export const DeviceAnchorKeys = {
   /** One wireable endpoint: deviceId + full endpoint field ('b0/e05/turn'). */
   control: (deviceId: string, endpoint: string) => `devctl:${deviceId}:${endpoint}`,

@@ -93,7 +93,7 @@ export class EffectIdeApp extends MobxLitElement {
           renderRight: canvasOpen
             ? () => html`<sketch-canvas-view .sketchId=${sel}></sketch-canvas-view>`
             : undefined,
-          toggles: [wiresModeToggle(), canvasModeToggle()],
+          enabledToggles: ['wires', 'canvas'],
         },
         {
           // Same layout as the unified surface's Devices tab: the project's
@@ -109,11 +109,12 @@ export class EffectIdeApp extends MobxLitElement {
           ></sketch-column-editor>
         `,
           renderRight: () => html`<devices-tab></devices-tab>`,
-          toggles: [wiresModeToggle()],
+          enabledToggles: ['wires'],
         },
         { id: 'debug_info', icon: 'la-bug', title: 'Debug Info', kind: 'inline', render: () => html`<ide-debug-info></ide-debug-info>` },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
+      toggles: [wiresModeToggle(), canvasModeToggle()],
       activeTabSettingKey: 'ideLeftTab',
       panelWidthSettingKey: 'ideLeftPanelWidth',
       renderMonitor: () => html`

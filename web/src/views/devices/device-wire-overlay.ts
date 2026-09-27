@@ -18,6 +18,14 @@
  * is most of what this component costs. Misses are retried on a slow cadence
  * instead; a card that expands picks its wire up within a few frames.
  *
+ * An endpoint scrolled out of its panel (a field below the editor's fold, a
+ * device card scrolled out of the grid) still has a perfectly good rect —
+ * just one far outside the panel, often outside the window. Each end is
+ * pinned to the visible part of its own panel (clip-rect.ts) and the wire is
+ * drawn faded, so it points the way instead of flying off-screen. An anchor
+ * with a zero box (present but not laid out) is treated as missing: its rect
+ * is the viewport origin, not a place.
+ *
  * Purely visual (pointer-events: none): wire management (mod, combine,
  * removal) lives in the dest field's inspector like any other wire, and the
  * editor's own <taps-overlay> ignores midi:-sourced wires, so nothing draws
@@ -35,7 +43,8 @@ import {
   activeEditorColumnsRoots, activeEditorSketchId, fieldHitIn, fieldOptionPipIn,
 } from '../../widgets/field-anchor-lookup';
 import { tapsConnect } from '../../widgets/taps-connect';
-import { DeviceAnchorKeys, deviceAnchorRect } from './device-anchors';
+import { pinToClip, visibleClip } from '../../widgets/clip-rect';
+import { DeviceAnchorKeys, deviceAnchorElement, deviceAnchorRect } from './device-anchors';
 
 interface DeviceWireVis {
   wireId: string;
@@ -101,6 +110,12 @@ export class DeviceWireOverlay extends MobxLitElement {
       stroke: var(--app-hi-color4, #ffda63);
       stroke-width: 1.5;
       opacity: 0.85;
+    }
+    /* One end is scrolled out of its panel: the wire stops at the panel's
+       edge, faded, pointing the way to it — rather than flying off-screen. */
+    .wire.offscreen, .alias.offscreen {
+      opacity: 0.35;
+      stroke-dasharray: 3 3;
     }
     .connect-line {
       fill: none;
@@ -199,6 +214,14 @@ export class DeviceWireOverlay extends MobxLitElement {
     return out;
   }
 
+  /** A device-side endpoint, pinned to the visible part of the device grid
+   *  (a card scrolled out of the Devices panel keeps a valid rect far outside
+   *  it). */
+  private pinDevice(key: string, x: number, y: number) {
+    const el = deviceAnchorElement(key);
+    return el ? pinToClip(x, y, visibleClip(el)) : { x, y, pinned: false };
+  }
+
   /** rAF geometry pass — reads anchors, writes path `d` attributes. */
   private position() {
     const svg = this.renderRoot.querySelector('svg');
@@ -209,29 +232,36 @@ export class DeviceWireOverlay extends MobxLitElement {
     // once per frame — and not at all when no wire needs one.
     const roots = wirePaths.length > 0 ? activeEditorColumnsRoots() : [];
     for (const path of wirePaths) {
-      const from = deviceAnchorRect(path.dataset.anchorKey!);
-      const to = from
-        ? this.destAnchor(path.dataset.destKey!, roots)?.getBoundingClientRect()
-        : null;
-      if (!from || !to) {
+      const fromKey = path.dataset.anchorKey!;
+      const from = deviceAnchorRect(fromKey);
+      const toEl = from ? this.destAnchor(path.dataset.destKey!, roots) : null;
+      const to = toEl?.getBoundingClientRect();
+      // A zero box is an anchor that's in the DOM but not laid out (inside a
+      // hidden subtree): its rect is the viewport origin, not a place.
+      if (!from || !toEl || !to || (to.width === 0 && to.height === 0)) {
         // Only touch the attribute when it isn't already cleared: writing `d`
         // dirties the path even when the value is unchanged.
         if (path.getAttribute('d')) path.setAttribute('d', '');
         continue;
       }
-      const d = bowPath(from.left, from.top + from.height / 2, to.right, to.top + to.height / 2);
+      const a = this.pinDevice(fromKey, from.left, from.top + from.height / 2);
+      const b = pinToClip(to.right, to.top + to.height / 2, visibleClip(toEl));
+      path.classList.toggle('offscreen', a.pinned || b.pinned);
+      const d = bowPath(a.x, a.y, b.x, b.y);
       if (path.getAttribute('d') !== d) path.setAttribute('d', d);
     }
     for (const path of svg.querySelectorAll<SVGPathElement>('.alias')) {
-      const from = deviceAnchorRect(path.dataset.anchorKey!);
-      const to = from ? deviceAnchorRect(path.dataset.destAnchorKey!) : null;
+      const fromKey = path.dataset.anchorKey!, toKey = path.dataset.destAnchorKey!;
+      const from = deviceAnchorRect(fromKey);
+      const to = from ? deviceAnchorRect(toKey) : null;
       if (!from || !to) {
         if (path.getAttribute('d')) path.setAttribute('d', '');
         continue;
       }
-      const d = aliasPath(
-        from.left + from.width / 2, from.top + from.height / 2,
-        to.left + to.width / 2, to.top + to.height / 2);
+      const a = this.pinDevice(fromKey, from.left + from.width / 2, from.top + from.height / 2);
+      const b = this.pinDevice(toKey, to.left + to.width / 2, to.top + to.height / 2);
+      path.classList.toggle('offscreen', a.pinned || b.pinned);
+      const d = aliasPath(a.x, a.y, b.x, b.y);
       if (path.getAttribute('d') !== d) path.setAttribute('d', d);
     }
     const line = svg.querySelector<SVGPathElement>('.connect-line');
@@ -239,9 +269,11 @@ export class DeviceWireOverlay extends MobxLitElement {
     if (line) {
       const dc = s?.info.deviceControl;
       const from = dc ? deviceAnchorRect(DeviceAnchorKeys.control(dc.deviceInstanceId, dc.controlId)) : null;
-      const d = s && from
-        ? bowPath(from.left, from.top + from.height / 2, s.pointerX, s.pointerY)
-        : '';
+      const a = from && dc
+        ? this.pinDevice(DeviceAnchorKeys.control(dc.deviceInstanceId, dc.controlId),
+            from.left, from.top + from.height / 2)
+        : null;
+      const d = s && a ? bowPath(a.x, a.y, s.pointerX, s.pointerY) : '';
       if (line.getAttribute('d') !== d) line.setAttribute('d', d);
     }
   }

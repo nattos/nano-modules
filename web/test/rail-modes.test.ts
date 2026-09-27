@@ -21,6 +21,7 @@ const pills = `(() => { ${WALK}
     return Array.from(el.shadowRoot.querySelectorAll('.mode-btn')).map(b => {
       const r = b.getBoundingClientRect();
       return { letter: b.textContent.trim(), active: b.hasAttribute('active'),
+               disabled: b.disabled,
                color: getComputedStyle(b).color, right: r.right,
                x: r.left + r.width / 2, y: r.top + r.height / 2 };
     });
@@ -150,23 +151,32 @@ describe('tab rail mode pills', () => {
     expect(await page.evaluate(`window.appState.local.tappingMode`)).toBe(true);
   });
 
-  it('keeps W on Devices but drops C — that tab already owns the right panel', async () => {
+  it('keeps both pills on every tab, disabling the ones the tab does not host', async () => {
     await seed(page);
-    expect((await page.evaluate(pills) as any[]).map(b => b.letter)).toEqual(['W', 'C']);
+    const state = async () => (await page.evaluate(pills) as any[])
+      .map(b => `${b.letter}${b.disabled ? '-' : '+'}`);
+    expect(await state()).toEqual(['W+', 'C+']);
 
     // Devices is where W-mode wires drag between a device control and an editor
-    // field, so it keeps the pill; the canvas has nowhere to open there.
+    // field, so W stays live; the canvas has nowhere to open there. The pill
+    // stays put anyway — the rail must not reflow on a tab switch.
     await page.evaluate(`window.appController.setActiveTab('devices')`);
     await settle();
-    expect((await page.evaluate(pills) as any[]).map(b => b.letter)).toEqual(['W']);
+    expect(await state()).toEqual(['W+', 'C-']);
 
-    // A tab that hosts neither shows neither.
+    // A disabled pill is inert: clicking it changes nothing.
+    const c = (await page.evaluate(pills) as any[])[1];
+    await page.mouse.click(c.x, c.y);
+    await settle();
+    expect(await page.evaluate(`window.appState.local.userSettings.sketchCanvasOpen`)).toBe(false);
+
+    // A tab that hosts neither shows both, disabled.
     await page.evaluate(`window.appController.setActiveTab('settings')`);
     await settle();
-    expect(await page.evaluate(pills)).toEqual([]);
+    expect(await state()).toEqual(['W-', 'C-']);
 
     await page.evaluate(`window.appController.setActiveTab('edit')`);
     await settle();
-    expect((await page.evaluate(pills) as any[]).map(b => b.letter)).toEqual(['W', 'C']);
+    expect(await state()).toEqual(['W+', 'C+']);
   });
 });

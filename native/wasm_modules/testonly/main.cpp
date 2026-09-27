@@ -84,6 +84,8 @@ NANO_DECLARE_INSTANCE_EFFECT(rw_storage_test)
 
 NANO_DECLARE_INSTANCE_EFFECT(clear_copy_test)
 
+NANO_DECLARE_INSTANCE_EFFECT(secondary_output)
+
 NANO_DECLARE_INSTANCE_EFFECT(mrt_test)
 
 NANO_DECLARE_INSTANCE_EFFECT(lut3d_test)
@@ -430,6 +432,17 @@ void nano_module_main() {
         "test,clear,copy,texture",
         "la-copy",
         NANO_INSTANCE_LIFECYCLE(clear_copy_test),
+    });
+
+    nano::registerEffect({
+        2,
+        "debug.secondary_output",
+        "Secondary Output",
+        "Red primary output plus a blue secondary texture output (per-output trace previews)",
+        "debug",
+        "test,output,texture,trace",
+        "la-clone",
+        NANO_INSTANCE_LIFECYCLE(secondary_output),
     });
 
     nano::registerEffect({

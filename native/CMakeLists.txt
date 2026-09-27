@@ -1750,6 +1750,19 @@ if(NANO_HAS_GPU_BACKEND)
     catch_discover_tests(test_sketch_output_format)
   endif()
 
+  # Per-output trace previews: a chain entry's NON-primary texture output.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    add_executable(test_chain_entry_field_texture tests/test_chain_entry_field_texture.cpp)
+    target_link_libraries(test_chain_entry_field_texture PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+)
+    target_compile_definitions(test_chain_entry_field_texture PRIVATE
+      TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    target_compile_options(test_chain_entry_field_texture PRIVATE -Wno-attributes)
+    catch_discover_tests(test_chain_entry_field_texture)
+  endif()
+
   # B3 end-to-end: drive executor.wasm through WAMR vs the native executor.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
      AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")

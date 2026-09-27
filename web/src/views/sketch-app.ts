@@ -70,7 +70,7 @@ export class SketchApp extends MobxLitElement {
             : undefined,
           // Only Edit hosts the canvas — Devices already owns the right panel,
           // so the pill rides this tab rather than the shell.
-          toggles: [wiresModeToggle(), canvasModeToggle()],
+          enabledToggles: ['wires', 'canvas'],
         },
         {
           // Devices keeps the sketch editor in the left panel (same instance
@@ -87,10 +87,11 @@ export class SketchApp extends MobxLitElement {
           // W but no C: wires are the whole point of this tab (they drag
           // between a device control and an editor field), while the canvas
           // has nowhere to open — the device grid holds the right panel.
-          toggles: [wiresModeToggle()],
+          enabledToggles: ['wires'],
         },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
+      toggles: [wiresModeToggle(), canvasModeToggle()],
       activeTabSettingKey: 'activeTab',
       panelWidthSettingKey: 'editLeftPanelWidth',
       onSelectTab: (id) => appController.setActiveTab(id as 'organize' | 'edit' | 'devices' | 'settings'),

@@ -131,7 +131,10 @@ export class EngineBridge {
     // topmost layer). The chain's actual content is the source's OUTPUT (the
     // injected video frame), so trace that instead.
     const side = t.side === 'input' && deviceIsSource(dev) ? 'output' : t.side;
-    const tp: TracePoint = { id: reg.id, target: { type: 'chain_entry', sketchId: COMPOSITE_ID, colIdx: 0, chainIdx: idx, side } };
+    const tp: TracePoint = { id: reg.id, target: {
+      type: 'chain_entry', sketchId: COMPOSITE_ID, colIdx: 0, chainIdx: idx, side,
+      ...(t.field && side === 'output' ? { field: t.field } : {}),
+    } };
     if (reg.size) tp.size = reg.size;
     return tp;
   }

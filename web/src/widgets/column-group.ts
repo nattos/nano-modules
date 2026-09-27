@@ -1489,6 +1489,12 @@ export class ColumnGroup extends MobxLitElement {
     // anchor so gutter positions can resolve if a user force-writes a tap.
     if (outputs.length === 0) return nothing;
 
+    // The chain entry's own output trace is the stage's PRIMARY texture output
+    // (the one flagged primary, else the first). Every other texture output
+    // names its field, or it would preview the primary's pixels.
+    const textures = outputs.filter(o => o.isTexture);
+    const primaryTex = (textures.find(o => ((o.schemaDef?.io ?? 0) & 4) !== 0) ?? textures[0])?.fieldPath;
+
     return html`
       <div class="trace-card-row" data-card-key="${cardKey}">
         ${outputs.map(o => {
@@ -1500,6 +1506,7 @@ export class ColumnGroup extends MobxLitElement {
                 colIdx: this.colIdx,
                 chainIdx,
                 side: 'output',
+                ...(o.fieldPath !== primaryTex ? { field: o.fieldPath } : {}),
               }
             : null;
           return html`

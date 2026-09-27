@@ -145,7 +145,10 @@ export interface TracePoint {
   target:
     | { type: 'sketch_output'; sketchId: string }
     | { type: 'plugin_output'; pluginKey: string }
-    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: 'input' | 'output' }
+    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: 'input' | 'output';
+        /** A NON-primary texture output of the entry (side 'output' only). Absent
+         *  = the stage's primary output, the texture the chain passes on. */
+        field?: string }
     // A sidechannel bus channel's texture (last-written content, no freshness
     // semantics) — the Instances tab's sidechannel card thumbnails.
     | { type: 'sidechannel'; channel: string };
