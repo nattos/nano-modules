@@ -89,7 +89,9 @@ The **Effects** tab (`views/effect-store/`) is a full-takeover catalog of every 
 thumbnails and hover previews on its OWN engine worker (`preview/preview-engine.ts` — in Remote
 Control the editor's worker renders nothing), from each effect's optional preview scenario
 (`include/preview_scenario.h` → `preview/scenario.ts`); `state/effect-store-controller.ts` owns
-Use / Preview (hot swap) and the breadcrumb from the type editor's Browse….
+Use / Preview (hot swap) and the breadcrumb from the type editor's Browse…. `npm run thumbs`
+(`scripts/bake-thumbs.mjs` → `public/thumb-runner.html`) runs that same bake headless and writes the
+thumbnails plus a flagging contact sheet to disk.
 
 A tab may set `renderRight` to take over the right panel while keeping the left editor mounted —
 that is how the Devices tab and the sidecar canvas both work, and it is what lets wires be dragged

@@ -499,31 +499,61 @@ the registration.
 namespace video_blend {
 void preview(nano::PreviewScenario& s) {
   s.input("motion")                        // the chain input picture → tex_a
+      .param("mode", 3.0f)                  // Screen: show it at its best
       .auxGenerator("b", "edges")           // a second picture...
       .wire("b.output", "$self.tex_b")      // ...into B
       .aux("lfo", "mod.source.lfo")         // a helper effect
       .auxParam("lfo", "rate", 0.25f)
       .wire("lfo.output", "$self.opacity")  // sweeping the crossfade
-      .capture(1.5f);                       // thumbnail time (s)
+      .capture(2.0f);                       // thumbnail time (s)
 }
 }  // namespace video_blend
 
-// registration: build it, then pass the JSON (it's copied during register_()).
-nano::PreviewScenario pv; video_blend::preview(pv);
-nano::EffectBuilder("composite.blend")/* … */.preview(pv.json()).register_();
+// registration: pass the hook; registerEffect runs it and hands on the JSON.
+nano::registerEffect({2, "composite.blend", /* … */, NANO_INSTANCE_LIFECYCLE(video_blend)},
+                     &video_blend::preview);
+// (EffectBuilder: build a PreviewScenario, then .preview(pv.json()).)
 ```
 
-- `$self` is your effect; helpers are placed as sidecar-canvas nodes, so they
-  never replace your chain input. The format is documented in
+- `$self` is your effect; `aux` helpers are placed as sidecar-canvas nodes, so
+  they never replace your chain input. `pre("key", "<effect id>")` instead puts
+  a stage on the image chain AHEAD of you — for something only an upstream
+  stage makes (motion.blur's motion field). A helper whose effect isn't loaded
+  is dropped, wires and all. The format is documented in
   `include/preview_scenario.h`; the web compiler is `web/src/preview/scenario.ts`.
 - Input pictures (`input` / `auxGenerator`) are drawn by the store, keyed by
-  name: `motion` (lots of movement), `gradient` (smooth hue/luma sweeps), `edges`
-  (hard-edged motion graphics), `blobs` (soft, camera-ish). Pick the one that
-  shows off what your effect does; `"none"` for no input.
+  name: `motion` (flat-coloured moving shapes), `gradient` (smooth hue/luma
+  sweeps), `edges` (hard-edged motion graphics), `blobs` (soft, camera-ish).
+  Pick the one that shows off what your effect does; `"none"` for no input.
 - Scenario params override your defaults **for the preview only** — show the
   effect at its most characteristic, not at its (often neutral) defaults.
+  Params take numbers, vectors (`param("color", 1, 0.5, 0.2)`) and strings
+  (`paramStr`). Instances otherwise start exactly like a fresh insert (current
+  version, schema defaults), so an `add` wire sweeps around your value.
+- To sweep a param by a set depth, wire an LFO with `combine` `"add"` and set
+  the LFO's `amplitude` (±amplitude × the field's span).
+- **Modulation effects** are plotted by their primary output over `loop`
+  seconds (`output("field")` picks another). `plot("lfo.output")` draws a
+  helper's output ghosted underneath — show a shaper with the signal it
+  reshapes. Drive trigger inputs from `mod.trigger.beat` with `single_frame` on.
+- **Nothing to picture** (a pass-through utility, a transport controller):
+  `thumbIcon()` — the card shows its category tile and nothing is baked.
 - Thumbnails are cached against the bundle's contents and the scenario, so a
   rebuild re-bakes them; nothing to invalidate by hand.
+
+**See it before you ship it.** `npm run thumbs` (from `web/`, dev server up)
+renders thumbnails exactly as the store bakes them, to disk, with a contact
+sheet (`index.html`) that flags *blank*, *≈ input* (your effect changes nothing
+in its scene) and *flat* (a graph that never moves):
+
+```bash
+npm run thumbs -- --only 'color.hsl,mod.shaper.*'           # what ships now
+npm run thumbs -- --scenario color.hsl=/tmp/hsl.json         # try a scene, no rebuild
+npm run thumbs -- --scenarios /tmp/many.json                 # {id: scenario, …}
+```
+
+Iterate on the JSON, then port it into your `preview` hook. The
+`effect-thumbnails` e2e suite runs the same audit over every in-repo effect.
 
 **Release tags.** `addedIn("1.0.0")` / `changedIn("1.0.0")` (EffectBuilder, or
 `added_in` / `changed_in` on the struct) name the **app release** an effect
