@@ -125,6 +125,19 @@ int bridge_executor_render(BridgeHandle h, const char* key,
     int dirty, const float* macros, int n_macros,
     double bar_phase, double bpm);
 
+// --- Composition instances (the nano_compositor process) ---
+// A composition executor on the shared runtime: the arrangement's engine,
+// driven over the bridge. The editor talks to it with `comp_*` actions (see
+// BarrelRuntime::createComp); the process only creates it and paces it.
+// Returns 1 if created (0: no comp support in this build, or no runtime).
+int  bridge_comp_create(BridgeHandle h, const char* key, int w, int hgt);
+void bridge_comp_destroy(BridgeHandle h, const char* key);
+// Apply queued editor commands and render: one frame of `dt` seconds on the
+// free clock, or the queued comp_step frames on the manual one. `dirty`!=0
+// after an editor patch to this key's state (re-reads preview_requests).
+// Returns the number of frames rendered.
+int  bridge_comp_render(BridgeHandle h, const char* key, double dt, int dirty);
+
 // Function pointer typedefs for dlsym loading
 typedef BridgeHandle (*BridgeInitFn)(void);
 typedef void (*BridgeReleaseFn)(BridgeHandle);

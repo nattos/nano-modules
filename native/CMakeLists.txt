@@ -1448,6 +1448,17 @@ if(NANO_HAS_GPU_BACKEND)
   target_compile_definitions(comp_test_runner PRIVATE
     NANO_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 
+  # The arrangement's composition engine as a process: it drives the shared
+  # runtime's comp instance through libbridge_server's C ABI, exactly as the
+  # FFGL barrel drives its executors — the dylib stays the ONLY image that links
+  # the engine (process-global runtime state). The editor reaches it over the
+  # bridge WebSocket (tools/nano_compositor.cpp has the protocol).
+  if(TARGET comp_host)
+    add_executable(nano_compositor tools/nano_compositor.cpp)
+    target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(nano_compositor PRIVATE bridge_server)
+  endif()
+
   # Structured published-state store + numeric readers (publishedScalar /
   # readTriggers): the per-frame paths that replaced the JSON round-trips.
   add_executable(test_published_state tests/test_published_state.cpp)

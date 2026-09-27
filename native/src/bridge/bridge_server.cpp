@@ -71,7 +71,11 @@ void BridgeServer::init_subsystems() {
   std::string resolume_url = "ws://127.0.0.1:8080/api/v1";
   if (const char* u = getenv("NANO_RESOLUME_URL"); u && *u) resolume_url = u;
   resolume_url_ = resolume_url;
-  resolume_client_->connect(resolume_url);
+  // NANO_NO_RESOLUME=1: a host that never has Resolume beside it (the
+  // arrangement's nano_compositor) doesn't dial it at all — no reconnect loop,
+  // no composition polling.
+  if (const char* n = getenv("NANO_NO_RESOLUME"); !(n && *n == '1'))
+    resolume_client_->connect(resolume_url);
 
   // Phase 2: when the locator detects a dormant copy-paste duplicate, fork it by
   // writing a fresh-uuid config blob to that barrel's `config` param over WS.

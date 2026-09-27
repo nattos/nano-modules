@@ -73,6 +73,28 @@ class BarrelRuntime {
               const float* macros, int n_macros,
               double bar_phase = 0.0, double bpm = 120.0);
 
+  // --- Composition instances (the nano_compositor process) ---
+  //
+  // A composition executor keyed like a barrel (destroy with destroyExecutor),
+  // rendering into a runtime-owned w x h texture. The editor drives it with
+  // actions carrying {"key": ...}, queued and applied on the render thread in
+  // arrival order:
+  //   comp_load_doc {json}            full document replace (string)
+  //   comp_control  {op, ...}         the worker's compControl payload
+  //   comp_op       {op, ...}         the worker's compOp payload
+  //   comp_resize   {width, height}   the render size
+  //   comp_clock    {mode}            "free" (the caller's dt) | "manual"
+  //   comp_step     {frames, dtSec}   manual clock: render N frames of dtSec
+  //   comp_readback {reqId}           raw RGBA of the composite
+  //   comp_visibility {reqId, moduleType, state}
+  // Replies and the per-frame report go out as NBCJ messages (see
+  // barrel_runtime.cpp). Previews and telemetry use the barrel's paths
+  // (preview_requests, plugin_states, modulation_data). False when this build
+  // has no comp host or the runtime isn't usable.
+  bool createComp(const std::string& key, int w, int h);
+  // Apply the queue and render; returns the number of frames rendered.
+  int renderComp(const std::string& key, double dt, bool dirty);
+
  private:
   BarrelRuntime();
   ~BarrelRuntime();

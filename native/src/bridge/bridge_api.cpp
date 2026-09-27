@@ -231,4 +231,19 @@ int bridge_executor_render(BridgeHandle h, const char* key,
       dt, elapsed, dirty != 0, macros, n_macros, bar_phase, bpm) ? 1 : 0;
 }
 
+int bridge_comp_create(BridgeHandle h, const char* key, int w, int hgt) {
+  if (!h || !key) return 0;
+  return bridge::BarrelRuntime::instance().createComp(key, w, hgt) ? 1 : 0;
+}
+
+void bridge_comp_destroy(BridgeHandle h, const char* key) {
+  if (!h || !key) return;
+  bridge::BarrelRuntime::instance().destroyExecutor(key);
+}
+
+int bridge_comp_render(BridgeHandle h, const char* key, double dt, int dirty) {
+  if (!h || !key) return 0;
+  return bridge::BarrelRuntime::instance().renderComp(key, dt, dirty != 0);
+}
+
 } // extern "C"

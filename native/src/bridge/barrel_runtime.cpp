@@ -38,6 +38,9 @@
 #include "sketch/sidechannel_bus.h"
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
+#if NANO_COMP_HOST
+#include "bridge/comp_host.h"
+#endif
 
 // Host frame-state setters live in effect_runtime (host_impls.cpp); forward
 // declare to avoid pulling a heavier header (mirrors nano_barrel_plugin.mm).
@@ -290,6 +293,34 @@ struct BarrelRuntime::Impl {
     // DMX channel byte actually changes, so an idle (but still transmitting at
     // 100 Hz) rig costs one integer compare per frame.
     uint64_t lastArtnetVersion = 0;
+
+#if NANO_COMP_HOST
+    // A COMPOSITION instance (createComp) rather than a barrel sketch. The
+    // comp host owns its executor and may rebuild it (resetInternalExecutor),
+    // so shared code reaches the executor through ex(), never `executor`.
+    std::unique_ptr<CompHost> comp;
+    // The last comp_control `seq` applied — echoed on every report so the
+    // editor's playhead mirror-back can drop reports that predate a seek.
+    double compControlSeq = 0;
+    // "manual": render only on comp_step (tests); "free": one frame per call.
+    bool compManualClock = false;
+    // The chain's (module_type, instance_key) pairs as of the last structure
+    // change — which instances the plugin_states telemetry reads.
+    std::vector<std::pair<std::string, std::string>> compRequired;
+    // Seconds rendered (the preview rate limiter's clock).
+    double compElapsed = 0;
+    // The next report carries every change-gated field (a client asked).
+    bool compResync = true;
+    bool compRequestsRead = false;
+#endif
+
+    /// The executor rendering this entry (a barrel's own, or the comp's).
+    sketch_executor::SketchExecutor* ex() {
+#if NANO_COMP_HOST
+      if (comp) return comp->executor().sketchExecutor();
+#endif
+      return executor.get();
+    }
   };
   std::unordered_map<std::string, PerExecutor> executors;
 
@@ -464,6 +495,14 @@ struct BarrelRuntime::Impl {
       // Every executor derived its schemas, plan and fused kernels from the
       // old types; its instances of them are already gone.
       for (auto& [key, pe] : executors) {
+#if NANO_COMP_HOST
+        if (pe.comp) {
+          // Re-seed the comp catalog, then rebuild its executor from scratch
+          // (it re-wires the capture hooks itself).
+          pe.comp->seedSchemas();
+          pe.comp->executor().resetInternalExecutor();
+        } else
+#endif
         pe.executor->resetModuleSchemas();
         pe.haveLastPluginStates = false;
         pe.hiddenStale = true;
@@ -490,6 +529,86 @@ struct BarrelRuntime::Impl {
         [this](int, const std::string&) {
           reloadRequested.fetch_add(1, std::memory_order_relaxed);
         });
+  }
+
+  // --- Composition instances: the editor's command queue ---------------------
+  //
+  // Action handlers run on the bridge pump under tick_mutex_, and a comp is only
+  // touched on the render thread under render_mu (which then takes tick_mutex_
+  // to publish), so handlers do nothing but QUEUE the parsed message, per key,
+  // in arrival order. renderComp drains it before rendering. Ordering matters:
+  // a document load followed by a seek must apply in that order.
+  std::mutex comp_inbox_mu;
+  std::unordered_map<std::string, std::vector<nlohmann::json>> comp_inbox;
+  bool comp_handlers_installed = false;
+
+  void installCompHandlers() {
+    if (comp_handlers_installed) return;
+    comp_handlers_installed = true;
+    for (const char* action : {"comp_load_doc", "comp_control", "comp_op", "comp_resize",
+                               "comp_clock", "comp_step", "comp_readback",
+                               "comp_visibility"}) {
+      BridgeServer::instance().set_action_handler(action,
+          [this](int, const std::string& msg) {
+            auto j = nlohmann::json::parse(msg, nullptr, false);
+            if (j.is_discarded() || !j.is_object() || !j["key"].is_string()) return;
+            const std::string key = j["key"].get<std::string>();
+            std::lock_guard<std::mutex> lk(comp_inbox_mu);
+            comp_inbox[key].push_back(std::move(j));
+          });
+    }
+  }
+
+  // Preview capture hooks for one entry's executor. They fire DURING execute()
+  // (between chain-entry encodes), so they only record handles; readback
+  // happens after submit(). They capture a stable pointer to the PerExecutor —
+  // unordered_map elements are pointer-stable across rehash, and the executor
+  // (owner of the lambdas) is destroyed before the node is erased.
+  struct CaptureHooks {
+    sketch_executor::SketchExecutor::ChainEntryHook chainEntry;
+    sketch_executor::SketchExecutor::SketchOutputHook output;
+    sketch_executor::SketchExecutor::BarrierPredicate barrier;
+  };
+  static CaptureHooks captureHooksFor(PerExecutor* pep) {
+    CaptureHooks h;
+    h.chainEntry = [pep](int colIdx, int chainIdx, int32_t inputHandle, int32_t outputHandle,
+                         int W, int H) {
+      if (!pep->captures_enabled) return;
+      char buf[64];
+      snprintf(buf, sizeof(buf), "ce:%d/%d/input", colIdx, chainIdx);
+      pep->frame_captures[buf] = {inputHandle, W, H};
+      snprintf(buf, sizeof(buf), "ce:%d/%d/output", colIdx, chainIdx);
+      pep->frame_captures[buf] = {outputHandle, W, H};
+    };
+    h.output = [pep](int32_t handle, int W, int H) {
+      if (!pep->captures_enabled) return;
+      pep->frame_captures["so"] = {handle, W, H};
+    };
+    h.barrier = [pep](int colIdx, int chainIdx) -> bool {
+      if (!pep->captures_enabled) return false;
+      for (const auto& [_, req] : pep->preview_requests) {
+        const std::string& tk = req.targetKey;
+        if (tk.rfind("ce:", 0) != 0) continue;
+        int rcol = -1, rchain = -1;
+        char side[16] = {0};
+        if (std::sscanf(tk.c_str(), "ce:%d/%d/%15s", &rcol, &rchain, side) != 3)
+          continue;
+        if (rcol != colIdx) continue;
+        if (rchain == chainIdx && std::strcmp(side, "output") == 0) return true;
+        if (rchain == chainIdx + 1 && std::strcmp(side, "input") == 0) return true;
+      }
+      return false;
+    };
+    return h;
+  }
+
+  std::vector<nlohmann::json> takeCompInbox(const std::string& key) {
+    std::lock_guard<std::mutex> lk(comp_inbox_mu);
+    auto it = comp_inbox.find(key);
+    if (it == comp_inbox.end()) return {};
+    std::vector<nlohmann::json> out = std::move(it->second);
+    it->second.clear();
+    return out;
   }
 
   /// { module_type: {key,id,version,schema,...metadata} } — BarrelRuntime::schemasJson.
@@ -1227,7 +1346,9 @@ struct BarrelRuntime::Impl {
         int col = -1, chain = -1, n = 0;
         if (std::sscanf(req.targetKey.c_str(), "cef:%d/%d/%n", &col, &chain, &n) < 2 || n <= 0)
           continue;
-        const int32_t h = pe.executor->chainEntryFieldTexture(
+        auto* ex = pe.ex();
+        if (!ex) continue;
+        const int32_t h = ex->chainEntryFieldTexture(
             col, chain, req.targetKey.substr((size_t)n));
         if (h <= 0) continue;
         slot = {h, gpu->getTextureWidth(h), gpu->getTextureHeight(h)};
@@ -1478,43 +1599,11 @@ void BarrelRuntime::createExecutor(const std::string& key) {
     pe.executor->setFusionEnabled(false);
   }
 
-  // Capture hooks. They fire DURING execute() (between chain-entry encodes),
-  // so we only record handles here; readback happens after submit(). They
-  // capture a stable pointer to this PerExecutor — unordered_map elements are
-  // pointer-stable across rehash, and the executor (owner of the lambdas) is
-  // destroyed before the node is erased.
-  Impl::PerExecutor* pep = &pe;
-  pep->executor->setChainEntryHook(
-      [pep](int colIdx, int chainIdx, int32_t inputHandle, int32_t outputHandle,
-            int W, int H) {
-        if (!pep->captures_enabled) return;
-        char buf[64];
-        snprintf(buf, sizeof(buf), "ce:%d/%d/input", colIdx, chainIdx);
-        pep->frame_captures[buf] = {inputHandle, W, H};
-        snprintf(buf, sizeof(buf), "ce:%d/%d/output", colIdx, chainIdx);
-        pep->frame_captures[buf] = {outputHandle, W, H};
-      });
-  pep->executor->setSketchOutputHook(
-      [pep](int32_t handle, int W, int H) {
-        if (!pep->captures_enabled) return;
-        pep->frame_captures["so"] = {handle, W, H};
-      });
-  pep->executor->setBarrierPredicate(
-      [pep](int colIdx, int chainIdx) -> bool {
-        if (!pep->captures_enabled) return false;
-        for (const auto& [_, req] : pep->preview_requests) {
-          const std::string& tk = req.targetKey;
-          if (tk.rfind("ce:", 0) != 0) continue;
-          int rcol = -1, rchain = -1;
-          char side[16] = {0};
-          if (std::sscanf(tk.c_str(), "ce:%d/%d/%15s", &rcol, &rchain, side) != 3)
-            continue;
-          if (rcol != colIdx) continue;
-          if (rchain == chainIdx && std::strcmp(side, "output") == 0) return true;
-          if (rchain == chainIdx + 1 && std::strcmp(side, "input") == 0) return true;
-        }
-        return false;
-      });
+  // Capture hooks: see Impl::captureHooksFor.
+  const auto hooks = Impl::captureHooksFor(&pe);
+  pe.executor->setChainEntryHook(hooks.chainEntry);
+  pe.executor->setSketchOutputHook(hooks.output);
+  pe.executor->setBarrierPredicate(hooks.barrier);
 
   BRT_LOG("executor created key=%s (now %zu)", key.c_str(), impl_->executors.size());
 }
@@ -1541,7 +1630,7 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   std::lock_guard<std::mutex> lk(impl_->render_mu);
   if (!impl_->usable) return false;
   auto it = impl_->executors.find(key);
-  if (it == impl_->executors.end()) return false;
+  if (it == impl_->executors.end() || !it->second.executor) return false;  // (a comp)
   Impl::PerExecutor& pe = it->second;
   // Per-frame pool for the graphics API's temporaries — see scoped_pool.h for
   // why the host's own pool cannot be relied on. Every exit below is a `return`,
@@ -1844,6 +1933,302 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   impl_->gpu->release(outputHandle);
 
   return finalHandle == outputHandle;
+}
+
+#if NANO_COMP_HOST
+namespace {
+
+std::string base64Encode(const uint8_t* p, size_t n) {
+  static const char kAlphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((n + 2) / 3) * 4);
+  size_t i = 0;
+  for (; i + 3 <= n; i += 3) {
+    const uint32_t v = (p[i] << 16) | (p[i + 1] << 8) | p[i + 2];
+    out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+    out.push_back(kAlphabet[(v >> 6) & 0x3F]);
+    out.push_back(kAlphabet[v & 0x3F]);
+  }
+  if (i < n) {
+    uint32_t v = p[i] << 16;
+    if (i + 1 < n) v |= p[i + 1] << 8;
+    out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+    out.push_back(i + 1 < n ? kAlphabet[(v >> 6) & 0x3F] : '=');
+    out.push_back('=');
+  }
+  return out;
+}
+
+// NBCJ — a JSON message about one comp instance, on the MAIN socket (binary,
+// like NBPS, so the editor's text protocol stays the bridge's own):
+//   [0..3] "NBCJ"  [4] u8 version=1  [5..6] u16 keyLen  [7..] key, then JSON
+// `type` says what it is: "comp_report" (every rendered frame), "readback"
+// and "visibility" (replies, matched by reqId).
+void sendCompJson(const std::string& key, const nlohmann::json& j) {
+  const std::string body = j.dump();
+  std::vector<uint8_t> msg;
+  msg.reserve(7 + key.size() + body.size());
+  msg.insert(msg.end(), {'N', 'B', 'C', 'J', 1,
+                         (uint8_t)(key.size() & 0xFF), (uint8_t)(key.size() >> 8)});
+  msg.insert(msg.end(), key.begin(), key.end());
+  msg.insert(msg.end(), body.begin(), body.end());
+  BridgeServer::instance().broadcast_binary(msg.data(), msg.size());
+}
+
+std::vector<double> pointsOf(const nlohmann::json& msg) {
+  std::vector<double> out;
+  if (msg.contains("points") && msg["points"].is_array()) {
+    for (const auto& v : msg["points"]) out.push_back(v.is_number() ? v.get<double>() : 0.0);
+  }
+  return out;
+}
+
+// The worker's compControl vocabulary (executor-host.ts), minus readiness:
+// this host decodes for itself, so `videoReady` / `videoReadyFeed` are moot.
+void applyCompControl(comp::CompExecutor& cx, const nlohmann::json& m) {
+  const std::string op = m.value("op", std::string());
+  if (op == "play") cx.play();
+  else if (op == "pause") cx.pause();
+  else if (op == "seek") cx.seekBeat(m.value("beat", 0.0));
+  else if (op == "loop")
+    cx.setLoop(m.value("enabled", false), m.value("startBeat", 0.0), m.value("endBeat", 0.0));
+  else if (op == "mode") cx.setTransportMode(m.value("precise", false));
+  else if (op == "clipTiming") cx.setClipAutoTiming(m.value("loopMode", false));
+  else if (op == "ignoreSolo") cx.setIgnoreSolo(m.value("on", false));
+}
+
+// The worker's compOp vocabulary (executor-host.ts).
+void applyCompOp(comp::CompExecutor& cx, const nlohmann::json& m) {
+  const std::string op = m.value("op", std::string());
+  const auto str = [&](const char* k) { return m.value(k, std::string()); };
+  if (op == "param") {
+    cx.setDeviceParam(str("ownerId"), str("deviceId"), str("field"),
+                      nlohmann::json::parse(m.value("valueJson", std::string("null")), nullptr, false));
+  } else if (op == "trackLevel") {
+    cx.setTrackLevel(str("trackId"), m.value("level", 1.0));
+  } else if (op == "lanePoints") {
+    const auto pts = pointsOf(m);
+    cx.setLanePoints(str("ownerId"), str("laneId"), pts.data(), (int32_t)(pts.size() / 3));
+  } else if (op == "railBase") {
+    const auto pts = pointsOf(m);
+    cx.setRailBase(str("trackId"), pts.data(), (int32_t)(pts.size() / 3));
+  } else if (op == "sourceTransform") {
+    auto t = nlohmann::json::parse(m.value("valueJson", std::string("{}")), nullptr, false);
+    if (!t.is_discarded()) cx.setSourceTransform(str("ownerId"), t);
+  } else if (op == "launchScene") {
+    cx.launchScene(str("trackId"), str("sceneId"), m.value("cls", 0));
+  } else if (op == "stopScene") {
+    cx.stopScene(str("trackId"));
+  } else if (op == "stopAllScenes") {
+    cx.stopAllScenes();
+  }
+}
+
+}  // namespace
+#endif
+
+bool BarrelRuntime::createComp(const std::string& key, int w, int h) {
+#if NANO_COMP_HOST
+  std::lock_guard<std::mutex> lk(impl_->render_mu);
+  if (!impl_->usable) return false;
+  if (impl_->executors.count(key)) return impl_->executors[key].comp != nullptr;
+  impl_->installCompHandlers();
+  auto [it, inserted] = impl_->executors.try_emplace(key);
+  Impl::PerExecutor& pe = it->second;
+  CompHost::Config cfg;
+  cfg.width = w > 0 ? w : 640;
+  cfg.height = h > 0 ? h : 360;
+  pe.comp = std::make_unique<CompHost>(impl_->gpu.get(), impl_->rt.get(),
+                                       impl_->registry.get(), impl_->bundles.get(), cfg);
+  // The comp retains these across its internal executor rebuilds.
+  const auto hooks = Impl::captureHooksFor(&pe);
+  pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);
+  BRT_LOG("comp created key=%s (%dx%d)", key.c_str(), cfg.width, cfg.height);
+  return true;
+#else
+  (void)key; (void)w; (void)h;
+  return false;
+#endif
+}
+
+int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
+#if NANO_COMP_HOST
+  std::lock_guard<std::mutex> lk(impl_->render_mu);
+  if (!impl_->usable) return 0;
+  auto it = impl_->executors.find(key);
+  if (it == impl_->executors.end() || !it->second.comp) return 0;
+  Impl::PerExecutor& pe = it->second;
+  CompHost& host = *pe.comp;
+  comp::CompExecutor& cx = host.executor();
+  nano_platform::ScopedPool pool;
+  if (const uint64_t want = impl_->reloadRequested.load(std::memory_order_relaxed);
+      want != impl_->reloadServed) {
+    impl_->reloadServed = want;
+    impl_->reloadModules();
+  }
+
+  auto& server = BridgeServer::instance();
+  const std::string base = "/plugins/" + key + "/state";
+  if (dirty || !pe.compRequestsRead) {
+    impl_->refreshPreviewRequests(pe, server.get_at(base + "/preview_requests"));
+    pe.compRequestsRead = true;
+  }
+  impl_->pollSettingsFiles(server);
+  impl_->pollLibraryPaths(server);
+
+  // The editor's commands, in arrival order. Frames to render: one of `dt` on
+  // the free clock, or whatever comp_step asked for on the manual one.
+  std::vector<double> frameDts;
+  std::vector<nlohmann::json> readbacks;
+  for (auto& m : impl_->takeCompInbox(key)) {
+    const std::string action = m.value("action", std::string());
+    if (action == "comp_load_doc") {
+      auto doc = nlohmann::json::parse(m.value("json", std::string("{}")), nullptr, false);
+      if (!doc.is_discarded()) host.loadDocument(doc);
+    } else if (action == "comp_control") {
+      if (m.contains("seq") && m["seq"].is_number()) pe.compControlSeq = m["seq"].get<double>();
+      if (m.value("op", std::string()) == "resync") pe.compResync = true;
+      else applyCompControl(cx, m);
+    } else if (action == "comp_op") {
+      applyCompOp(cx, m);
+    } else if (action == "comp_resize") {
+      host.resize(m.value("width", host.width()), m.value("height", host.height()));
+    } else if (action == "comp_clock") {
+      pe.compManualClock = m.value("mode", std::string("free")) == "manual";
+    } else if (action == "comp_step") {
+      const int n = std::max(0, m.value("frames", 1));
+      const double sdt = m.value("dtSec", 1.0 / 60.0);
+      for (int i = 0; i < n; ++i) frameDts.push_back(sdt);
+    } else if (action == "comp_readback") {
+      readbacks.push_back(std::move(m));
+    } else if (action == "comp_visibility") {
+      // The effect's static evaluator over a candidate state — no instance.
+      nlohmann::json reply = {{"type", "visibility"}, {"reqId", m.value("reqId", 0)},
+                              {"hidden", nullptr}};
+      auto* proto = impl_->rt->find(m.value("moduleType", std::string()));
+      if (proto && proto->hasVisibilityEvaluator()) {
+        std::vector<std::string> hidden;
+        static const nlohmann::json kEmpty = nlohmann::json::object();
+        const nlohmann::json& st = m.contains("state") && m["state"].is_object() ? m["state"] : kEmpty;
+        if (proto->evalVisibility(st, &hidden)) reply["hidden"] = hidden;
+      }
+      sendCompJson(key, reply);
+    }
+  }
+  if (!pe.compManualClock) frameDts.push_back(dt);
+
+  const bool watched = server.key_observed(key);
+  const bool hasClients = server.has_clients();
+  const double pvInterval = previewIntervalSec();
+  int rendered = 0;
+  for (size_t i = 0; i < frameDts.size(); ++i) {
+    const double fdt = frameDts[i];
+    pe.compElapsed += fdt;
+    // Captures only on the call's last frame, rate-limited like the barrel's.
+    pe.captures_enabled = i + 1 == frameDts.size() && watched && !pe.preview_requests.empty() &&
+        (pvInterval <= 0.0 || (pe.compElapsed - pe.lastPreviewElapsed) >= pvInterval - fdt * 0.5);
+    if (pe.captures_enabled) {
+      pe.frame_captures.clear();
+      pe.lastPreviewElapsed = pe.compElapsed;
+    }
+    host.step(fdt);
+    impl_->gpu->submit();
+    ++rendered;
+
+    const uint32_t flags = host.lastFlags();
+    const bool structure = (flags & comp::kCompStructureChanged) != 0 || pe.compResync;
+    if (structure) {
+      // Which instances the telemetry reads: (module_type, instance_key).
+      pe.compRequired.clear();
+      auto req = nlohmann::json::parse(cx.requiredJson(), nullptr, false);
+      if (req.is_array()) {
+        for (const auto& r : req) {
+          if (r.is_object())
+            pe.compRequired.emplace_back(r.value("moduleType", std::string()),
+                                         r.value("instanceKey", std::string()));
+        }
+      }
+    }
+    if (hasClients) {
+      // CompFrameInfo (engine-types.ts); change-gated fields only when changed
+      // (or on a client's resync).
+      nlohmann::json rep = {
+          {"type", "comp_report"},
+          {"hasContent", (flags & comp::kCompHasContent) != 0},
+          {"structureChanged", structure},
+          {"holding", (flags & comp::kCompHoldingPrecise) != 0},
+          {"positionBeat", cx.positionBeat()},
+          {"positionSec", cx.positionSec()},
+          {"controlSeq", pe.compControlSeq},
+      };
+      if (structure) {
+        rep["chainKeys"] = nlohmann::json::parse(host.chainKeysJson(), nullptr, false);
+        rep["layerTargets"] = cx.layerTargetsJson();
+      }
+      if ((flags & comp::kCompVideoSetChanged) || pe.compResync) rep["videoDescs"] = cx.videoDescsJson();
+      if ((flags & comp::kCompScenesChanged) || pe.compResync) {
+        rep["scenes"] = cx.sceneStatesJson();
+        rep["scenesPending"] = cx.pendingScenesJson();
+      }
+      pe.compResync = false;
+      sendCompJson(key, rep);
+    }
+  }
+  impl_->rt->drainConsoleLog();
+
+  if (rendered && watched) {
+    // Each chain instance's published outputs, keyed by its bare instance key
+    // (the arrangement store's pluginStates), and the modulation bands —
+    // deduped exactly like the barrel's channels.
+    nlohmann::json ps = nlohmann::json::object();
+    for (const auto& [mt, ik] : pe.compRequired) {
+      if (mt.empty() || ik.empty()) continue;
+      auto* einst = impl_->rt->findInstance(mt, ik);
+      if (!einst) continue;
+      const std::string pj = einst->publishedStateJson();
+      if (pj.empty()) continue;
+      auto parsed = nlohmann::json::parse(pj, nullptr, false);
+      if (!parsed.is_discarded() && parsed.is_object() && !parsed.empty()) ps[ik] = std::move(parsed);
+    }
+    if (!pe.haveLastPluginStates || ps != pe.lastPluginStates) {
+      const bool firstAndEmpty = !pe.haveLastPluginStates && ps.empty();
+      pe.lastPluginStates = std::move(ps);
+      pe.haveLastPluginStates = true;
+      if (!firstAndEmpty) server.set_at(base + "/plugin_states", pe.lastPluginStates.dump());
+    }
+    if (auto* ex = pe.ex()) {
+      const nlohmann::json& md = ex->lastModulationData();
+      if (!pe.haveLastModulation || md != pe.lastModulation) {
+        const bool firstAndEmpty = !pe.haveLastModulation && md.empty();
+        pe.lastModulation = md;
+        pe.haveLastModulation = true;
+        if (!firstAndEmpty) server.set_at(base + "/modulation_data", md.dump());
+      }
+    }
+  }
+
+  // Raw readbacks of the composite as of the last rendered frame.
+  for (const auto& m : readbacks) {
+    nlohmann::json reply = {{"type", "readback"}, {"reqId", m.value("reqId", 0)},
+                            {"hasContent", (host.lastFlags() & comp::kCompHasContent) != 0},
+                            {"width", host.width()}, {"height", host.height()}};
+    if (reply["hasContent"].get<bool>()) {
+      const auto px = impl_->gpu->readbackTexture(host.outputTexture(), (uint32_t)host.width(),
+                                                  (uint32_t)host.height());
+      reply["pixels"] = base64Encode(px.data(), px.size());
+    }
+    sendCompJson(key, reply);
+  }
+
+  if (pe.captures_enabled) impl_->publishPreviewFrames(key, pe);
+  return rendered;
+#else
+  (void)key; (void)dt; (void)dirty;
+  return 0;
+#endif
 }
 
 }  // namespace bridge
