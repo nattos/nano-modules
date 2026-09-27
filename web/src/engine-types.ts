@@ -18,6 +18,12 @@ export interface EffectInfo {
   icon?: string;
   /** Optional base64 PNG thumbnail (bare or data: URI) for the picker glyph. */
   thumbnail?: string;
+  /** Optional effect-store preview scenario JSON (see preview/scenario.ts). */
+  preview?: string;
+  /** Optional app release the effect first shipped in (effect store). */
+  addedIn?: string;
+  /** Optional app release the effect last changed in (effect store). */
+  changedIn?: string;
 }
 
 // --- Plugin info (read-only snapshot for UI) ---

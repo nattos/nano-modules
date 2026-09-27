@@ -67,6 +67,15 @@ export interface AvailableEffect {
    */
   thumbnail?: string;
   /**
+   * Optional effect-store preview scenario (JSON, built in the effect's wasm
+   * by nano::PreviewScenario). Untrusted — parsed by `preview/scenario.ts`.
+   */
+  preview?: string;
+  /** Optional app release the effect first shipped in (e.g. "1.0.0"). */
+  addedIn?: string;
+  /** Optional app release its behaviour or UI last changed in. */
+  changedIn?: string;
+  /**
    * Effect kind. Defaults to a normal WASM-backed image `'effect'`. Distinct
    * kinds (e.g. `'dashboard'`) are handled specially by the UI — different card
    * rendering, no generic inspector. See column-group's util.dashboard case.

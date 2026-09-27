@@ -71,6 +71,12 @@ export interface EffectInfo {
   icon?: string;
   /** Optional base64 PNG thumbnail (bare or data: URI) for the picker glyph. */
   thumbnail?: string;
+  /** Optional effect-store preview scenario JSON (see preview/scenario.ts). */
+  preview?: string;
+  /** Optional app release the effect first shipped in (effect store). */
+  addedIn?: string;
+  /** Optional app release the effect last changed in (effect store). */
+  changedIn?: string;
   /**
    * @internal Lifecycle callbacks by name → WASM indirect-function-table index,
    * captured from the name-keyed `module.register_effect_*` builder imports.
@@ -1696,6 +1702,11 @@ export class WasmHost {
             // the UI sanitizes/validates it at render (see effect-glyph.ts).
             icon: b.meta.get('icon') || undefined,
             thumbnail: b.meta.get('thumbnail') || undefined,
+            // Effect-store metadata — also untrusted; parsed defensively by
+            // preview/scenario.ts and the store's semver compare.
+            preview: b.meta.get('preview') || undefined,
+            addedIn: b.meta.get('added_in') || undefined,
+            changedIn: b.meta.get('changed_in') || undefined,
             _fns: b.fns,
           });
         },

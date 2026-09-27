@@ -1511,6 +1511,7 @@ async function reloadWasmModule(wasmUrl: string, fromUrl: string = wasmUrl) {
       id: e.id, name: e.name, description: e.description,
       category: e.category, keywords: e.keywords, bundle: moduleType,
       icon: e.icon, thumbnail: e.thumbnail,
+      preview: e.preview, addedIn: e.addedIn, changedIn: e.changedIn,
     })),
   });
   // A different copy may declare different effects or schemas; publish them
@@ -1588,6 +1589,7 @@ async function loadModule(moduleType: string, url?: string) {
         id: e.id, name: e.name, description: e.description,
         category: e.category, keywords: e.keywords, bundle: moduleType,
         icon: e.icon, thumbnail: e.thumbnail,
+      preview: e.preview, addedIn: e.addedIn, changedIn: e.changedIn,
       }))
     });
     return;
@@ -1616,6 +1618,7 @@ async function loadModule(moduleType: string, url?: string) {
         id: e.id, name: e.name, description: e.description,
         category: e.category, keywords: e.keywords, bundle: moduleType,
         icon: e.icon, thumbnail: e.thumbnail,
+      preview: e.preview, addedIn: e.addedIn, changedIn: e.changedIn,
       }))
     });
 

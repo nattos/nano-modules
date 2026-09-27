@@ -664,6 +664,12 @@ target_include_directories(test_tap_mod PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_tap_mod PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_tap_mod)
 
+# nano::PreviewScenario — effect-store preview scenario JSON builder.
+add_executable(test_preview_scenario tests/test_preview_scenario.cpp)
+target_include_directories(test_preview_scenario PRIVATE ${CMAKE_SOURCE_DIR}/wasm_modules/include)
+target_link_libraries(test_preview_scenario PRIVATE Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
+catch_discover_tests(test_preview_scenario)
+
 # fx::SkipJog — shared C2 "skip empty" engagement ramp (effect_utils.h).
 add_executable(test_skip_jog tests/test_skip_jog.cpp)
 target_include_directories(test_skip_jog PRIVATE ${CMAKE_SOURCE_DIR}/wasm_modules/include)

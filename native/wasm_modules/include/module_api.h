@@ -249,6 +249,21 @@ struct EffectDesc_v2 {
     // Crosses the boundary as an ordinary name-keyed metadata string, so it needs
     // no ABI version bump (absent name == not provided).
     const char* thumbnail;
+
+    // Optional effect-store metadata (web frontends only; native ignores them).
+    // Also tail fields, also plain name-keyed strings — no ABI bump.
+    //   preview    — the effect's PREVIEW SCENARIO: JSON describing the little
+    //                sketch the effect store renders for this effect's
+    //                thumbnail and hover preview (input generator, helper
+    //                effects, wires, capture time). Build it with
+    //                nano::PreviewScenario (preview_scenario.h), which documents
+    //                the format. Omitted → the store's default scenario.
+    //   added_in   — the app release this effect first shipped in ("1.0.0").
+    //   changed_in — the app release in which its behaviour or UI last
+    //                changed. Drives the store's "Updated & New" collection.
+    const char* preview;
+    const char* added_in;
+    const char* changed_in;
 };
 
 /// Register an effect with the host. On WASM this emits the name-keyed builder
@@ -273,6 +288,9 @@ inline void registerEffect(const EffectDesc_v2& d) {
     str("keywords", d.keywords);
     str("icon", d.icon);            // optional web picker glyph (Line Awesome class)
     str("thumbnail", d.thumbnail);  // optional web picker glyph (base64 PNG)
+    str("preview", d.preview);        // optional effect-store preview scenario
+    str("added_in", d.added_in);      // optional effect-store version tags
+    str("changed_in", d.changed_in);
     fn("module_init",      reinterpret_cast<void*>(d.module_init));
     fn("create",           reinterpret_cast<void*>(d.create));
     fn("destroy",          reinterpret_cast<void*>(d.destroy));
@@ -314,6 +332,12 @@ public:
     // OR a `thumbnail` (base64 PNG). The picker prefers the thumbnail.
     EffectBuilder& icon(const char* v)         { d_.icon = v; return *this; }
     EffectBuilder& thumbnail(const char* v)    { d_.thumbnail = v; return *this; }
+    // Optional effect-store metadata — see the EffectDesc_v2 tail fields.
+    // `preview` takes a scenario JSON (nano::PreviewScenario(...).json()); the
+    // string must outlive register_() (a static or a literal).
+    EffectBuilder& preview(const char* v)      { d_.preview = v; return *this; }
+    EffectBuilder& addedIn(const char* v)      { d_.added_in = v; return *this; }
+    EffectBuilder& changedIn(const char* v)    { d_.changed_in = v; return *this; }
 
     EffectBuilder& moduleInit(void (*f)())             { d_.module_init = f; return *this; }
     EffectBuilder& create(void* (*f)())                { d_.create = f; return *this; }

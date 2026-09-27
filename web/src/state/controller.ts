@@ -1868,7 +1868,7 @@ export class AppController {
         }
       }
       for (const e of effects) {
-        const entry = { id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords, bundle: e.bundle, icon: e.icon, thumbnail: e.thumbnail };
+        const entry = { id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords, bundle: e.bundle, icon: e.icon, thumbnail: e.thumbnail, preview: e.preview, addedIn: e.addedIn, changedIn: e.changedIn };
         const at = existing.findIndex(x => x.id === e.id);
         if (at < 0) existing.push(entry);
         else if (bundle && existing[at].bundle === bundle) Object.assign(existing[at], entry);
