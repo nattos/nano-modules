@@ -76,6 +76,27 @@ describe('store model', () => {
     ]);
   });
 
+  it('sorts within groups, and flattens with no collection', () => {
+    const flat = (over: Partial<EffectStoreSettings>) => shape(groupEffects(ALL, view({ collection: 'none', ...over }), kindOf, reactions, []));
+    const reactions = { 'source.noise': ['🔥', '⭐'], 'color.tone.levels': ['⭐'] };
+    expect(flat({})).toEqual([['All effects', ['color.tone.brightness_contrast', 'color.tone.levels', 'mod.source.lfo', 'source.noise']]]);
+    expect(flat({ sort: 'newest' })).toEqual([['All effects', ['color.tone.brightness_contrast', 'color.tone.levels', 'mod.source.lfo', 'source.noise']]]);
+    expect(flat({ sort: 'reacted' })).toEqual([['All effects', ['source.noise', 'color.tone.levels', 'color.tone.brightness_contrast', 'mod.source.lfo']]]);
+    // Within a category group too.
+    expect(shape(groupEffects(ALL, view({ sort: 'newest', query: 'color.' }), kindOf, {}, []))).toEqual([
+      ['Color', ['color.tone.brightness_contrast', 'color.tone.levels']],
+    ]);
+  });
+
+  it('keeps search relevance under Relevance, re-sorts results otherwise', () => {
+    const q = (sort: EffectStoreSettings['sort']) =>
+      shape(groupEffects(ALL, view({ query: 'l', sort }), kindOf, {}, []))[0]?.[1] as string[];
+    const relevance = q('relevance');
+    expect(relevance.length).toBeGreaterThan(1);
+    expect(q('name')).toEqual([...relevance].sort((a, b) =>
+      ALL.find((e) => e.id === a)!.name.localeCompare(ALL.find((e) => e.id === b)!.name)));
+  });
+
   it('keeps the recent-emoji list deduped, newest first, capped at 6', () => {
     expect(pushRecentEmoji(['a', 'b', 'c'], 'b')).toEqual(['b', 'a', 'c']);
     expect(pushRecentEmoji(['1', '2', '3', '4', '5', '6'], '7')).toEqual(['7', '1', '2', '3', '4', '5']);

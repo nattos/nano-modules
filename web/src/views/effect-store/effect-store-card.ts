@@ -3,8 +3,10 @@
  *
  * Shows the effect's cached thumbnail (baked on the preview engine the first
  * time the card scrolls into view), swaps it for the effect running LIVE while
- * the pointer rests on the card, and carries the Use / Preview actions and the
- * reaction bar. Double-click is Use.
+ * the pointer rests on the card, and carries the Use / Preview actions. Hovering
+ * also shows a floating "add reaction" button (the chat-app pattern) that opens
+ * the emoji popup; reactions already given show as chips under the title, and
+ * take no room until there is one. Double-click is Use.
  */
 
 import { html, css, nothing } from 'lit';
@@ -21,6 +23,10 @@ import { effectStore } from '../../state/effect-store-controller';
 import { categoryColor, effectDomain } from '../../widgets/category-color';
 import { bundleLabel } from '../../effect-bundles';
 import { pushRecentEmoji, toggleReaction, versionBadge } from './store-model';
+
+/** The emoji popup's footprint, for placing it inside the viewport. */
+const PICKER_W = 320;
+const PICKER_H = 380;
 import '../../widgets/ui-icon';
 import '../../widgets/emoji-picker';
 
@@ -44,6 +50,7 @@ export class EffectStoreCard extends MobxLitElement {
   static styles = css`
     :host { display: block; min-width: 0; }
     .card {
+      position: relative;
       display: flex;
       flex-direction: column;
       height: 100%;
@@ -94,8 +101,8 @@ export class EffectStoreCard extends MobxLitElement {
     .badge.updated { background: #8a6d1d; }
     .live-dot {
       position: absolute;
-      top: 7px;
-      right: 7px;
+      bottom: 9px;
+      left: 8px;
       width: 7px;
       height: 7px;
       border-radius: 50%;
@@ -156,14 +163,11 @@ export class EffectStoreCard extends MobxLitElement {
     }
     :host([size='s']) .desc { display: none; }
     .reactions {
-      position: relative;
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
       gap: 3px;
-      padding: 4px 8px 8px;
+      padding: 0 8px 8px;
       margin-top: auto;
-      min-height: 22px;
     }
     .reaction {
       display: inline-flex;
@@ -171,16 +175,35 @@ export class EffectStoreCard extends MobxLitElement {
       padding: 0 5px;
       height: 20px;
       border-radius: 10px;
-      border: 1px solid var(--app-tint-4);
-      background: var(--app-tint-2);
+      border: 1px solid var(--app-hi-color2, #4169e1);
+      background: rgba(65, 105, 225, 0.2);
       font-size: 12px;
       cursor: pointer;
     }
-    .reaction.on { border-color: var(--app-hi-color2, #4169e1); background: rgba(65, 105, 225, 0.2); }
-    .reaction.offer { opacity: 0; border-style: dashed; background: transparent; transition: opacity 0.12s; }
-    .card:hover .reaction.offer { opacity: 0.8; }
-    .reaction.offer:hover { opacity: 1; }
-    .reaction.plus { font-size: 13px; color: var(--app-text-color2); }
+    .reaction:hover { background: rgba(65, 105, 225, 0.35); }
+    .react-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(12, 13, 16, 0.82);
+      color: var(--app-text-color1);
+      --icon-size: 17px;
+      cursor: pointer;
+      opacity: 0;
+      transform: scale(0.85);
+      transition: opacity 0.12s, transform 0.12s;
+    }
+    .card:hover .react-btn, .react-btn[open] { opacity: 1; transform: none; }
+    .react-btn:hover, .react-btn[open] { background: var(--app-hi-color2, #4169e1); border-color: transparent; }
     emoji-picker { position: fixed; z-index: 1000; }
   `;
 
@@ -248,12 +271,14 @@ export class EffectStoreCard extends MobxLitElement {
     });
   }
 
+  /** Open the popup under the button (right edges aligned), or above it when
+   *  there is no room below. */
   private togglePicker = (ev: MouseEvent) => {
+    ev.stopPropagation();
     if (this.pickerAt) { this.pickerAt = null; return; }
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-    const W = 320, H = 340;
-    const left = Math.max(8, Math.min(r.left, innerWidth - W - 8));
-    const top = r.top - H - 6 >= 8 ? r.top - H - 6 : Math.min(r.bottom + 6, innerHeight - H - 8);
+    const left = Math.max(8, Math.min(r.right - PICKER_W, innerWidth - PICKER_W - 8));
+    const top = r.bottom + 6 + PICKER_H <= innerHeight - 8 ? r.bottom + 6 : Math.max(8, r.top - PICKER_H - 6);
     this.pickerAt = { left, top };
   };
 
@@ -276,7 +301,6 @@ export class EffectStoreCard extends MobxLitElement {
     const badge = versionBadge(e);
     const domain = effectDomain(e.id);
     const mine = appState.local.userSettings.effectReactions[e.id] ?? [];
-    const recent = appState.local.userSettings.recentEmoji.filter((x) => !mine.includes(x));
     const useLabel = target?.kind === 'retype' ? 'Use here' : 'Insert';
     const placeHint = canPlace ? '' : ' — open a sketch in Edit first';
     return html`
@@ -302,14 +326,20 @@ export class EffectStoreCard extends MobxLitElement {
           <div class="sub">${e.id}${e.bundle ? html` · ${bundleLabel(e.bundle)}` : nothing}</div>
           ${e.description ? html`<div class="desc">${e.description}</div>` : nothing}
         </div>
-        <div class="reactions">
-          ${mine.map((x) => html`<span class="reaction on" title="Remove reaction" @click=${() => this.react(x)}>${x}</span>`)}
-          ${recent.map((x) => html`<span class="reaction offer" title="React" @click=${() => this.react(x)}>${x}</span>`)}
-          <span class="reaction offer plus" title="More emoji" @click=${this.togglePicker}>+</span>
-          ${this.pickerAt ? html`<emoji-picker style="left:${this.pickerAt.left}px;top:${this.pickerAt.top}px"
-              @pick=${(ev: CustomEvent<string>) => { this.pickerAt = null; if (!mine.includes(ev.detail)) this.react(ev.detail); }}
-              @close=${() => { this.pickerAt = null; }}></emoji-picker>` : nothing}
-        </div>
+        ${mine.length ? html`
+          <div class="reactions">
+            ${mine.map((x) => html`<span class="reaction" title="Remove reaction" @click=${() => this.react(x)}>${x}</span>`)}
+          </div>` : nothing}
+        <button class="react-btn" title="Add reaction" ?open=${!!this.pickerAt}
+          @click=${this.togglePicker} @dblclick=${(ev: Event) => ev.stopPropagation()}>
+          <ui-icon icon="la-smile"></ui-icon>
+        </button>
+        ${this.pickerAt ? html`<emoji-picker style="left:${this.pickerAt.left}px;top:${this.pickerAt.top}px"
+            .quick=${appState.local.userSettings.recentEmoji} .selected=${mine}
+            .anchor=${this.renderRoot.querySelector('.react-btn')}
+            @dblclick=${(ev: Event) => ev.stopPropagation()}
+            @pick=${(ev: CustomEvent<string>) => { this.pickerAt = null; this.react(ev.detail); }}
+            @close=${() => { this.pickerAt = null; }}></emoji-picker>` : nothing}
       </div>
     `;
   }

@@ -93,16 +93,23 @@ describe('Effects store', () => {
     expect(comp.length).toBeGreaterThan(0);
     expect(comp.every((id) => id.startsWith('composite.'))).toBe(true);
 
-    // Pick a collection through the UI; it survives a reload.
-    const clicked = await page.evaluate(`(() => { ${WALK}
-      for (const el of walk(document)) if (el.tagName === 'BUTTON' && el.textContent.trim() === 'By Bundle') { el.click(); return true; }
+    // Pick a collection and a sort through the UI (both live under Settings &
+    // filters); they survive a reload.
+    const clickButton = (text: string) => page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) if (el.tagName === 'BUTTON' && el.textContent.trim() === ${JSON.stringify(text)}) { el.click(); return true; }
       return false; })()`);
-    expect(clicked).toBe(true);
+    expect(await clickButton('Bundle')).toBe(false); // collapsed
+    expect(await clickButton('Settings & filters')).toBe(true);
+    await sleep(100);
+    expect(await clickButton('Bundle')).toBe(true);
+    await sleep(100);
+    expect(await clickButton('Newest')).toBe(true);
     await sleep(800); // debounced settings save
     await boot();
     const after = await page.evaluate(`JSON.parse(JSON.stringify({ tab: window.appState.local.activeTab, view: window.appState.local.userSettings.effectStore }))`) as any;
     expect(after.tab).toBe('store');
     expect(after.view.collection).toBe('bundle');
+    expect(after.view.sort).toBe('newest');
     expect(after.view.query).toBe('composite.');
   });
 
@@ -180,14 +187,26 @@ describe('Effects store', () => {
     await resetStore();
     await openStore();
     await setQuery('color.tone.brightness');
-    const reacted = await page.evaluate(`(() => { ${WALK}
-      for (const el of walk(document)) if (el.tagName === 'EFFECT-STORE-CARD' && el.effect.id === 'color.tone.brightness_contrast') {
-        const offer = el.shadowRoot.querySelector('.reaction.offer:not(.plus)');
-        offer.click();
-        return offer.textContent;
-      }
-      return null; })()`) as string;
+    const card = `(() => { ${WALK}
+      for (const el of walk(document)) if (el.tagName === 'EFFECT-STORE-CARD' && el.effect.id === 'color.tone.brightness_contrast') return el;
+      return null; })()`;
+    // No reactions yet: the card spends no room on them.
+    expect(await page.evaluate(`!!${card}.shadowRoot.querySelector('.reactions')`)).toBe(false);
+    // The floating button opens the popup; its quick row reacts in one click.
+    await page.evaluate(`${card}.shadowRoot.querySelector('.react-btn').click()`);
+    await sleep(100);
+    const reacted = await page.evaluate(`(() => {
+      const picker = ${card}.shadowRoot.querySelector('emoji-picker');
+      const b = picker && picker.shadowRoot.querySelector('.quick button');
+      if (!b) return null;
+      b.click();
+      return b.textContent.trim();
+    })()`) as string;
     expect(reacted).toBeTruthy();
+    await sleep(100);
+    const after = await page.evaluate(`(() => { const r = ${card}.shadowRoot;
+      return { picker: !!r.querySelector('emoji-picker'), chips: [...r.querySelectorAll('.reactions .reaction')].map((c) => c.textContent.trim()) }; })()`) as any;
+    expect(after).toEqual({ picker: false, chips: [reacted] });
     await sleep(800);
     await boot();
     const s = await page.evaluate(`JSON.parse(JSON.stringify(window.appState.local.userSettings))`) as any;

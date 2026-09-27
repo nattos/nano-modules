@@ -4,8 +4,8 @@
  * Takes over both panels (a `full-takeover` tab). The top bar holds the query
  * (the type picker's search rules — state/effect-search.ts) and an expandable
  * "Settings & filters" area of segmented buttons: the collection (group by
- * category, bundle, release or reaction), which kinds show, card size, and
- * whether debug effects show. All of it is sticky (UserSettings.effectStore).
+ * category, bundle, release or reaction, or not at all), the sort within each
+ * group, which kinds show, card size, and whether debug effects show. All of it is sticky (UserSettings.effectStore).
  *
  * The catalog comes from the store's own preview engine (preview/), which
  * loads the same bundles the surface does and renders every thumbnail. In
@@ -34,10 +34,17 @@ import '../../widgets/ui-icon';
 interface SegOption<V> { value: V; label: string }
 
 const COLLECTIONS: SegOption<EffectStoreSettings['collection']>[] = [
-  { value: 'category', label: 'By Category' },
-  { value: 'bundle', label: 'By Bundle' },
+  { value: 'none', label: 'None' },
+  { value: 'category', label: 'Category' },
+  { value: 'bundle', label: 'Bundle' },
   { value: 'updated', label: 'Updated & New' },
   { value: 'favs', label: 'Favs' },
+];
+const SORTS: SegOption<EffectStoreSettings['sort']>[] = [
+  { value: 'relevance', label: 'Relevance' },
+  { value: 'name', label: 'A–Z' },
+  { value: 'newest', label: 'Newest' },
+  { value: 'reacted', label: 'Most reacted' },
 ];
 const SHOWS: SegOption<EffectStoreSettings['show']>[] = [
   { value: 'all', label: 'All' },
@@ -129,7 +136,7 @@ export class EffectStore extends MobxLitElement {
     .toolbar button[open] { background: var(--app-tint-3); }
     .filters {
       display: grid;
-      grid-template-columns: max-content minmax(0, 520px);
+      grid-template-columns: max-content minmax(0, 600px);
       align-items: center;
       gap: 8px 14px;
       padding: 4px 14px 12px;
@@ -165,8 +172,6 @@ export class EffectStore extends MobxLitElement {
       background: var(--app-tint-3);
       box-shadow: inset 0 -2px 0 var(--app-hi-color2, #4169e1);
     }
-    .collections { padding: 0 14px 10px; }
-    .collections .seg { max-width: 560px; }
     .scroll {
       flex: 1;
       min-height: 0;
@@ -292,9 +297,10 @@ export class EffectStore extends MobxLitElement {
         ${!effectStore.target.get() && preview ? html`
           <button @click=${() => effectStore.cancelPreview()} title="Remove the previewed effect">Revert preview</button>` : nothing}
       </div>
-      <div class="collections">${this.seg(COLLECTIONS, s.collection, (v) => this.set({ collection: v }))}</div>
       ${s.filtersOpen ? html`
         <div class="filters">
+          <span class="label">Group by</span>${this.seg(COLLECTIONS, s.collection, (v) => this.set({ collection: v }))}
+          <span class="label">Sort</span>${this.seg(SORTS, s.sort, (v) => this.set({ sort: v }))}
           <span class="label">Show</span>${this.seg(SHOWS, s.show, (v) => this.set({ show: v }))}
           <span class="label">Card size</span>${this.seg(SIZES, s.size, (v) => this.set({ size: v }))}
           <span class="label">Debug effects</span>${this.seg(DEBUG, s.showDebug, (v) => this.set({ showDebug: v }))}

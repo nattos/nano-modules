@@ -51,7 +51,7 @@ export function defaultUserSettings(): UserSettings {
 export const DEFAULT_RECENT_EMOJI = ['⭐', '❤️', '🔥', '✨', '🎛️', '🧪'];
 
 export function defaultEffectStoreSettings(): EffectStoreSettings {
-  return { collection: 'category', show: 'all', size: 'm', showDebug: false, filtersOpen: false, query: '' };
+  return { collection: 'category', sort: 'relevance', show: 'all', size: 'm', showDebug: false, filtersOpen: false, query: '' };
 }
 
 const SETTINGS_KEY = 'settings';

@@ -6,11 +6,15 @@
  * a segmented bar (one per emoji group, labelled by a representative emoji);
  * typing searches every group by name and tag instead.
  *
+ * `quick` puts a row of one-click picks above the search (the effect store
+ * passes the recently used reactions); any emoji in `selected` shows as on,
+ * and picking it again is how the host toggles it off.
+ *
  * Fires `pick` ({detail: emoji}) and `close`. The host positions it.
  */
 
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, state, query } from 'lit/decorators.js';
+import { customElement, property, state, query } from 'lit/decorators.js';
 
 interface EmojiEntry { unicode: string; label: string; group?: number; order?: number; tags?: string[] }
 interface EmojiGroup { id: number; icon: string; name: string; emoji: EmojiEntry[] }
@@ -46,6 +50,11 @@ export function loadEmojiGroups(): Promise<EmojiGroup[]> {
 
 @customElement('emoji-picker')
 export class EmojiPicker extends LitElement {
+  @property({ attribute: false }) quick: readonly string[] = [];
+  @property({ attribute: false }) selected: readonly string[] = [];
+  /** The button that opened the picker: pressing it is not an "outside" press,
+   *  so the host's own toggle can close it. */
+  @property({ attribute: false }) anchor: Element | null = null;
   @state() private groups: EmojiGroup[] | null = null;
   @state() private groupId = 0;
   @state() private search = '';
@@ -56,7 +65,7 @@ export class EmojiPicker extends LitElement {
       display: flex;
       flex-direction: column;
       width: 320px;
-      max-height: 340px;
+      max-height: 380px;
       background: var(--app-bg-color2, #1d1f24);
       border: 1px solid var(--app-tint-4);
       border-radius: 6px;
@@ -65,7 +74,25 @@ export class EmojiPicker extends LitElement {
       font-size: var(--app-fs-sm);
       color: var(--app-text-color1);
     }
-    input, .tabs { flex-shrink: 0; }
+    input, .tabs, .quick { flex-shrink: 0; }
+    .quick {
+      display: flex;
+      gap: 2px;
+      padding: 6px 6px 0;
+    }
+    .quick button {
+      flex: 1 1 0;
+      min-width: 0;
+      height: 34px;
+      font-size: 20px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      padding: 0;
+    }
+    .quick button:hover { background: var(--app-tint-3); }
+    .quick button[on] { border-color: var(--app-hi-color2, #4169e1); background: rgba(65, 105, 225, 0.2); }
     input {
       margin: 8px;
       padding: 5px 8px;
@@ -114,6 +141,7 @@ export class EmojiPicker extends LitElement {
       padding: 0;
     }
     .grid button:hover { background: var(--app-tint-3); }
+    .grid button[on] { background: rgba(65, 105, 225, 0.25); }
     .empty, .loading { grid-column: 1 / -1; padding: 16px; color: var(--app-text-color2); text-align: center; }
   `;
 
@@ -138,7 +166,8 @@ export class EmojiPicker extends LitElement {
   }
 
   private onOutside = (e: PointerEvent) => {
-    if (!e.composedPath().includes(this)) this.dispatchEvent(new CustomEvent('close'));
+    const path = e.composedPath();
+    if (!path.includes(this) && !(this.anchor && path.includes(this.anchor))) this.dispatchEvent(new CustomEvent('close'));
   };
 
   private onKey = (e: KeyboardEvent) => {
@@ -168,7 +197,13 @@ export class EmojiPicker extends LitElement {
 
   render() {
     const list = this.visible();
+    const on = (e: string) => this.selected.includes(e);
     return html`
+      ${this.quick.length ? html`
+        <div class="quick">
+          ${this.quick.map((e) => html`<button ?on=${on(e)} title=${on(e) ? 'Remove reaction' : 'React'}
+            @click=${() => this.pick(e)}>${e}</button>`)}
+        </div>` : nothing}
       <input
         placeholder="Search emoji"
         .value=${this.search}
@@ -185,7 +220,7 @@ export class EmojiPicker extends LitElement {
           ? html`<div class="loading">Loading…</div>`
           : list.length === 0
             ? html`<div class="empty">No emoji match</div>`
-            : list.map((e) => html`<button title=${e.label} @click=${() => this.pick(e.unicode)}>${e.unicode}</button>`)}
+            : list.map((e) => html`<button title=${e.label} ?on=${on(e.unicode)} @click=${() => this.pick(e.unicode)}>${e.unicode}</button>`)}
       </div>
     `;
   }

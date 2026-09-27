@@ -3,7 +3,7 @@
  * recent-emoji list. No DOM, no MobX — unit-tested in store-model.test.ts.
  */
 
-import type { AvailableEffect, EffectStoreSettings } from '../../state/types';
+import type { AvailableEffect, EffectStoreSettings, EffectStoreSort } from '../../state/types';
 import type { PreviewKind } from '../../preview/scenario';
 import { CATEGORY_DOMAINS, effectDomain } from '../../widgets/category-color';
 import { bundleLabel } from '../../effect-bundles';
@@ -53,10 +53,28 @@ export function toggleReaction(reactions: readonly string[] | undefined, emoji: 
 
 const byName = <T extends AvailableEffect>(a: T, b: T) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 
+/** The order cards take within a group. Null for 'relevance', which keeps the
+ *  order they arrive in (a search's ranking, else A–Z — see groupEffects). */
+export function effectComparator<T extends AvailableEffect>(
+  sort: EffectStoreSort,
+  reactions: Record<string, string[]>,
+): ((a: T, b: T) => number) | null {
+  switch (sort) {
+    case 'relevance': return null;
+    case 'name': return byName;
+    // Newest release first; untagged last. Ties: newest first-shipped, then A–Z.
+    case 'newest': return (a, b) =>
+      compareVersions(b.changedIn, a.changedIn) || compareVersions(b.addedIn, a.addedIn) || byName(a, b);
+    case 'reacted': return (a, b) =>
+      (reactions[b.id]?.length ?? 0) - (reactions[a.id]?.length ?? 0) || byName(a, b);
+  }
+}
+
 /**
  * Filter + group the catalog for display. A query that RANKS (a plain search)
- * returns one "Results" group in relevance order; a path query or no query
- * keeps the collection's grouping.
+ * returns one "Results" group — in relevance order unless another sort is
+ * picked; a path query or no query keeps the collection's grouping, each
+ * group ordered by the sort.
  */
 export function groupEffects<T extends AvailableEffect>(
   effects: readonly T[],
@@ -67,9 +85,11 @@ export function groupEffects<T extends AvailableEffect>(
 ): StoreGroup<T>[] {
   let list = effects.filter((e) => settings.showDebug || !isDebugEffect(e));
   if (settings.show !== 'all') list = list.filter((e) => kindOf(e.id) === settings.show);
+  const compare = effectComparator<T>(settings.sort ?? 'relevance', reactions);
   const found = storeSearch(list, settings.query);
   if (found.ranked) {
-    return found.effects.length ? [{ id: 'results', label: 'Results', effects: found.effects }] : [];
+    const results = compare ? [...found.effects].sort(compare) : found.effects;
+    return results.length ? [{ id: 'results', label: 'Results', effects: results }] : [];
   }
   list = found.effects;
 
@@ -82,6 +102,11 @@ export function groupEffects<T extends AvailableEffect>(
   let order: string[] = [];
 
   switch (settings.collection) {
+    case 'none': {
+      for (const e of list) add('all', 'All effects', e);
+      order = ['all'];
+      break;
+    }
     case 'category': {
       for (const e of list) {
         const d = effectDomain(e.id);
@@ -120,9 +145,9 @@ export function groupEffects<T extends AvailableEffect>(
       break;
     }
   }
-  return order.map((id) => {
+  return order.filter((id) => groups.has(id)).map((id) => {
     const g = groups.get(id)!;
-    g.effects.sort(byName);
+    g.effects.sort(compare ?? byName);
     return g;
   });
 }

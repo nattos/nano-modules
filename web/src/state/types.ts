@@ -172,13 +172,17 @@ export interface DatabaseState {
 // --- User settings (persisted to IndexedDB, never in undo history) ---
 
 /** How the Effects tab groups its cards. */
-export type EffectStoreCollection = 'category' | 'bundle' | 'updated' | 'favs';
+export type EffectStoreCollection = 'none' | 'category' | 'bundle' | 'updated' | 'favs';
+/** How the Effects tab orders cards within each group. 'relevance' keeps a
+ *  search's match order (and is A–Z when there is no search). */
+export type EffectStoreSort = 'relevance' | 'name' | 'newest' | 'reacted';
 /** Which kinds of effect the Effects tab lists. */
 export type EffectStoreShow = 'all' | 'image' | 'generator' | 'modulation';
 
 /** The Effects (store) tab's sticky view settings. */
 export interface EffectStoreSettings {
   collection: EffectStoreCollection;
+  sort: EffectStoreSort;
   show: EffectStoreShow;
   size: 's' | 'm' | 'l';
   /** List debug.* / test-only effects too. */
