@@ -27,6 +27,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 
 #include <cstdio>
@@ -103,3 +104,13 @@ void render(void* self, int w, int h) {
 // Registration is centralized in the core bundle's nano_module_main
 // (core/main.cpp). Like every other core effect, this file defines only the
 // namespace.
+
+namespace dashboard {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace dashboard

@@ -19,6 +19,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <sketch/delay_line.h>
 
@@ -115,3 +116,17 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_delay
+
+namespace mod_delay {
+
+// Effect store preview: a square wave (ghosted) and its delayed copy.
+void preview(nano::PreviewScenario& s) {
+  s.param("delay", 0.3f)
+      .aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .auxParam("a", "waveform", 1.0f)
+      .wire("a.output", "$self.input")
+      .plot("a.output");
+}
+
+}  // namespace mod_delay

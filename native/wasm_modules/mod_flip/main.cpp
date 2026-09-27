@@ -27,6 +27,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <cmath>
 
@@ -167,3 +168,18 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_flip
+
+namespace mod_flip {
+
+// Effect store preview: a sine (ghosted), flipped on every beat.
+void preview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .aux("t", "mod.trigger.beat")
+      .auxParam("t", "single_frame", 1.0f)
+      .wire("a.output", "$self.input")
+      .wire("t.output", "$self.trigger")
+      .plot("a.output");
+}
+
+}  // namespace mod_flip

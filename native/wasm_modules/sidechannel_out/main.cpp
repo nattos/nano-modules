@@ -22,6 +22,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 
 namespace sidechannel_out {
@@ -135,3 +136,13 @@ void render(void* self, int w, int h) {
 
 // Registration is centralized in the core bundle's nano_module_main
 // (core/main.cpp); this file defines only the namespace.
+
+namespace sidechannel_out {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace sidechannel_out

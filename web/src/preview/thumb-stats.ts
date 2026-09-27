@@ -56,8 +56,10 @@ export function meanAbsDiff(a: ArrayLike<number>, b: ArrayLike<number>): number 
   return sum / count;
 }
 
-export function graphStats(values: readonly number[], min: number, max: number): GraphStats {
-  const pts = values.filter((v) => Number.isFinite(v));
+/** Samples may be numbers or vectors (a colour output): a vector's
+ *  components all count toward the range. */
+export function graphStats(values: ReadonlyArray<number | readonly number[]>, min: number, max: number): GraphStats {
+  const pts = values.flatMap((v) => (Array.isArray(v) ? v : [v])).filter((v) => Number.isFinite(v));
   if (pts.length < 2) return { finite: pts.length, range: 0 };
   const span = max - min || 1;
   return { finite: pts.length, range: (Math.max(...pts) - Math.min(...pts)) / span };

@@ -21,6 +21,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 
 namespace color_const {
 
@@ -59,6 +60,15 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   // The swatch lives in instance state and is read from there by the write tap;
   // nothing to mirror here.
   (void)self; (void)n; (void)pb; (void)off; (void)len; (void)ops;
+}
+
+}  // namespace color_const
+
+namespace color_const {
+
+// Effect store preview: a warm swatch (plotted as a strip of its colour).
+void preview(nano::PreviewScenario& s) {
+  s.param("color", 1.0f, 0.5f, 0.2f);
 }
 
 }  // namespace color_const

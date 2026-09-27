@@ -35,6 +35,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <sketch/three_planes_rig.h>
 
@@ -923,3 +924,17 @@ void render(void* self, int vp_w, int vp_h) {
 // Registration is centralized: native via the core bundle's manifest, web via
 // the core bundle's nano_module_main (core/main.cpp). Like every other core
 // effect, this file defines only the namespace.
+
+namespace three_planes_rig_effect {
+
+// Effect store preview: an LFO (ghosted) on the first signal, plotted by
+// the rig's meter.
+void preview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .wire("a.output", "$self.sig_1")
+      .output("meter")
+      .plot("a.output");
+}
+
+}  // namespace three_planes_rig_effect

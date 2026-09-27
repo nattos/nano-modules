@@ -63,6 +63,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <cmath>
 
@@ -505,3 +506,15 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_motion
+
+namespace mod_motion {
+
+// Effect store preview: the activity of a sine (ghosted).
+void preview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .wire("a.output", "$self.input")
+      .plot("a.output");
+}
+
+}  // namespace mod_motion

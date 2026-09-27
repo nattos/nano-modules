@@ -43,6 +43,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <sketch/envelope.h>
 
@@ -309,3 +310,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_slice
+
+namespace mod_slice {
+
+// Effect store preview: a saw (ghosted) windowed to its first half.
+void preview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .auxParam("a", "waveform", 3.0f)
+      .wire("a.output", "$self.input")
+      .plot("a.output");
+}
+
+}  // namespace mod_slice

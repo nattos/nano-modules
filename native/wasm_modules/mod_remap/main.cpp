@@ -23,6 +23,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <sketch/tap_mod.h>
 
@@ -194,3 +195,20 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_remap
+
+namespace mod_remap {
+
+// Effect store preview: a saw eased through a Quad curve into a narrower
+// output window.
+void preview(nano::PreviewScenario& s) {
+  s.param("curve_in", 1.0f)
+      .param("out_min", 0.2f)
+      .param("out_max", 0.9f)
+      .aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .auxParam("a", "waveform", 3.0f)
+      .wire("a.output", "$self.input")
+      .plot("a.output");
+}
+
+}  // namespace mod_remap

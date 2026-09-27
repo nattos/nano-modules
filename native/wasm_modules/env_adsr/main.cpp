@@ -35,6 +35,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "sketch/envelope.h"   // envelope::applyEase — shared with mod.shaper.envelope
@@ -378,3 +379,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace env_adsr
+
+namespace env_adsr {
+
+// Effect store preview: auto-triggered on every beat, attack then decay.
+void preview(nano::PreviewScenario& s) {
+  s.param("auto_mode", 2.0f)
+      .param("auto_beats", 3.0f)
+      .param("mode", 1.0f)
+      .param("attack", 0.15f)
+      .param("decay", 0.4f);
+}
+
+}  // namespace env_adsr

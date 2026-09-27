@@ -22,6 +22,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 
 namespace trigger_out {
@@ -163,3 +164,16 @@ void render(void* self, int vp_w, int vp_h) {
 
 // Registration is centralized in the core bundle's nano_module_main
 // (core/main.cpp); this file defines only the namespace.
+
+namespace trigger_out {
+
+// Effect store preview: a sine (ghosted) crossing the threshold fires the
+// trigger.
+void preview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .wire("a.output", "$self.trigger_in")
+      .plot("a.output");
+}
+
+}  // namespace trigger_out

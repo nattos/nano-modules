@@ -29,6 +29,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 
 namespace mod_latch {
@@ -167,3 +168,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_latch
+
+namespace mod_latch {
+
+// Effect store preview: a sine (ghosted) sampled on every beat: a
+// staircase.
+void preview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .aux("t", "mod.trigger.beat")
+      .auxParam("t", "single_frame", 1.0f)
+      .wire("a.output", "$self.input")
+      .wire("t.output", "$self.trigger")
+      .plot("a.output");
+}
+
+}  // namespace mod_latch

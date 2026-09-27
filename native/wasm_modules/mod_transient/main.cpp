@@ -24,6 +24,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <cmath>
 
@@ -168,3 +169,15 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_transient
+
+namespace mod_transient {
+
+// Effect store preview: beat pulses (ghosted) reshaped into plucks.
+void preview(nano::PreviewScenario& s) {
+  s.aux("t", "mod.trigger.beat")
+      .auxParam("t", "single_frame", 1.0f)
+      .wire("t.output", "$self.input")
+      .plot("t.output");
+}
+
+}  // namespace mod_transient

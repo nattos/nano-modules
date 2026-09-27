@@ -26,6 +26,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 
 namespace mod_threshold {
@@ -147,3 +148,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_threshold
+
+namespace mod_threshold {
+
+// Effect store preview: a sine (ghosted) cut into a gate above 0.6.
+void preview(nano::PreviewScenario& s) {
+  s.param("threshold", 0.6f)
+      .aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .wire("a.output", "$self.input")
+      .plot("a.output");
+}
+
+}  // namespace mod_threshold

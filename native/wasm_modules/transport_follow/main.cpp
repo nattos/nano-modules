@@ -25,6 +25,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <streams.h>
 #include <val.h>
 #include <cmath>
@@ -382,6 +383,16 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 void render(void* self, int vp_w, int vp_h) {
   (void)self; (void)vp_w; (void)vp_h;
   // Identity — never touches pixels.
+}
+
+}  // namespace transport_follow
+
+namespace transport_follow {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
 }
 
 }  // namespace transport_follow

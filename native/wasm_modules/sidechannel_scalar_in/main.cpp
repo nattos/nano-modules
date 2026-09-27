@@ -18,6 +18,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 
 namespace sidechannel_scalar_in {
 
@@ -138,3 +139,13 @@ void render(void*, int, int) {}
 
 // Registration is centralized in the core bundle's nano_module_main
 // (core/main.cpp); this file defines only the namespace.
+
+namespace sidechannel_scalar_in {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace sidechannel_scalar_in

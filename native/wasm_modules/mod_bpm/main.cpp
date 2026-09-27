@@ -16,6 +16,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 
 namespace mod_bpm {
@@ -97,3 +98,13 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_bpm
+
+namespace mod_bpm {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace mod_bpm

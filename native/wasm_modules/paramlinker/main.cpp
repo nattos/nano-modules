@@ -10,6 +10,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include "../../src/json/json_doc_client.h"
 
@@ -460,3 +461,13 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace paramlinker
+
+namespace paramlinker {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace paramlinker

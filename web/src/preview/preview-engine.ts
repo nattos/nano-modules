@@ -83,6 +83,10 @@ interface PlotSpec {
   field: string;
   min: number;
   max: number;
+  /** A RELAY output (input + output, e.g. mod.source.color's swatch) with
+   *  nothing wired into it is its document value — the engine publishes one
+   *  only when a wire drives it — so it plots as that constant. */
+  fixed?: PlotValue;
   ghosts: Array<{ instanceKey: string; field: string; min: number; max: number }>;
 }
 
@@ -279,12 +283,16 @@ export class PreviewEngine {
       ? { field: compiled.plotOutput!, ...fieldRange(chosen) }
       : this.primaryScalarOutput(effectId);
     if (!main) return null;
+    const f = schema[main.field];
+    const selfKey = compiled.selfKey;
+    const driven = (compiled.sketch.wires ?? []).some((w) => w.dest.instanceKey === selfKey && w.dest.field === main.field);
+    const fixed = f && ((f.io ?? 0) & 1) && !driven ? sample(compiled.sketch.instances?.[selfKey]?.state?.[main.field]) : undefined;
     const ghosts = compiled.plotSeries.map((g) => {
       const type = compiled.sketch.instances?.[g.instanceKey]?.module_type;
       const f = type ? this.plugins.get(type)?.schema?.[g.field] : null;
       return { ...g, ...fieldRange(f) };
     });
-    return { ...main, ghosts };
+    return { ...main, ghosts, ...(fixed !== undefined ? { fixed } : {}) };
   }
 
   // ── Running a scenario ─────────────────────────────────────────────────
@@ -367,7 +375,7 @@ export class PreviewEngine {
             if (id === TRACE_ID) { last?.close(); last = b; } else b.close();
           }
           if (plot) {
-            values.push(sample(this.pluginStates.get(selfKey)?.[plot.field]));
+            values.push(plot.fixed ?? sample(this.pluginStates.get(selfKey)?.[plot.field]));
             plot.ghosts.forEach((g, gi) => {
               const v = sample(this.pluginStates.get(g.instanceKey)?.[g.field]);
               ghosts[gi].push(typeof v === 'number' ? v : NaN);
@@ -448,7 +456,7 @@ export class PreviewEngine {
         arr.push(v);
         if (arr.length > 120) arr.splice(0, arr.length - 120);
       };
-      keep(this.liveSamples.values, sample(this.pluginStates.get(live.compiled.selfKey)?.[live.plot.field]));
+      keep(this.liveSamples.values, live.plot.fixed ?? sample(this.pluginStates.get(live.compiled.selfKey)?.[live.plot.field]));
       live.plot.ghosts.forEach((g, gi) => {
         const v = sample(this.pluginStates.get(g.instanceKey)?.[g.field]);
         keep(this.liveSamples!.ghosts[gi].values, typeof v === 'number' ? v : NaN);

@@ -295,7 +295,7 @@ void nano_module_main() {
         "resolume,parameter,link,automation",
         "la-link",
         NANO_INSTANCE_LIFECYCLE(paramlinker),
-    });
+    }, &paramlinker::preview);
 
     nano::registerEffect({
         2,
@@ -307,7 +307,7 @@ void nano_module_main() {
         "la-cubes",
         NANO_INSTANCE_LIFECYCLE(barrel_macros),
         &barrel_macros::is_identity,
-    });
+    }, &barrel_macros::preview);
 
     nano::registerEffect({
         2,
@@ -319,7 +319,7 @@ void nano_module_main() {
         "la-broadcast-tower",
         NANO_INSTANCE_LIFECYCLE(artnet_in),
         &artnet_in::is_identity,
-    });
+    }, &artnet_in::preview);
 
     nano::registerEffect({
         2,
@@ -331,7 +331,7 @@ void nano_module_main() {
         "la-tachometer-alt",
         NANO_INSTANCE_LIFECYCLE(dashboard),
         &dashboard::is_identity,
-    });
+    }, &dashboard::preview);
 
     nano::registerEffect({
         2,
@@ -343,7 +343,7 @@ void nano_module_main() {
         "la-sign-out-alt",
         NANO_INSTANCE_LIFECYCLE(sketch_output),
         &sketch_output::is_identity,
-    });
+    }, &sketch_output::preview);
 
     nano::registerEffect({
         2,
@@ -358,7 +358,7 @@ void nano_module_main() {
         nullptr,  // on_active
         nullptr,  // seek
         &sidechannel_out::eval_visibility,
-    });
+    }, &sidechannel_out::preview);
 
     nano::registerEffect({
         2,
@@ -373,7 +373,7 @@ void nano_module_main() {
         nullptr,  // on_active
         nullptr,  // seek
         &sidechannel_in::eval_visibility,
-    });
+    }, &sidechannel_in::preview);
 
     nano::registerEffect({
         2,
@@ -388,7 +388,7 @@ void nano_module_main() {
         nullptr,  // on_active
         nullptr,  // seek
         &sidechannel_scalar_out::eval_visibility,
-    });
+    }, &sidechannel_scalar_out::preview);
 
     nano::registerEffect({
         2,
@@ -403,7 +403,7 @@ void nano_module_main() {
         nullptr,  // on_active
         nullptr,  // seek
         &sidechannel_scalar_in::eval_visibility,
-    });
+    }, &sidechannel_scalar_in::preview);
 
     nano::registerEffect({
         2,
@@ -749,7 +749,7 @@ void nano_module_main() {
         "modulation,remap,shaper,curve,range,envelope",
         "la-exchange-alt",
         NANO_INSTANCE_LIFECYCLE(mod_remap),
-    });
+    }, &mod_remap::preview);
 
     nano::registerEffect({
         2,
@@ -760,7 +760,7 @@ void nano_module_main() {
         "modulation,combine,math,binary,add,multiply,mix,shaper",
         "la-calculator",
         NANO_INSTANCE_LIFECYCLE(mod_combine),
-    });
+    }, &mod_combine::preview);
 
     // The split-out math shapers — one op each, no selector, and 2-8 inputs
     // folded left to right (see mod_math/main.cpp). Deliberately simpler than
@@ -774,7 +774,7 @@ void nano_module_main() {
         "modulation,math,add,sum,plus,combine",
         "la-plus",
         NANO_INSTANCE_LIFECYCLE(mod_add),
-    });
+    }, &mod_add::preview);
     nano::registerEffect({
         2,
         "mod.shaper.subtract",
@@ -784,7 +784,7 @@ void nano_module_main() {
         "modulation,math,subtract,minus,difference",
         "la-minus",
         NANO_INSTANCE_LIFECYCLE(mod_subtract),
-    });
+    }, &mod_subtract::preview);
     nano::registerEffect({
         2,
         "mod.shaper.multiply",
@@ -794,7 +794,7 @@ void nano_module_main() {
         "modulation,math,multiply,times,product,ring,gate",
         "la-times",
         NANO_INSTANCE_LIFECYCLE(mod_multiply),
-    });
+    }, &mod_multiply::preview);
     nano::registerEffect({
         2,
         "mod.shaper.divide",
@@ -804,7 +804,7 @@ void nano_module_main() {
         "modulation,math,divide,ratio",
         "la-divide",
         NANO_INSTANCE_LIFECYCLE(mod_divide),
-    });
+    }, &mod_divide::preview);
     nano::registerEffect({
         2,
         "mod.shaper.min",
@@ -814,7 +814,7 @@ void nano_module_main() {
         "modulation,math,min,minimum,smallest,gate",
         "la-angle-down",
         NANO_INSTANCE_LIFECYCLE(mod_min),
-    });
+    }, &mod_min::preview);
     nano::registerEffect({
         2,
         "mod.shaper.max",
@@ -824,7 +824,7 @@ void nano_module_main() {
         "modulation,math,max,maximum,largest,merge",
         "la-angle-up",
         NANO_INSTANCE_LIFECYCLE(mod_max),
-    });
+    }, &mod_max::preview);
     nano::registerEffect({
         2,
         "mod.shaper.average",
@@ -834,7 +834,7 @@ void nano_module_main() {
         "modulation,math,average,mean,blend,mix",
         "la-equals",
         NANO_INSTANCE_LIFECYCLE(mod_average),
-    });
+    }, &mod_average::preview);
     nano::registerEffect({
         2,
         "mod.shaper.difference",
@@ -844,7 +844,7 @@ void nano_module_main() {
         "modulation,math,difference,distance,abs,beat",
         "la-not-equal",
         NANO_INSTANCE_LIFECYCLE(mod_difference),
-    });
+    }, &mod_difference::preview);
     nano::registerEffect({
         2,
         "mod.shaper.screen",
@@ -854,7 +854,7 @@ void nano_module_main() {
         "modulation,math,screen,blend,light",
         "la-adjust",
         NANO_INSTANCE_LIFECYCLE(mod_screen),
-    });
+    }, &mod_screen::preview);
     nano::registerEffect({
         2,
         "mod.shaper.power",
@@ -864,7 +864,7 @@ void nano_module_main() {
         "modulation,math,power,exponent,curve,ease",
         "la-superscript",
         NANO_INSTANCE_LIFECYCLE(mod_power),
-    });
+    }, &mod_power::preview);
     nano::registerEffect({
         2,
         "mod.shaper.modulo",
@@ -874,7 +874,7 @@ void nano_module_main() {
         "modulation,math,modulo,mod,wrap,remainder,saw",
         "la-percent",
         NANO_INSTANCE_LIFECYCLE(mod_modulo),
-    });
+    }, &mod_modulo::preview);
     nano::registerEffect({
         2,
         "mod.shaper.greater",
@@ -884,7 +884,7 @@ void nano_module_main() {
         "modulation,math,greater,compare,gate,threshold",
         "la-greater-than",
         NANO_INSTANCE_LIFECYCLE(mod_greater),
-    });
+    }, &mod_greater::preview);
     nano::registerEffect({
         2,
         "mod.shaper.less",
@@ -894,7 +894,7 @@ void nano_module_main() {
         "modulation,math,less,compare,gate,threshold",
         "la-less-than",
         NANO_INSTANCE_LIFECYCLE(mod_less),
-    });
+    }, &mod_less::preview);
     nano::registerEffect({
         2,
         "mod.shaper.hypot",
@@ -904,7 +904,7 @@ void nano_module_main() {
         "modulation,math,hypot,length,magnitude,vector",
         "la-ruler-combined",
         NANO_INSTANCE_LIFECYCLE(mod_hypot),
-    });
+    }, &mod_hypot::preview);
     nano::registerEffect({
         2,
         "mod.shaper.quantize",
@@ -914,7 +914,7 @@ void nano_module_main() {
         "modulation,math,quantize,step,snap,crush,stair",
         "la-signal",
         NANO_INSTANCE_LIFECYCLE(mod_quantize),
-    });
+    }, &mod_quantize::preview);
 
     nano::registerEffect({
         2,
@@ -925,7 +925,7 @@ void nano_module_main() {
         "modulation,flip,toggle,latch,takeover,pickup,trigger,shaper",
         "la-toggle-on",
         NANO_INSTANCE_LIFECYCLE(mod_flip),
-    });
+    }, &mod_flip::preview);
 
     nano::registerEffect({
         2,
@@ -936,7 +936,7 @@ void nano_module_main() {
         "modulation,latch,sample,hold,snapshot,freeze,step,trigger,reset,shaper",
         "la-thumbtack",
         NANO_INSTANCE_LIFECYCLE(mod_latch),
-    });
+    }, &mod_latch::preview);
 
     nano::registerEffect({
         2,
@@ -962,7 +962,7 @@ void nano_module_main() {
         "modulation,bpm,tempo,beat,duration,seconds,clock,transport,source",
         "la-tachometer-alt",
         NANO_INSTANCE_LIFECYCLE(mod_bpm),
-    });
+    }, &mod_bpm::preview);
 
     nano::registerEffect({
         2,
@@ -973,7 +973,7 @@ void nano_module_main() {
         "modulation,smooth,slew,ramp,glide,shaper,filter",
         "la-stream",
         NANO_INSTANCE_LIFECYCLE(mod_smooth),
-    });
+    }, &mod_smooth::preview);
 
     nano::registerEffect({
         2,
@@ -988,7 +988,7 @@ void nano_module_main() {
         nullptr,            // on_active
         nullptr,            // seek
         &mod_motion::eval_visibility,  // static visibility evaluator (integrate/mode gating)
-    });
+    }, &mod_motion::preview);
 
     nano::registerEffect({
         2,
@@ -999,7 +999,7 @@ void nano_module_main() {
         "modulation,transient,attack,punch,kick,bass,beat,grid,adaptive,sharpen,pluck,shaper",
         "la-bolt",
         NANO_INSTANCE_LIFECYCLE(mod_transient),
-    });
+    }, &mod_transient::preview);
 
     nano::registerEffect({
         2,
@@ -1010,7 +1010,7 @@ void nano_module_main() {
         "modulation,delay,line,echo,offset,lag,shaper",
         "la-clock",
         NANO_INSTANCE_LIFECYCLE(mod_delay),
-    });
+    }, &mod_delay::preview);
 
     nano::registerEffect({
         2,
@@ -1021,7 +1021,7 @@ void nano_module_main() {
         "modulation,envelope,remap,curve,shaper,draw,easing",
         "la-drafting-compass",
         NANO_INSTANCE_LIFECYCLE(mod_envelope),
-    });
+    }, &mod_envelope::preview);
 
     nano::registerEffect({
         2,
@@ -1032,7 +1032,7 @@ void nano_module_main() {
         "modulation,threshold,gate,comparator,edge,trigger,schmitt,shaper",
         "la-toggle-on",
         NANO_INSTANCE_LIFECYCLE(mod_threshold),
-    });
+    }, &mod_threshold::preview);
 
     nano::registerEffect({
         2,
@@ -1043,7 +1043,7 @@ void nano_module_main() {
         "modulation,invert,flip,negate,toggle,latch,trigger,shaper",
         "la-arrows-alt-v",
         NANO_INSTANCE_LIFECYCLE(mod_invert),
-    });
+    }, &mod_invert::preview);
 
     nano::registerEffect({
         2,
@@ -1071,7 +1071,7 @@ void nano_module_main() {
         "color,colour,swatch,constant,source,modulation,palette",
         "la-palette",
         NANO_INSTANCE_LIFECYCLE(color_const),
-    });
+    }, &color_const::preview);
 
     // ONE switch for every wireable type, rather than one card per type. Its
     // cases are `any` ports, resolved per instance from whatever is wired.
@@ -1084,7 +1084,7 @@ void nano_module_main() {
         "switch,select,mux,choose,route,case,modulation,polymorphic",
         "la-random",
         NANO_INSTANCE_LIFECYCLE(mod_switch),
-    });
+    }, &mod_switch::preview);
 
     // One signal in, N windowed outputs — the only card that SPLITS modulation
     // rather than transforming it 1:1 (a wire can already do the 1:1 remap).
@@ -1097,7 +1097,7 @@ void nano_module_main() {
         "slice,crop,split,band,window,chase,stagger,fanout,spread,curve,modulation,shaper",
         "la-stream",
         NANO_INSTANCE_LIFECYCLE(mod_slice),
-    });
+    }, &mod_slice::preview);
 
     // The show logic source.mesh.three_planes deliberately does NOT have. Four
     // Art-Net gates in, twelve rails out — the only card here that publishes
@@ -1113,7 +1113,7 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(three_planes_rig_effect),
         nullptr, nullptr, nullptr,
         &three_planes_rig_effect::eval_visibility,  // the meter's knobs vanish in Solid
-    });
+    }, &three_planes_rig_effect::preview);
 
     // A measuring surface for source.mesh.three_walls: its three outputs are
     // three walls of one room, and only laid out in a row do they read as one.
@@ -1154,7 +1154,7 @@ void nano_module_main() {
         nullptr,                     // on_active
         nullptr,                     // seek
         &env_adsr::eval_visibility,  // auto-trigger knob visibility (Off/Random/Beats)
-    });
+    }, &env_adsr::preview);
 
     nano::registerEffect({
         2,
@@ -1178,7 +1178,7 @@ void nano_module_main() {
         "la-clock",
         NANO_INSTANCE_LIFECYCLE(transport_time),
         &transport_time::is_identity,
-    });
+    }, &transport_time::preview);
 
     nano::registerEffect({
         2,
@@ -1190,7 +1190,7 @@ void nano_module_main() {
         "la-music",
         NANO_INSTANCE_LIFECYCLE(transport_beat_sync),
         &transport_beat_sync::is_identity,
-    });
+    }, &transport_beat_sync::preview);
 
     nano::registerEffect({
         2,
@@ -1202,7 +1202,7 @@ void nano_module_main() {
         "la-step-forward",
         NANO_INSTANCE_LIFECYCLE(transport_one_shot),
         &transport_one_shot::is_identity,
-    });
+    }, &transport_one_shot::preview);
 
     nano::registerEffect({
         2,
@@ -1214,7 +1214,7 @@ void nano_module_main() {
         "la-random",
         NANO_INSTANCE_LIFECYCLE(transport_random),
         &transport_random::is_identity,
-    });
+    }, &transport_random::preview);
 
     nano::registerEffect({
         2,
@@ -1229,7 +1229,7 @@ void nano_module_main() {
         nullptr,            // on_active
         nullptr,            // seek
         &transport_follow::eval_visibility,
-    });
+    }, &transport_follow::preview);
 
     nano::registerEffect({
         2,
@@ -1241,7 +1241,7 @@ void nano_module_main() {
         "la-random",
         NANO_INSTANCE_LIFECYCLE(transition_xfade),
         &transition_xfade::is_identity,
-    });
+    }, &transition_xfade::preview);
 
     nano::registerEffect({
         2,
@@ -1252,7 +1252,7 @@ void nano_module_main() {
         "trigger,scene,launch,rail,send,event,route,util",
         "la-bolt",
         NANO_INSTANCE_LIFECYCLE(trigger_out),
-    });
+    }, &trigger_out::preview);
 }
 
 } // extern "C"

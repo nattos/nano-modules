@@ -42,5 +42,7 @@ describe('thumb stats', () => {
     const g = graphStats([0, 0.5, 1, NaN], 0, 2);
     expect(g).toEqual({ finite: 3, range: 0.5 });
     expect(thumbFlags({ graph: g })).toEqual([]);
+    // A colour output: its components span the range even when constant.
+    expect(graphStats([[1, 0.5, 0.2], [1, 0.5, 0.2]], 0, 1).range).toBeCloseTo(0.8, 5);
   });
 });

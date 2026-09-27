@@ -48,6 +48,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <gpu.h>
 #include <val.h>
 #include <cstdio>
@@ -230,6 +231,28 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
 void render(void* self, int vp_w, int vp_h) {
   (void)self; (void)vp_w; (void)vp_h;   // pure data module
+}
+
+}  // namespace mod_switch
+
+namespace mod_switch {
+
+// Effect store preview: a square selector (ghosted) flipping between a ramp
+// and beat pulses.
+void preview(nano::PreviewScenario& s) {
+  s.aux("s", "mod.source.lfo")
+      .auxParam("s", "rate", 0.5f)
+      .auxParam("s", "waveform", 1.0f)
+      .aux("time", "mod.source.time")
+      .auxParam("time", "domain", 0.0f)
+      .auxParam("time", "period_seconds", 1.0f)
+      .auxParam("time", "sync", 0.0f)
+      .aux("t", "mod.trigger.beat")
+      .auxParam("t", "single_frame", 1.0f)
+      .wire("s.output", "$self.select")
+      .wire("time.output", "$self.case_1")
+      .wire("t.output", "$self.case_2")
+      .plot("s.output");
 }
 
 }  // namespace mod_switch

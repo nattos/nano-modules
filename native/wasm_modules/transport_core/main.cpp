@@ -21,6 +21,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <streams.h>
 #include <val.h>
 #include <cmath>
@@ -462,4 +463,44 @@ void module_init() {
       .floatField("seed", 0.f, 0.f, 1.f, state::PrimaryInput).label("Seed", "Sd");
   state::init("core.transport.random", {1, 0, 0}, transport_core::outputFields(sch));
 }
+}  // namespace transport_random
+
+namespace transport_time {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace transport_time
+
+namespace transport_beat_sync {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace transport_beat_sync
+
+namespace transport_one_shot {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
+}  // namespace transport_one_shot
+
+namespace transport_random {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
+}
+
 }  // namespace transport_random

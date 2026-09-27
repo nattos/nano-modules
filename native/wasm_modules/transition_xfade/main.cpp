@@ -23,6 +23,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <resources.h>
 #include <streams.h>
 #include <val.h>
@@ -215,6 +216,16 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 void render(void* self, int vp_w, int vp_h) {
   (void)self; (void)vp_w; (void)vp_h;
   // Identity — the brain never touches pixels; the host wires the blend.
+}
+
+}  // namespace transition_xfade
+
+namespace transition_xfade {
+
+// Effect store preview: nothing to picture; the store shows its category
+// tile.
+void preview(nano::PreviewScenario& s) {
+  s.thumbIcon();
 }
 
 }  // namespace transition_xfade

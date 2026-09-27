@@ -22,6 +22,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <mod_math_ops.h>
 #include <cmath>
@@ -180,3 +181,22 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_combine
+
+namespace mod_combine {
+
+// Effect store preview: two LFOs (a sine and a faster triangle, ghosted)
+// multiplied together.
+void preview(nano::PreviewScenario& s) {
+  s.param("op", 2.0f)
+      .aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .aux("b", "mod.source.lfo")
+      .auxParam("b", "rate", 1.3f)
+      .auxParam("b", "waveform", 2.0f)
+      .wire("a.output", "$self.input_a")
+      .wire("b.output", "$self.input_b")
+      .plot("a.output")
+      .plot("b.output");
+}
+
+}  // namespace mod_combine

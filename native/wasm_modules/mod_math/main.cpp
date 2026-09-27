@@ -29,6 +29,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <mod_math_ops.h>
 #include <cmath>
@@ -304,3 +305,37 @@ NANO_MATH_EFFECT(mod_quantize, "mod.shaper.quantize", mod_math_ops::OpQuantize,
   "Unwired inputs rest at 0, which is the documented pass-through: a step size "
   "of nothing means infinite resolution, so the signal is left alone.",
   NANO_MATH_INPUTS_HELP("quantize by"));
+
+namespace mod_math {
+
+// Effect store preview, shared by every math op: a sine and a faster triangle
+// (both ghosted) into the first two inputs, the op's output over them.
+void binaryPreview(nano::PreviewScenario& s) {
+  s.aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .aux("b", "mod.source.lfo")
+      .auxParam("b", "rate", 1.3f)
+      .auxParam("b", "waveform", 2.0f)
+      .wire("a.output", "$self.input_1")
+      .wire("b.output", "$self.input_2")
+      .plot("a.output")
+      .plot("b.output");
+}
+
+}  // namespace mod_math
+
+namespace mod_add { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_subtract { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_multiply { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_divide { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_min { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_max { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_average { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_difference { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_screen { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_power { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_modulo { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_greater { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_less { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_hypot { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }
+namespace mod_quantize { void preview(nano::PreviewScenario& s) { mod_math::binaryPreview(s); } }

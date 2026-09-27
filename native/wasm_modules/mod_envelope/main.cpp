@@ -18,6 +18,7 @@
  */
 
 #include <host.h>
+#include <preview_scenario.h>
 #include <val.h>
 #include <sketch/envelope.h>
 
@@ -132,3 +133,18 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace mod_envelope
+
+namespace mod_envelope {
+
+// Effect store preview: a saw (ghosted) folded through a triangle-shaped
+// curve.
+void preview(nano::PreviewScenario& s) {
+  s.paramStr("curve", "[0,0,0,0.5,1,0,1,0,0]")
+      .aux("a", "mod.source.lfo")
+      .auxParam("a", "rate", 0.5f)
+      .auxParam("a", "waveform", 3.0f)
+      .wire("a.output", "$self.input")
+      .plot("a.output");
+}
+
+}  // namespace mod_envelope
