@@ -30,6 +30,7 @@ import { defaultInsertIndex } from './insert-position';
 import { sketchChain } from '../sketch-types';
 import { PreviewEngine } from '../preview/preview-engine';
 import { Thumbnails } from '../preview/thumbnails';
+import { forgetBundleHashes } from '../preview/thumbnail-cache';
 
 export const STORE_TAB_ID = 'store';
 
@@ -72,6 +73,9 @@ class EffectStoreController {
   open(): { engine: PreviewEngine; thumbs: Thumbnails } {
     this.opens++;
     if (!this.engine) {
+      // A fresh engine loads the bundles as they are NOW; re-hash them too, so
+      // one rebuilt since the last visit re-bakes its thumbnails.
+      forgetBundleHashes();
       this.engine = new PreviewEngine();
       this.thumbs = new Thumbnails(this.engine);
       void this.engine.start().catch((e) => console.warn('[effect-store] preview engine failed', e));

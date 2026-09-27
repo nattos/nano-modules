@@ -481,6 +481,57 @@ Rules of thumb:
   every schema edit — the version is part of the schema's contract, not an
   afterthought.
 
+### The Effects store — preview scenario and release tags
+
+The editor's **Effects** tab shows every effect as a card with a thumbnail and
+a live preview on hover, both rendered by the web executor on a tiny sketch.
+By default that sketch is the effect alone on an animated test picture (a
+generator alone; a modulation-only effect is plotted by its primary output).
+When your effect only makes sense with some setup — a second input, motion, a
+parameter worth sweeping — declare a **preview scenario**. It's code in your
+effect, run inside its wasm at registration: define the optional `preview`
+hook the `NANO_DECLARE_INSTANCE_EFFECT` macro declares, and hand its JSON to
+the registration.
+
+```cpp
+#include <preview_scenario.h>
+
+namespace video_blend {
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")                        // the chain input picture → tex_a
+      .auxGenerator("b", "edges")           // a second picture...
+      .wire("b.output", "$self.tex_b")      // ...into B
+      .aux("lfo", "mod.source.lfo")         // a helper effect
+      .auxParam("lfo", "rate", 0.25f)
+      .wire("lfo.output", "$self.opacity")  // sweeping the crossfade
+      .capture(1.5f);                       // thumbnail time (s)
+}
+}  // namespace video_blend
+
+// registration: build it, then pass the JSON (it's copied during register_()).
+nano::PreviewScenario pv; video_blend::preview(pv);
+nano::EffectBuilder("composite.blend")/* … */.preview(pv.json()).register_();
+```
+
+- `$self` is your effect; helpers are placed as sidecar-canvas nodes, so they
+  never replace your chain input. The format is documented in
+  `include/preview_scenario.h`; the web compiler is `web/src/preview/scenario.ts`.
+- Input pictures (`input` / `auxGenerator`) are drawn by the store, keyed by
+  name: `motion` (lots of movement), `gradient` (smooth hue/luma sweeps), `edges`
+  (hard-edged motion graphics), `blobs` (soft, camera-ish). Pick the one that
+  shows off what your effect does; `"none"` for no input.
+- Scenario params override your defaults **for the preview only** — show the
+  effect at its most characteristic, not at its (often neutral) defaults.
+- Thumbnails are cached against the bundle's contents and the scenario, so a
+  rebuild re-bakes them; nothing to invalidate by hand.
+
+**Release tags.** `addedIn("1.0.0")` / `changedIn("1.0.0")` (EffectBuilder, or
+`added_in` / `changed_in` on the struct) name the **app release** an effect
+first shipped in and last changed in. They drive the store's *Updated & New*
+collection (newest release first; "New" when both match). Bump `changedIn` to
+the upcoming release whenever the effect's look, behaviour or controls change —
+alongside, not instead of, the schema version above.
+
 ### Skip whole stages on the host — don't early-out in the shader
 
 We are **not in ShaderToy land**. An effect isn't one fragment program that has to do everything every pixel — it's a host-driven graph of compute dispatches, and `render(self, w, h)` is plain C++ that decides, per frame, *which* dispatches to issue. A pipeline can have as many stages as it wants, and that count can be **dynamic** — gated on parameters, connectivity, or mode. Lean into that.
