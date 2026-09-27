@@ -14,6 +14,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_fast_blur.h>
 
@@ -114,3 +115,13 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace fast_blur
+
+namespace fast_blur {
+
+// Effect store preview: hard-edged motion graphics under a wide, hazy blur.
+void preview(nano::PreviewScenario& s) {
+  s.input("edges")
+      .param("iterations", 3.0f);
+}
+
+}  // namespace fast_blur

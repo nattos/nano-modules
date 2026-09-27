@@ -29,6 +29,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "motion_blur_shaders.h"
 
@@ -486,3 +487,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace motion_blur
+
+namespace motion_blur {
+
+// Effect store preview: motion blur needs an upstream motion field; the
+// testonly swarm supplies one (without it — testonly isn't in release
+// builds — the preview is its input).
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("strength", 2.0f)
+      .pre("mv", "debug.motion_swarm")
+      .auxParam("mv", "speed", 2.0f)
+      .auxParam("mv", "size", 0.08f)
+      .auxParam("mv", "count", 12.0f);
+}
+
+}  // namespace motion_blur

@@ -22,6 +22,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_fast_blur.h>
 #include "local_contrast_shaders.h"
@@ -239,3 +240,14 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace local_contrast
+
+namespace local_contrast {
+
+// Effect store preview: soft blobs given full clarity punch.
+void preview(nano::PreviewScenario& s) {
+  s.input("blobs")
+      .param("amount", 1.0f)
+      .param("radius", 0.4f);
+}
+
+}  // namespace local_contrast

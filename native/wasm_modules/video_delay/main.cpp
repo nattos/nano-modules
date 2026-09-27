@@ -34,6 +34,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 
 namespace video_delay {
@@ -224,3 +225,14 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace video_delay
+
+namespace video_delay {
+
+// Effect store preview: the moving shapes, most of a second late.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("delay", 24.0f)
+      .capture(2.0f);
+}
+
+}  // namespace video_delay

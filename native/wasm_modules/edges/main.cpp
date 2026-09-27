@@ -16,6 +16,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "edges_shaders.h"
 
@@ -168,3 +169,15 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace edges
+
+namespace edges {
+
+// Effect store preview: the moving shapes traced as cyan outlines.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("threshold", 0.08f)
+      .param("radius", 0.2f)
+      .param("line", 0.4f, 0.9f, 1.0f);
+}
+
+}  // namespace edges

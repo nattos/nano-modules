@@ -24,6 +24,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "vignette_shaders.h"
@@ -209,3 +210,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace vignette
+
+namespace vignette {
+
+// Effect store preview: a strong, fairly tight vignette over the bright
+// gradient.
+void preview(nano::PreviewScenario& s) {
+  s.input("gradient")
+      .param("amount", -0.9f)
+      .param("radius", 0.45f)
+      .param("softness", 0.5f);
+}
+
+}  // namespace vignette

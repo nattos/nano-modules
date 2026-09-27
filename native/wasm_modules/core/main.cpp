@@ -243,7 +243,7 @@ void nano_module_main() {
         "color,fill",
         "la-square-full",
         NANO_INSTANCE_LIFECYCLE(solid_color),
-    });
+    }, &solid_color::preview);
 
     nano::registerEffect({
         2,
@@ -254,7 +254,7 @@ void nano_module_main() {
         "video,source,clip,file",
         "la-film",
         NANO_INSTANCE_LIFECYCLE(video_file),
-    });
+    }, &video_file::preview);
 
     {
         nano::PreviewScenario pv;
@@ -485,7 +485,7 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(video_delay),
         nullptr,                    // is_identity — stateful; a skipped frame never enters the ring
         &video_delay::on_active,    // bypassed: hand the frame history back
-    });
+    }, &video_delay::preview);
 
     nano::registerEffect({
         2,
@@ -585,7 +585,7 @@ void nano_module_main() {
         "vignette,edge,fade,corner",
         "la-dot-circle",
         NANO_INSTANCE_LIFECYCLE(vignette),
-    });
+    }, &vignette::preview);
 
     nano::registerEffect({
         2,
@@ -596,7 +596,7 @@ void nano_module_main() {
         "blur,gaussian,defocus,soften",
         "la-cloud",
         NANO_INSTANCE_LIFECYCLE(blur),
-    });
+    }, &blur::preview);
 
     nano::registerEffect({
         2,
@@ -607,7 +607,7 @@ void nano_module_main() {
         "blur,bloom,dual-filter,downsample,upsample,fast",
         "la-wind",
         NANO_INSTANCE_LIFECYCLE(fast_blur),
-    });
+    }, &fast_blur::preview);
 
     nano::registerEffect({
         2,
@@ -619,7 +619,7 @@ void nano_module_main() {
         "la-crosshairs",
         NANO_INSTANCE_LIFECYCLE(sharpen),
         &sharpen::is_identity,
-    });
+    }, &sharpen::preview);
 
     nano::registerEffect({
         2,
@@ -631,7 +631,7 @@ void nano_module_main() {
         "la-adjust",
         NANO_INSTANCE_LIFECYCLE(local_contrast),
         &local_contrast::is_identity,
-    });
+    }, &local_contrast::preview);
 
     nano::registerEffect({
         2,
@@ -642,7 +642,7 @@ void nano_module_main() {
         "edge,sobel,outline,detect",
         "la-border-style",
         NANO_INSTANCE_LIFECYCLE(edges),
-    });
+    }, &edges::preview);
 
     nano::registerEffect({
         2,
@@ -657,7 +657,7 @@ void nano_module_main() {
         nullptr,  // on_active
         nullptr,  // seek
         &crop::eval_visibility,  // static visibility evaluator (pure over state)
-    });
+    }, &crop::preview);
 
     nano::registerEffect({
         2,
@@ -669,7 +669,7 @@ void nano_module_main() {
         "la-arrows-alt",
         NANO_INSTANCE_LIFECYCLE(transform),
         &transform::is_identity,
-    });
+    }, &transform::preview);
 
     nano::registerEffect({
         2,
@@ -680,7 +680,7 @@ void nano_module_main() {
         "gradient,ramp,linear",
         "la-fill",
         NANO_INSTANCE_LIFECYCLE(gradient),
-    });
+    }, &gradient::preview);
 
     nano::registerEffect({
         2,
@@ -691,7 +691,7 @@ void nano_module_main() {
         "grid,pattern,tile,lines",
         "la-th",
         NANO_INSTANCE_LIFECYCLE(grid),
-    });
+    }, &grid::preview);
 
     nano::registerEffect({
         2,
@@ -702,7 +702,7 @@ void nano_module_main() {
         "noise,perlin,static,grain,procedural",
         "la-braille",
         NANO_INSTANCE_LIFECYCLE(noise),
-    });
+    }, &noise::preview);
 
     nano::registerEffect({
         2,
@@ -714,7 +714,7 @@ void nano_module_main() {
         "la-running",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
         nullptr, nullptr, nullptr, &motion_blur::eval_visibility,
-    });
+    }, &motion_blur::preview);
 
     nano::registerEffect({
         2,
@@ -738,7 +738,7 @@ void nano_module_main() {
         "la-bolt",
         NANO_INSTANCE_LIFECYCLE(twitch_mask),
         &twitch_mask::is_identity,
-    });
+    }, &twitch_mask::preview);
 
     nano::registerEffect({
         2,

@@ -19,6 +19,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "transform_shaders.h"
@@ -223,3 +224,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace transform
+
+namespace transform {
+
+// Effect store preview: scaled down with mirror wrap, so the picture tiles,
+// and slowly rotating.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("scale", -0.35f)
+      .param("wrap_mode", 3.0f)
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.1f)
+      .auxParam("lfo", "waveform", 3.0f)
+      .wire("lfo.output", "$self.rotation");
+}
+
+}  // namespace transform

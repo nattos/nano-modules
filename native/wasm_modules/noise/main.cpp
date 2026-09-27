@@ -24,6 +24,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "noise_shaders.h"
@@ -218,3 +219,15 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace noise
+
+namespace noise {
+
+// Effect store preview: coloured FBM clouds.
+void preview(nano::PreviewScenario& s) {
+  s.param("algorithm", 2.0f)
+      .param("scale", 0.4f)
+      .param("contrast", 0.3f)
+      .param("color", 0.6f);
+}
+
+}  // namespace noise

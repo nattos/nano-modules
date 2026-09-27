@@ -13,6 +13,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <module_api.h>
 
@@ -278,6 +279,18 @@ void nano_module_main() {
     "text,type,font,glyph,label,caption",
     "la-font",
     NANO_INSTANCE_LIFECYCLE(gen_text),
-  });
+  }, &gen_text::preview);
 }
 #endif
+
+namespace gen_text {
+
+// Effect store preview: a big bold word, in Precise edges.
+void preview(nano::PreviewScenario& s) {
+  s.paramStr("text", "Nano")
+      .param("size", 90.0f)
+      .param("bold", 1.0f)
+      .param("precision", 2.0f);
+}
+
+}  // namespace gen_text

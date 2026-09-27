@@ -12,6 +12,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <val.h>
 #include "solid_color_shaders.h"
@@ -135,3 +136,12 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace solid_color
+
+namespace solid_color {
+
+// Effect store preview: a warm orange rather than the default grey.
+void preview(nano::PreviewScenario& s) {
+  s.param("color", 0.95f, 0.45f, 0.2f);
+}
+
+}  // namespace solid_color

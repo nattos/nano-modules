@@ -118,6 +118,20 @@ describe('compileScenario', () => {
     expect(compileScenario('fx', json, 'image').sketch.instances!['pv:lfo'].version).toBeUndefined();
   });
 
+  it('drops helpers whose effect isn\'t loaded, and plays the video node\'s input as its clip', () => {
+    const json = JSON.stringify({
+      pre: [{ key: 'mv', effect: 'debug.motion_swarm' }],
+      aux: [{ key: 'lfo', effect: 'mod.source.lfo' }, { key: 'b', generator: 'edges' }],
+      wires: [{ src: 'lfo.output', dest: 'mv.speed' }, { src: 'b.output', dest: '$self.tex_b' }],
+    });
+    const c = compileScenario('motion.blur', json, 'image', 'p', undefined, (id) => !id.startsWith('debug.'));
+    expect(c.sketch.chain!.map((e) => e.instance_key)).toEqual(['p:self', 'p:lfo', 'p:b']);
+    expect(c.sketch.wires!.map((w) => w.dest.instanceKey)).toEqual(['p:self']);
+    const v = compileScenario(GENERATOR_NODE_EFFECT, JSON.stringify({ input: 'blobs' }), 'generator', 'p');
+    expect(v.input).toBeNull();
+    expect(v.instanceGenerators).toEqual({ 'p:self': 'blobs' });
+  });
+
   it('hashString is stable and discriminating', () => {
     expect(hashString('abc')).toBe(hashString('abc'));
     expect(hashString('abc')).not.toBe(hashString('abd'));

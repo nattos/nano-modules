@@ -117,6 +117,9 @@ export function compileScenario(
   kind: PreviewKind,
   prefix = 'pv',
   baseOf?: (effectId: string) => { version: InstanceState['version']; state: Record<string, unknown> },
+  /** Is a helper effect loaded? Helpers that aren't (e.g. a testonly motion
+   *  producer outside dev builds) are dropped, with their wires. */
+  has: (effectId: string) => boolean = () => true,
 ): CompiledScenario {
   const raw = parse(previewJson);
   const selfKey = `${prefix}:self`;
@@ -143,7 +146,7 @@ export function compileScenario(
   const pre = Array.isArray(raw.pre) ? raw.pre as RawAux[] : [];
   for (const a of pre) {
     if (!a || typeof a !== 'object' || typeof a.key !== 'string' || !KEY_RE.test(a.key)) continue;
-    if (nodes.has(a.key) || typeof a.effect !== 'string' || !a.effect) continue;
+    if (nodes.has(a.key) || typeof a.effect !== 'string' || !a.effect || !has(a.effect)) continue;
     const instanceKey = `${prefix}:${a.key}`;
     chain.push({ type: 'module', module_type: a.effect, instance_key: instanceKey });
     instances[instanceKey] = { module_type: a.effect, state: sceneParams(a.params) };
@@ -152,6 +155,12 @@ export function compileScenario(
   }
   chain.push({ type: 'module', module_type: effectId, instance_key: selfKey });
   instances[selfKey] = { module_type: effectId, state: sceneParams(raw.params) };
+  // The generator node effect previewing ITSELF (the video-file player) has
+  // no clip: it plays the scenario's input picture instead.
+  if (effectId === GENERATOR_NODE_EFFECT && input) {
+    instanceGenerators[selfKey] = input;
+    input = null;
+  }
 
   const aux = Array.isArray(raw.aux) ? raw.aux as RawAux[] : [];
   let col = 0;
@@ -160,7 +169,7 @@ export function compileScenario(
     if (nodes.has(a.key)) continue;
     const generator = a.generator !== undefined ? (knownGenerator(a.generator) ?? DEFAULT_GENERATOR) : null;
     const effect = generator ? GENERATOR_NODE_EFFECT : (typeof a.effect === 'string' && a.effect ? a.effect : null);
-    if (!effect) continue;
+    if (!effect || (!generator && !has(effect))) continue;
     const instanceKey = `${prefix}:${a.key}`;
     chain.push({
       type: 'module', module_type: effect, instance_key: instanceKey,

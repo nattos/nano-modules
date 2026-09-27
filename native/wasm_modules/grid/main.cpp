@@ -17,6 +17,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "grid_shaders.h"
@@ -195,3 +196,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace grid
+
+namespace grid {
+
+// Effect store preview: soft cyan lines on a dark ground.
+void preview(nano::PreviewScenario& s) {
+  s.param("cell_size", 0.14f)
+      .param("line_width", 0.08f)
+      .param("softness", 0.4f)
+      .param("line", 0.3f, 0.8f, 1.0f, 1.0f)
+      .param("bg", 0.05f, 0.06f, 0.1f, 1.0f);
+}
+
+}  // namespace grid

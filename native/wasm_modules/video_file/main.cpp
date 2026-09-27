@@ -12,6 +12,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <val.h>
 #include "video_file_shaders.h"
@@ -89,3 +90,12 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace video_file
+
+namespace video_file {
+
+// Effect store preview: with no clip, it plays the store's motion picture.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion");
+}
+
+}  // namespace video_file

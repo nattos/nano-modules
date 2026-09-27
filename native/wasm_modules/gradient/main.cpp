@@ -19,6 +19,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "gradient_shaders.h"
@@ -182,3 +183,18 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace gradient
+
+namespace gradient {
+
+// Effect store preview: a warm-to-deep-blue ramp, its angle turning on a
+// slow saw LFO.
+void preview(nano::PreviewScenario& s) {
+  s.param("color_a", 1.0f, 0.55f, 0.2f)
+      .param("color_b", 0.15f, 0.1f, 0.5f)
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.1f)
+      .auxParam("lfo", "waveform", 3.0f)
+      .wire("lfo.output", "$self.angle");
+}
+
+}  // namespace gradient

@@ -299,7 +299,7 @@ export class PreviewEngine {
         version: { module: parseVersion(p?.moduleVersion), effect: parseVersion(p?.version) },
         state: p ? defaultStateForPlugin(p) : {},
       };
-    });
+    }, (id) => this.catalog.has(id));
     if (opts.bypassSelf) {
       const self = compiled.sketch.instances?.[compiled.selfKey];
       if (self) self.state = { ...self.state, __enable__: 0 };

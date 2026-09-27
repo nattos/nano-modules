@@ -13,6 +13,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "sharpen_shaders.h"
 
@@ -144,3 +145,15 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace sharpen
+
+namespace sharpen {
+
+// Effect store preview: hard-edged motion graphics, where the unsharp halo
+// shows along every edge.
+void preview(nano::PreviewScenario& s) {
+  s.input("edges")
+      .param("amount", 1.0f)
+      .param("radius", 0.5f);
+}
+
+}  // namespace sharpen

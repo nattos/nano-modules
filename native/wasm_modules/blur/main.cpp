@@ -14,6 +14,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_blur.h>
 
@@ -106,3 +107,14 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace blur
+
+namespace blur {
+
+// Effect store preview: hard-edged motion graphics, so the softening reads;
+// a generous radius.
+void preview(nano::PreviewScenario& s) {
+  s.input("edges")
+      .param("radius", 0.6f);
+}
+
+}  // namespace blur

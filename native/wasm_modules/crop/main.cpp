@@ -27,6 +27,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "crop_shaders.h"
@@ -252,3 +253,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace crop
+
+namespace crop {
+
+// Effect store preview: a centred span crop, its width breathing on an LFO.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("width", 0.6f)
+      .param("height", 0.7f)
+      .param("feather", 0.08f)
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.2f)
+      .auxParam("lfo", "amplitude", 0.3f)
+      .wire("lfo.output", "$self.width", "add");
+}
+
+}  // namespace crop
