@@ -101,11 +101,20 @@ describe('compileScenario', () => {
     expect(compileScenario('fx', undefined, 'image').thumb).toBe('auto');
   });
 
-  it('stamps instance versions so scenario params are never migrated as legacy', () => {
-    const json = JSON.stringify({ aux: [{ key: 'lfo', effect: 'mod.source.lfo', params: { rate: 0.25 } }] });
-    const c = compileScenario('fx', json, 'image', 'p', (id) => ({ module: [1, 0, 0], effect: id === 'fx' ? [2, 0, 0] : [1, 2, 0] }));
-    expect(c.sketch.instances!['p:self'].version).toEqual({ module: [1, 0, 0], effect: [2, 0, 0] });
-    expect(c.sketch.instances!['p:lfo'].version).toEqual({ module: [1, 0, 0], effect: [1, 2, 0] });
+  it('seeds instances like a fresh insert: current version + defaults under the params', () => {
+    const json = JSON.stringify({
+      aux: [{ key: 'lfo', effect: 'mod.source.lfo', params: { rate: 0.25 } }, { key: 'b', generator: 'edges' }],
+    });
+    const c = compileScenario('fx', json, 'image', 'p', (id) => ({
+      version: { module: [1, 0, 0], effect: id === 'fx' ? [2, 0, 0] : [1, 2, 0] },
+      state: id === 'mod.source.lfo' ? { rate: 5, amplitude: 1 } : { amount: 0 },
+    }));
+    const inst = c.sketch.instances!;
+    expect(inst['p:self'].version).toEqual({ module: [1, 0, 0], effect: [2, 0, 0] });
+    expect(inst['p:lfo'].version).toEqual({ module: [1, 0, 0], effect: [1, 2, 0] });
+    expect(inst['p:self'].state).toEqual({ amount: 0 });
+    expect(inst['p:lfo'].state).toEqual({ rate: 0.25, amplitude: 1 });
+    expect(inst['p:b'].state).toEqual({});
     expect(compileScenario('fx', json, 'image').sketch.instances!['pv:lfo'].version).toBeUndefined();
   });
 

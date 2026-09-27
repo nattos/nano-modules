@@ -23,6 +23,7 @@ import { EngineProxy } from '../engine-proxy';
 import { discoverEffectBundles } from '../effect-bundles';
 import type { EffectInfo, PluginInfo, StateDiff } from '../engine-types';
 import { parseVersion } from '../version';
+import { defaultStateForPlugin } from '../state/default-state';
 import { compileScenario, type CompiledScenario, type PreviewKind } from './scenario';
 
 export const PREVIEW_W = 320;
@@ -294,7 +295,10 @@ export class PreviewEngine {
     const sketchId = `pv${id}`;
     const compiled = compileScenario(effect.id, opts.scenario ?? effect.preview, this.kindOf(effect.id), sketchId, (id) => {
       const p = this.plugins.get(id);
-      return { module: parseVersion(p?.moduleVersion), effect: parseVersion(p?.version) };
+      return {
+        version: { module: parseVersion(p?.moduleVersion), effect: parseVersion(p?.version) },
+        state: p ? defaultStateForPlugin(p) : {},
+      };
     });
     if (opts.bypassSelf) {
       const self = compiled.sketch.instances?.[compiled.selfKey];

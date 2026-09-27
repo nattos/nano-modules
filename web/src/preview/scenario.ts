@@ -104,17 +104,19 @@ function knownGenerator(v: unknown): string | null {
  * Build the preview sketch for `effectId`. `prefix` namespaces the instance
  * keys (the preview engine is one worker, and keys must be unique in it).
  *
- * `versionOf` stamps each instance with its effect's CURRENT version, as the
- * editor does for a fresh insert: a scenario's params are written in today's
- * units, and an unversioned instance would count as legacy and be migrated
- * (the LFO's old 0..1 `rate` would be multiplied up tenfold).
+ * `baseOf` gives each instance what a fresh editor insert would have: its
+ * effect's CURRENT version (a scenario's params are written in today's units;
+ * an unversioned instance counts as legacy and is migrated — the LFO's old
+ * 0..1 `rate` would be multiplied up tenfold) and its default state, under
+ * the scenario's params (an `add` wire seeds from the field's value; an
+ * absent one reads as the field's minimum).
  */
 export function compileScenario(
   effectId: string,
   previewJson: string | undefined,
   kind: PreviewKind,
   prefix = 'pv',
-  versionOf?: (effectId: string) => InstanceState['version'],
+  baseOf?: (effectId: string) => { version: InstanceState['version']; state: Record<string, unknown> },
 ): CompiledScenario {
   const raw = parse(previewJson);
   const selfKey = `${prefix}:self`;
@@ -202,8 +204,13 @@ export function compileScenario(
     if (ep && plotSeries.length < 4) plotSeries.push(ep);
   }
 
-  if (versionOf) {
-    for (const inst of Object.values(instances)) inst.version = versionOf(inst.module_type);
+  if (baseOf) {
+    for (const [key, inst] of Object.entries(instances)) {
+      const base = baseOf(inst.module_type);
+      inst.version = base.version;
+      // A generator node's picture is injected; its effect state stays empty.
+      if (!instanceGenerators[key]) inst.state = { ...base.state, ...inst.state };
+    }
   }
   const sketch: Sketch = { anchor: null, chain, instances };
   if (wires.length) sketch.wires = wires;
