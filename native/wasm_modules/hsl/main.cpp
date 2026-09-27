@@ -15,6 +15,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "hsl_shaders.h"
 
@@ -147,3 +148,18 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace hsl
+
+namespace hsl {
+
+// Effect store preview: flat-coloured shapes, a saturation boost, and an
+// LFO spinning the hue wheel.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("saturation", 0.4f)
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.25f)
+      .wire("lfo.output", "$self.hue_shift")
+      .capture(1.0f);
+}
+
+}  // namespace hsl

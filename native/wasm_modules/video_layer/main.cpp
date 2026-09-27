@@ -35,6 +35,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <val.h>
 #include <sketch/xfade_shape.h>
@@ -195,3 +196,17 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace video_layer
+
+namespace video_layer {
+
+// Effect store preview: hard-edged motion graphics layered over the motion
+// picture in Difference, so both inputs read at once.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("mode", 11.0f)
+      .param("opacity", 1.0f)
+      .auxGenerator("b", "edges")
+      .wire("b.output", "$self.tex_b");
+}
+
+}  // namespace video_layer

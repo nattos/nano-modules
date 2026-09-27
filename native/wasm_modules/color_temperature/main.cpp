@@ -15,6 +15,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "color_temperature_shaders.h"
@@ -149,3 +150,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace color_temperature
+
+namespace color_temperature {
+
+// Effect store preview: soft camera-ish blobs with an LFO swinging between
+// warm and cool.
+void preview(nano::PreviewScenario& s) {
+  s.input("blobs")
+      .param("temperature", 0.0f)
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.25f)
+      .auxParam("lfo", "amplitude", 0.8f)
+      .wire("lfo.output", "$self.temperature", "add")
+      .capture(1.0f);
+}
+
+}  // namespace color_temperature

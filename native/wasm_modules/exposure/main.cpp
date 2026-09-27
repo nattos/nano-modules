@@ -20,6 +20,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "exposure_shaders.h"
@@ -154,3 +155,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace exposure
+
+namespace exposure {
+
+// Effect store preview: a little over neutral, with an LFO breathing a stop
+// or so either way.
+void preview(nano::PreviewScenario& s) {
+  s.input("blobs")
+      .param("amount", 0.15f)
+      .aux("lfo", "mod.source.lfo")
+      .auxParam("lfo", "rate", 0.25f)
+      .auxParam("lfo", "amplitude", 0.12f)
+      .wire("lfo.output", "$self.amount", "add")
+      .capture(1.0f);
+}
+
+}  // namespace exposure

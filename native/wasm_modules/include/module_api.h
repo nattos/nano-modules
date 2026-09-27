@@ -310,6 +310,24 @@ inline void registerEffect(const EffectDesc_v2& d) {
 #endif
 }
 
+/// Register an effect together with its effect-store preview scenario: runs the
+/// effect's `preview` hook (declared by NANO_DECLARE_INSTANCE_EFFECT; define it
+/// with the nano::PreviewScenario builder from preview_scenario.h) and passes
+/// the result as `d.preview`:
+///
+///   nano::registerEffect({2, "color.hsl", ..., NANO_INSTANCE_LIFECYCLE(hsl)},
+///                        &hsl::preview);
+///
+/// (A template only so this header needn't include preview_scenario.h; the
+/// scenario is a stack local — the host copies the string during the call.)
+template <class Scenario>
+inline void registerEffect(EffectDesc_v2 d, void (*preview)(Scenario&)) {
+    Scenario pv;
+    preview(pv);
+    d.preview = pv.json();
+    registerEffect(d);
+}
+
 /// Fluent "new style" registration. Equivalent to filling an EffectDesc_v2 and
 /// calling registerEffect(), but reads as named per-callback registration at
 /// the call site and only mentions the hooks an effect actually provides:

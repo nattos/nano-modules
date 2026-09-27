@@ -102,6 +102,7 @@ public:
     }
     /// Override a field of the helper (or pre stage) `key`.
     PreviewScenario& auxParam(const char* key, const char* field, float v) { return addParam(key, field, &v, 1); }
+    PreviewScenario& auxParam(const char* key, const char* field, float x, float y) { const float v[] = {x, y}; return addParam(key, field, v, 2); }
     PreviewScenario& auxParam(const char* key, const char* field, float x, float y, float z) { const float v[] = {x, y, z}; return addParam(key, field, v, 3); }
     PreviewScenario& auxParam(const char* key, const char* field, float x, float y, float z, float w) { const float v[] = {x, y, z, w}; return addParam(key, field, v, 4); }
     PreviewScenario& auxParamStr(const char* key, const char* field, const char* s) { return addStr(key, field, s); }

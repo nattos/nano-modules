@@ -19,6 +19,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "auto_level_shaders.h"
 
@@ -246,3 +247,17 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace auto_level
+
+namespace auto_level {
+
+// Effect store preview: a washed-out picture (a Levels stage squeezes it
+// into a narrow band first) that the auto-leveler stretches back out.
+void preview(nano::PreviewScenario& s) {
+  s.input("blobs")
+      .param("equalize", 1.0f)
+      .pre("flat", "color.tone.levels")
+      .auxParam("flat", "out_low", 0.35f)
+      .auxParam("flat", "out_high", 0.6f);
+}
+
+}  // namespace auto_level

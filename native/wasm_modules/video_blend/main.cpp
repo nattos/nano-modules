@@ -196,17 +196,18 @@ void render(void* self, int vp_w, int vp_h) {
 
 namespace video_blend {
 
-// Effect store preview: blend needs a SECOND picture — the motion picture is
-// A (the chain input), hard-edged motion graphics are B, and an LFO sweeps the
-// crossfade so both show.
+// Effect store preview: blend needs a SECOND picture: the motion picture is
+// A (the chain input), hard-edged motion graphics are B, and an LFO sweeps
+// the Screen crossfade — captured mid-fade so both show.
 void preview(nano::PreviewScenario& s) {
   s.input("motion")
+      .param("mode", 3.0f)
       .auxGenerator("b", "edges")
-      .wire("b.output", "$self.tex_b")
       .aux("lfo", "mod.source.lfo")
       .auxParam("lfo", "rate", 0.25f)
+      .wire("b.output", "$self.tex_b")
       .wire("lfo.output", "$self.opacity")
-      .capture(1.5f);
+      .capture(2.0f);
 }
 
 }  // namespace video_blend

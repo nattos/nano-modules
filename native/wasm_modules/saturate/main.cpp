@@ -21,6 +21,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "saturate_shaders.h"
 
@@ -179,3 +180,15 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace saturate
+
+namespace saturate {
+
+// Effect store preview: a hot prescale with some asymmetry, rolling the
+// shapes' colours into the soft ceiling.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("prescale", 2.6f)
+      .param("asymm", 0.3f);
+}
+
+}  // namespace saturate

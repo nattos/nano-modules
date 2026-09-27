@@ -15,6 +15,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "posterize_shaders.h"
 
@@ -161,3 +162,14 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace posterize
+
+namespace posterize {
+
+// Effect store preview: the smooth gradient is where banding reads best;
+// strong amount.
+void preview(nano::PreviewScenario& s) {
+  s.input("gradient")
+      .param("amount", 0.85f);
+}
+
+}  // namespace posterize

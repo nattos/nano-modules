@@ -13,6 +13,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "bake_alpha_shaders.h"
 
@@ -140,3 +141,19 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace bake_alpha
+
+namespace bake_alpha {
+
+// Effect store preview: a transparent input (a grid of lines over nothing)
+// flattened onto a blue background.
+void preview(nano::PreviewScenario& s) {
+  s.input("none")
+      .param("color", 0.1f, 0.25f, 0.55f, 1.0f)
+      .pre("g", "source.grid")
+      .auxParam("g", "softness", 0.6f)
+      .auxParam("g", "cell_size", 0.2f)
+      .auxParam("g", "line_width", 0.15f)
+      .auxParam("g", "line", 1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+}  // namespace bake_alpha

@@ -284,7 +284,7 @@ void nano_module_main() {
         "blend,layer,mix,composite,opacity,multiply,screen",
         "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(video_layer),
-    });
+    }, &video_layer::preview);
 
     nano::registerEffect({
         2,
@@ -414,7 +414,7 @@ void nano_module_main() {
         "alpha,premultiply,composite",
         "la-clone",
         NANO_INSTANCE_LIFECYCLE(bake_alpha),
-    });
+    }, &bake_alpha::preview);
 
     nano::registerEffect({
         2,
@@ -425,7 +425,7 @@ void nano_module_main() {
         "curve,gamma,tonemap",
         "la-bezier-curve",
         NANO_INSTANCE_LIFECYCLE(curve),
-    });
+    }, &curve::preview);
 
     nano::registerEffect({
         2,
@@ -437,7 +437,7 @@ void nano_module_main() {
         "la-sun",
         NANO_INSTANCE_LIFECYCLE(exposure),
         &exposure::is_identity,
-    });
+    }, &exposure::preview);
 
     nano::registerEffect({
         2,
@@ -449,7 +449,7 @@ void nano_module_main() {
         "la-thermometer-half",
         NANO_INSTANCE_LIFECYCLE(color_temperature),
         &color_temperature::is_identity,
-    });
+    }, &color_temperature::preview);
 
     nano::registerEffect({
         2,
@@ -472,7 +472,7 @@ void nano_module_main() {
         "la-adjust",
         NANO_INSTANCE_LIFECYCLE(alpha_remap),
         &alpha_remap::is_identity,
-    });
+    }, &alpha_remap::preview);
 
     nano::registerEffect({
         2,
@@ -496,7 +496,7 @@ void nano_module_main() {
         "posterize,quantize,bitcrush",
         "la-th-large",
         NANO_INSTANCE_LIFECYCLE(posterize),
-    });
+    }, &posterize::preview);
 
     nano::registerEffect({
         2,
@@ -507,7 +507,7 @@ void nano_module_main() {
         "levels,gamma,contrast,remap",
         "la-sliders-h",
         NANO_INSTANCE_LIFECYCLE(levels),
-    });
+    }, &levels::preview);
 
     nano::registerEffect({
         2,
@@ -518,7 +518,7 @@ void nano_module_main() {
         "hue,saturation,lightness,color",
         "la-palette",
         NANO_INSTANCE_LIFECYCLE(hsl),
-    });
+    }, &hsl::preview);
 
     nano::registerEffect({
         2,
@@ -540,7 +540,7 @@ void nano_module_main() {
         "hue,basis,channel-mixer,color,matrix",
         "la-tint",
         NANO_INSTANCE_LIFECYCLE(hue_basis),
-    });
+    }, &hue_basis::preview);
 
     nano::registerEffect({
         2,
@@ -551,7 +551,7 @@ void nano_module_main() {
         "saturate,softclip,tanh,waveshaper,compressor,rolloff",
         "la-fill-drip",
         NANO_INSTANCE_LIFECYCLE(saturate),
-    });
+    }, &saturate::preview);
 
     nano::registerEffect({
         2,
@@ -562,7 +562,7 @@ void nano_module_main() {
         "vibrance,saturation,color",
         "la-tint",
         NANO_INSTANCE_LIFECYCLE(vibrance),
-    });
+    }, &vibrance::preview);
 
     nano::registerEffect({
         2,
@@ -726,7 +726,7 @@ void nano_module_main() {
         "la-magic",
         NANO_INSTANCE_LIFECYCLE(auto_level),
         &auto_level::is_identity,
-    });
+    }, &auto_level::preview);
 
     nano::registerEffect({
         2,

@@ -34,6 +34,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "hue_basis_shaders.h"
 
@@ -258,3 +259,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace hue_basis
+
+namespace hue_basis {
+
+// Effect store preview: three hues rotated well off R/G/B, so the flat
+// shapes land in a stylised cast.
+void preview(nano::PreviewScenario& s) {
+  s.input("motion")
+      .param("hue_a", 0.3f)
+      .param("hue_b", 0.62f)
+      .param("hue_c", 0.9f);
+}
+
+}  // namespace hue_basis

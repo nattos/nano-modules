@@ -20,6 +20,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include "alpha_remap_shaders.h"
 
@@ -222,3 +223,21 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace alpha_remap
+
+namespace alpha_remap {
+
+// Effect store preview: alpha only shows against a matte, so the input is a
+// soft-edged grid (transparent between the lines) and a narrow input window
+// hardens its feathered alpha into crisp bars.
+void preview(nano::PreviewScenario& s) {
+  s.input("none")
+      .param("in_min", 0.45f)
+      .param("in_max", 0.55f)
+      .pre("g", "source.grid")
+      .auxParam("g", "softness", 1.0f)
+      .auxParam("g", "cell_size", 0.45f)
+      .auxParam("g", "line_width", 0.5f)
+      .auxParam("g", "line", 1.0f, 0.6f, 0.2f, 1.0f);
+}
+
+}  // namespace alpha_remap

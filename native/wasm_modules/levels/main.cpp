@@ -19,6 +19,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "levels_shaders.h"
@@ -177,3 +178,16 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace levels
+
+namespace levels {
+
+// Effect store preview: input points pulled in and the mids lifted: the
+// gradient gains snap.
+void preview(nano::PreviewScenario& s) {
+  s.input("gradient")
+      .param("in_low", 0.25f)
+      .param("in_high", 0.75f)
+      .param("gamma", 0.35f);
+}
+
+}  // namespace levels

@@ -18,6 +18,7 @@
  */
 
 #include <gpu.h>
+#include <preview_scenario.h>
 #include <host.h>
 #include <effect_utils.h>
 #include "curve_shaders.h"
@@ -159,3 +160,14 @@ void render(void* self, int vp_w, int vp_h) {
 }
 
 } // namespace curve
+
+namespace curve {
+
+// Effect store preview: a lifted RGB curve on the gradient, opening the
+// mids.
+void preview(nano::PreviewScenario& s) {
+  s.input("gradient")
+      .param("rgb", 0.4f);
+}
+
+}  // namespace curve
