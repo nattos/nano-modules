@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head><title>Thumbnail Runner</title></head>
+<body>
+<pre id="status">Loading…</pre>
+<script type="module">
+/*
+ * Effect-store thumbnail runner — the app's own bake, headless.
+ *
+ * Drives the same PreviewEngine the Effects tab uses, so what comes out is
+ * exactly what the store caches. Used by scripts/bake-thumbs.mjs and the
+ * thumbnail audit e2e (test/effect-thumbnails.test.ts). This is its own page
+ * (its own module graph), so importing the engine here is fine.
+ *
+ *   await __thumbs.start()
+ *   __thumbs.catalog()   → [{id, name, bundle, kind, hasScenario, scenario}]
+ *   await __thumbs.bake(id, {scenario?, bypassSelf?})
+ *       → {kind, mime, dataBase64, image?: {stats}, graph?: {stats, samples}} | null
+ *   await __thumbs.audit(id, {scenario?})
+ *       → {thumb, input (image effects: the scene with the effect bypassed),
+ *          diffFromInput, flags: ['blank' | 'same-as-input' | 'flat']}
+ */
+import { PreviewEngine } from '/src/preview/preview-engine.ts';
+import { imageStats, graphStats, meanAbsDiff, thumbFlags } from '/src/preview/thumb-stats.ts';
+
+const engine = new PreviewEngine();
+const status = document.getElementById('status');
+
+async function blobBase64(blob) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function pixels(blob) {
+  const bmp = await createImageBitmap(blob);
+  const c = new OffscreenCanvas(bmp.width, bmp.height);
+  const ctx = c.getContext('2d');
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close();
+  return ctx.getImageData(0, 0, c.width, c.height).data;
+}
+
+/** RGBA of the last image bakes, by label — for diffing on the page side. */
+const lastPixels = new Map();
+
+window.__thumbs = {
+  async start() {
+    await engine.start();
+    // Schemas trail the effect lists; kindOf needs them.
+    const t0 = Date.now();
+    while (Date.now() - t0 < 10000 && [...engine.catalog.keys()].some((id) => !engine.hasSchema(id))) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    status.textContent = `ready: ${engine.catalog.size} effects`;
+    return engine.catalog.size;
+  },
+  catalog() {
+    return [...engine.catalog.values()].map((e) => ({
+      id: e.id, name: e.name ?? e.id, bundle: e.bundle ?? '', kind: engine.kindOf(e.id),
+      hasScenario: !!e.preview, scenario: e.preview ?? null,
+    }));
+  },
+  async bake(id, opts = {}) {
+    const effect = engine.catalog.get(id);
+    if (!effect) throw new Error(`unknown effect ${id}`);
+    status.textContent = `baking ${id}${opts.bypassSelf ? ' (input)' : ''}`;
+    const baked = await engine.bakeThumbnail(effect, opts);
+    if (!baked) return null;
+    const out = { kind: baked.kind, mime: baked.blob.type, dataBase64: await blobBase64(baked.blob) };
+    if (baked.kind === 'graph' && baked.samples) {
+      out.graph = { stats: graphStats(baked.samples.values, baked.samples.min, baked.samples.max), samples: baked.samples };
+    } else {
+      const px = await pixels(baked.blob);
+      lastPixels.set(opts.label ?? (opts.bypassSelf ? 'input' : 'thumb'), px);
+      out.image = { stats: imageStats(px) };
+    }
+    return out;
+  },
+  async audit(id, opts = {}) {
+    const kind = engine.kindOf(id);
+    const thumb = await this.bake(id, { scenario: opts.scenario, label: 'thumb' });
+    if (!thumb) return { kind, thumb: null, input: null, flags: ['blank'] };
+    let input = null;
+    let diffFromInput;
+    if (kind === 'image' && thumb.image) {
+      input = await this.bake(id, { scenario: opts.scenario, bypassSelf: true, label: 'input' });
+      if (input?.image) diffFromInput = meanAbsDiff(lastPixels.get('thumb'), lastPixels.get('input'));
+    }
+    const flags = thumbFlags({ image: thumb.image?.stats, graph: thumb.graph?.stats, diffFromInput });
+    return { kind, thumb, input, diffFromInput: diffFromInput ?? null, flags };
+  },
+};
+status.textContent = 'idle';
+</script>
+</body>
+</html>

@@ -41,6 +41,20 @@ export interface LiveSamples {
 
 type Frames = Record<string, ImageBitmap>;
 
+export interface BakeOptions {
+  /** Scenario JSON to run instead of the effect's own (authoring tools). */
+  scenario?: string;
+  /** Run the scene with the previewed effect powered off — its input alone. */
+  bypassSelf?: boolean;
+}
+
+export interface BakedThumb {
+  blob: Blob;
+  kind: 'image' | 'graph';
+  /** A graph's plotted samples and range (for tooling). */
+  samples?: { values: number[]; min: number; max: number };
+}
+
 function isTexture(f: any): boolean {
   return f && typeof f === 'object' && f.type === 'texture';
 }
@@ -179,6 +193,11 @@ export class PreviewEngine {
 
   // ── What an effect is ──────────────────────────────────────────────────
 
+  /** Has `effectId`'s schema arrived (so kindOf is authoritative)? */
+  hasSchema(effectId: string): boolean {
+    return !!this.plugins.get(effectId)?.schema;
+  }
+
   /** How the store should present `effectId` (from its schema). */
   kindOf(effectId: string): PreviewKind {
     const p = this.plugins.get(effectId);
@@ -211,11 +230,15 @@ export class PreviewEngine {
 
   // ── Running a scenario ─────────────────────────────────────────────────
 
-  private mount(effect: EffectInfo): { compiled: CompiledScenario; sketchId: string } {
+  private mount(effect: EffectInfo, opts: BakeOptions = {}): { compiled: CompiledScenario; sketchId: string } {
     const proxy = this.proxy!;
     const id = ++this.runId;
     const sketchId = `pv${id}`;
-    const compiled = compileScenario(effect.id, effect.preview, this.kindOf(effect.id), sketchId);
+    const compiled = compileScenario(effect.id, opts.scenario ?? effect.preview, this.kindOf(effect.id), sketchId);
+    if (opts.bypassSelf) {
+      const self = compiled.sketch.instances?.[compiled.selfKey];
+      if (self) self.state = { ...self.state, __enable__: 0 };
+    }
     proxy.createSketch(sketchId, JSON.parse(JSON.stringify(compiled.sketch)));
     if (compiled.input) proxy.setSketchGenerator(sketchId, compiled.input);
     for (const [k, g] of Object.entries(compiled.instanceGenerators)) proxy.setInstanceGenerator(k, g);
@@ -245,15 +268,15 @@ export class PreviewEngine {
    * Bake `effect`'s thumbnail: a WebP of its scenario at the capture time, or
    * for a modulation effect a plot of its output over the loop. Null when the
    * engine couldn't produce one (or a live preview interrupted it — bake
-   * again later).
+   * again later). `opts` are for authoring tools (scripts/bake-thumbs.mjs).
    */
-  bakeThumbnail(effect: EffectInfo): Promise<{ blob: Blob; kind: 'image' | 'graph' } | null> {
+  bakeThumbnail(effect: EffectInfo, opts: BakeOptions = {}): Promise<BakedThumb | null> {
     return this.exclusive(async () => {
       await this.start();
       if (!this.proxy || this.disposed || this.liveWanted) return null;
       const proxy = this.proxy;
       proxy.setPaused(true);
-      const m = this.mount(effect);
+      const m = this.mount(effect, opts);
       const selfKey = m.compiled.selfKey;
       const plot = this.kindOf(effect.id) === 'modulation' ? this.primaryScalarOutput(effect.id) : null;
       try {
@@ -277,7 +300,10 @@ export class PreviewEngine {
         }
         if (plot) {
           last?.close();
-          return { blob: await plotBlob(values, plot.min, plot.max), kind: 'graph' as const };
+          return {
+            blob: await plotBlob(values, plot.min, plot.max), kind: 'graph' as const,
+            samples: { values, min: plot.min, max: plot.max },
+          };
         }
         if (!last) return null;
         const c = new OffscreenCanvas(last.width, last.height);

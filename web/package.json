@@ -16,6 +16,7 @@
     "package": "bash scripts/package.sh all",
     "test": "vitest --run",
     "test:e2e": "jest",
+    "thumbs": "node scripts/bake-thumbs.mjs",
     "electron": "electron electron/main.cjs",
     "electron:remote": "NANO_PRODUCT=remote electron electron/main.cjs",
     "electron:arrangement": "NANO_PRODUCT=arrangement electron electron/main.cjs"
