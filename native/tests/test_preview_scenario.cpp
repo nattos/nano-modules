@@ -87,6 +87,8 @@ TEST_CASE("PreviewScenario: vectors, escaped strings, pre stages, plot and thumb
       .paramStr("text", "Say \"hi\"\n\\ok")
       .pre("mv", "debug.motion_rect")
       .auxParam("mv", "speed", 2.f)
+      .post("look", "source.sdf.plume")
+      .auxParam("look", "zoom", 0.25f)
       .aux("lfo", "mod.source.lfo")
       .auxParam("lfo", "tint", 0.f, 1.f, 0.f, 1.f)
       .wire("lfo.output", "$self.mix", "mix", nullptr, 0.25f)
@@ -100,6 +102,9 @@ TEST_CASE("PreviewScenario: vectors, escaped strings, pre stages, plot and thumb
   REQUIRE(j["pre"].size() == 1);
   CHECK(j["pre"][0]["effect"] == "debug.motion_rect");
   CHECK_THAT(j["pre"][0]["params"]["speed"].get<double>(), WithinAbs(2.0, 1e-4));
+  REQUIRE(j["post"].size() == 1);
+  CHECK(j["post"][0]["effect"] == "source.sdf.plume");
+  CHECK_THAT(j["post"][0]["params"]["zoom"].get<double>(), WithinAbs(0.25, 1e-4));
   CHECK(j["aux"][0]["params"]["tint"].size() == 4);
   CHECK_THAT(j["wires"][0]["mixFactor"].get<double>(), WithinAbs(0.25, 1e-4));
   CHECK_FALSE(j["wires"][0].contains("magnitude"));
@@ -113,6 +118,7 @@ TEST_CASE("PreviewScenario: optional keys stay absent by default") {
   s.wire("a.o", "$self.p");
   const json j = json::parse(s.json());
   CHECK_FALSE(j.contains("pre"));
+  CHECK_FALSE(j.contains("post"));
   CHECK_FALSE(j.contains("plot"));
   CHECK_FALSE(j.contains("output"));
   CHECK_FALSE(j.contains("thumb"));

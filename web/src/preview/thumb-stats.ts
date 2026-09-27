@@ -23,7 +23,8 @@ export interface GraphStats {
 export type ThumbFlag = 'blank' | 'same-as-input' | 'flat';
 
 /** Below these a thumbnail is flagged. */
-export const BLANK_MIN_DISTINCT = 4;
+/** Two colours can be a real picture (one lit LED bar on black); one can't. */
+export const BLANK_MIN_DISTINCT = 2;
 export const BLANK_MIN_STD = 2;
 export const SAME_MAX_DIFF = 1.5;
 export const FLAT_MAX_RANGE = 0.02;

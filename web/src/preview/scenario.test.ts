@@ -132,6 +132,16 @@ describe('compileScenario', () => {
     expect(v.instanceGenerators).toEqual({ 'p:self': 'blobs' });
   });
 
+  it('places post stages after the effect on the image chain', () => {
+    const json = JSON.stringify({
+      input: 'none', pre: [{ key: 'sun', effect: 'source.sdf.helio_field' }],
+      post: [{ key: 'look', effect: 'source.sdf.plume', params: { zoom: 0.25 } }],
+    });
+    const c = compileScenario('source.sdf.dust_halo', json, 'generator', 'p');
+    expect(c.sketch.chain!.map((e) => [e.instance_key, !!e.canvas])).toEqual([['p:sun', false], ['p:self', false], ['p:look', false]]);
+    expect(c.sketch.instances!['p:look'].state).toEqual({ zoom: 0.25 });
+  });
+
   it('hashString is stable and discriminating', () => {
     expect(hashString('abc')).toBe(hashString('abc'));
     expect(hashString('abc')).not.toBe(hashString('abd'));

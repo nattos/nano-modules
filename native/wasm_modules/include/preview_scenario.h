@@ -36,6 +36,7 @@
  *     "pre": [                           // linear stages AHEAD of the effect
  *       { "key": "mv", "effect": "<effect id>", "params": { … } }
  *     ],
+ *     "post": [ … ],                     // linear stages AFTER it (same shape)
  *     "aux": [                           // helper nodes, off the image chain
  *       { "key": "lfo", "effect": "<effect id>", "params": { … } },
  *       { "key": "b",   "generator": "<generator key>" }
@@ -55,11 +56,13 @@
  *
  * `$self` names the previewed effect. Generator keys are the web preview
  * engine's input pictures (web/src/preview/generators.ts): "motion",
- * "gradient", "edges", "blobs". An unknown key falls back to "motion".
+ * "gradient", "edges", "blobs", "black" (an opaque backdrop for effects that
+ * add light onto their input). An unknown key falls back to "motion".
  *
  * `pre` stages sit on the image chain between the input and the effect (for an
  * effect that reads something only an upstream stage makes, like motion.blur's
- * motion vectors); `aux` helpers are sidecar-canvas nodes that only reach the
+ * motion vectors) and `post` stages after it (for an effect only visible
+ * through a later stage — an SDF provider rendered by a Plume); `aux` helpers are sidecar-canvas nodes that only reach the
  * effect over wires. `param`s of either are set with auxParam(key, …).
  *
  * Header-only, no allocation, no libc formatting: fixed-size tables, and all
@@ -72,6 +75,7 @@ class PreviewScenario {
 public:
     static constexpr int kMaxAux = 8;
     static constexpr int kMaxPre = 4;
+    static constexpr int kMaxPost = 4;
     static constexpr int kMaxParams = 32;
     static constexpr int kMaxWires = 12;
     static constexpr int kMaxPlot = 4;
@@ -90,6 +94,11 @@ public:
         if (nPre_ < kMaxPre) pre_[nPre_++] = {key, effectId, nullptr};
         return *this;
     }
+    /// Add a linear stage after the previewed effect (see `post` above).
+    PreviewScenario& post(const char* key, const char* effectId) {
+        if (nPost_ < kMaxPost) post_[nPost_++] = {key, effectId, nullptr};
+        return *this;
+    }
     /// Add a helper effect node, addressed as `key` in wires.
     PreviewScenario& aux(const char* key, const char* effectId) {
         if (nAux_ < kMaxAux) aux_[nAux_++] = {key, effectId, nullptr};
@@ -100,7 +109,7 @@ public:
         if (nAux_ < kMaxAux) aux_[nAux_++] = {key, nullptr, generator};
         return *this;
     }
-    /// Override a field of the helper (or pre stage) `key`.
+    /// Override a field of the helper (or pre/post stage) `key`.
     PreviewScenario& auxParam(const char* key, const char* field, float v) { return addParam(key, field, &v, 1); }
     PreviewScenario& auxParam(const char* key, const char* field, float x, float y) { const float v[] = {x, y}; return addParam(key, field, v, 2); }
     PreviewScenario& auxParam(const char* key, const char* field, float x, float y, float z) { const float v[] = {x, y, z}; return addParam(key, field, v, 3); }
@@ -139,18 +148,8 @@ public:
         if (input_) { raw(",\"input\":"); str(input_); }
         raw(",\"params\":");
         paramsOf(nullptr);
-        if (nPre_) {
-            raw(",\"pre\":[");
-            for (int i = 0; i < nPre_; ++i) {
-                if (i) raw(",");
-                raw("{\"key\":"); str(pre_[i].key);
-                raw(",\"effect\":"); str(pre_[i].effect);
-                raw(",\"params\":");
-                paramsOf(pre_[i].key);
-                raw("}");
-            }
-            raw("]");
-        }
+        linearStages("pre", pre_, nPre_);
+        linearStages("post", post_, nPost_);
         raw(",\"aux\":[");
         for (int i = 0; i < nAux_; ++i) {
             if (i) raw(",");
@@ -236,6 +235,19 @@ private:
         }
         raw("}");
     }
+    void linearStages(const char* name, const Aux* list, int n) {
+        if (!n) return;
+        raw(",\""); raw(name); raw("\":[");
+        for (int i = 0; i < n; ++i) {
+            if (i) raw(",");
+            raw("{\"key\":"); str(list[i].key);
+            raw(",\"effect\":"); str(list[i].effect);
+            raw(",\"params\":");
+            paramsOf(list[i].key);
+            raw("}");
+        }
+        raw("]");
+    }
     void put(char c) { if (len_ < kBuf - 1) buf_[len_++] = c; }
     void raw(const char* s) { while (*s) put(*s++); }
     /// A JSON string literal. Keys and ids are plain ASCII identifiers; quotes,
@@ -286,11 +298,12 @@ private:
     const char* output_ = nullptr;
     bool icon_ = false;
     Aux pre_[kMaxPre] = {};
+    Aux post_[kMaxPost] = {};
     Aux aux_[kMaxAux] = {};
     const char* plot_[kMaxPlot] = {};
     Param params_[kMaxParams] = {};
     Wire wires_[kMaxWires] = {};
-    int nPre_ = 0, nAux_ = 0, nParams_ = 0, nWires_ = 0, nPlot_ = 0;
+    int nPre_ = 0, nPost_ = 0, nAux_ = 0, nParams_ = 0, nWires_ = 0, nPlot_ = 0;
     float capture_ = -1.f;
     float loop_ = 0.f;
     char buf_[kBuf] = {};

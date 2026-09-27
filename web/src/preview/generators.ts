@@ -148,11 +148,19 @@ function blobs(ctx: OffscreenCanvasRenderingContext2D, t: number, w: number, h: 
   for (let y = 0; y < h; y += step * 2) ctx.fillRect(0, y, w, step);
 }
 
+/** Opaque black: a backdrop for effects that ADD light onto their input
+ *  (with no input they'd add onto transparent black and stay invisible). */
+function black(ctx: OffscreenCanvasRenderingContext2D, _t: number, w: number, h: number) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+}
+
 export const GENERATORS: readonly GeneratorDef[] = [
   { key: 'motion', label: 'Motion', draw: motion },
   { key: 'gradient', label: 'Gradient', draw: gradient },
   { key: 'edges', label: 'Edges', draw: edges },
   { key: 'blobs', label: 'Blobs', draw: blobs },
+  { key: 'black', label: 'Black', draw: black },
 ];
 
 export const DEFAULT_GENERATOR = 'motion';

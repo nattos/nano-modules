@@ -523,7 +523,7 @@ nano::registerEffect({2, "composite.blend", /* … */, NANO_INSTANCE_LIFECYCLE(v
   `include/preview_scenario.h`; the web compiler is `web/src/preview/scenario.ts`.
 - Input pictures (`input` / `auxGenerator`) are drawn by the store, keyed by
   name: `motion` (flat-coloured moving shapes), `gradient` (smooth hue/luma
-  sweeps), `edges` (hard-edged motion graphics), `blobs` (soft, camera-ish).
+  sweeps), `edges` (hard-edged motion graphics), `blobs` (soft, camera-ish), `black` (an opaque backdrop — for effects that add light onto their input, which stay invisible over "none").
   Pick the one that shows off what your effect does; `"none"` for no input.
 - Scenario params override your defaults **for the preview only** — show the
   effect at its most characteristic, not at its (often neutral) defaults.

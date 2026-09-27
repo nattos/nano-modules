@@ -10,7 +10,7 @@
  * The previewed effect is the sketch's last LINEAR entry, so it reads the
  * scenario's input picture as its chain input (through any `pre` entries —
  * upstream stages it needs, like a motion-vector producer) and its output is
- * the sketch output. Every helper (a second picture, an LFO) is a sidecar-CANVAS node:
+ * the sketch output (or, with `post` stages, flows on through them). Every helper (a second picture, an LFO) is a sidecar-CANVAS node:
  * canvas stages never touch the linear image chain, so helpers can feed the
  * effect over wires without replacing its input. The execution order that
  * lets a helper run first is computed exactly as the editor does it.
@@ -140,21 +140,27 @@ export function compileScenario(
     ['$self', { instanceKey: selfKey, generator: false }],
   ]);
 
-  // `pre`: linear stages ahead of the effect (the chain input flows through
-  // them into it) — for effects that read something only an upstream stage
-  // makes, like motion.blur's motion vectors.
-  const pre = Array.isArray(raw.pre) ? raw.pre as RawAux[] : [];
-  for (const a of pre) {
-    if (!a || typeof a !== 'object' || typeof a.key !== 'string' || !KEY_RE.test(a.key)) continue;
-    if (nodes.has(a.key) || typeof a.effect !== 'string' || !a.effect || !has(a.effect)) continue;
-    const instanceKey = `${prefix}:${a.key}`;
-    chain.push({ type: 'module', module_type: a.effect, instance_key: instanceKey });
-    instances[instanceKey] = { module_type: a.effect, state: sceneParams(a.params) };
-    if (!effects.includes(a.effect)) effects.push(a.effect);
-    nodes.set(a.key, { instanceKey, generator: false });
-  }
+  // `pre` / `post`: linear stages ahead of / after the effect. A pre stage
+  // makes something only an upstream stage can (motion.blur's motion field);
+  // a post stage is what makes the effect visible at all (an SDF provider is
+  // rendered by a Plume after it).
+  const linear = (list: unknown): ChainEntry[] => {
+    const out: ChainEntry[] = [];
+    for (const a of Array.isArray(list) ? list as RawAux[] : []) {
+      if (!a || typeof a !== 'object' || typeof a.key !== 'string' || !KEY_RE.test(a.key)) continue;
+      if (nodes.has(a.key) || typeof a.effect !== 'string' || !a.effect || !has(a.effect)) continue;
+      const instanceKey = `${prefix}:${a.key}`;
+      out.push({ type: 'module', module_type: a.effect, instance_key: instanceKey });
+      instances[instanceKey] = { module_type: a.effect, state: sceneParams(a.params) };
+      if (!effects.includes(a.effect)) effects.push(a.effect);
+      nodes.set(a.key, { instanceKey, generator: false });
+    }
+    return out;
+  };
+  chain.push(...linear(raw.pre));
   chain.push({ type: 'module', module_type: effectId, instance_key: selfKey });
   instances[selfKey] = { module_type: effectId, state: sceneParams(raw.params) };
+  chain.push(...linear(raw.post));
   // The generator node effect previewing ITSELF (the video-file player) has
   // no clip: it plays the scenario's input picture instead.
   if (effectId === GENERATOR_NODE_EFFECT && input) {

@@ -11,12 +11,15 @@
  *   npm run thumbs -- [--only 'color.*,mod.shaper.remap'] [--no-debug]
  *                     [--out /tmp/effect-thumbs] [--base-url http://localhost:5173]
  *                     [--scenario <id>=<file.json>]... [--scenarios <map.json>]
+ *                     [--strip 0.5,1,1.5,2,3]
  *
  * --scenario runs a scenario JSON (the format in
  * native/wasm_modules/include/preview_scenario.h) instead of the effect's
  * own — iterate on a scene here, then port it to the effect's preview() hook.
  * --scenarios does the same for many at once: a JSON object {id: scenario}
  * (and --only defaults to exactly those ids).
+ * --strip also bakes each scene at those capture times, side by side, to
+ * `<id>.strip.png` — for choosing a scenario's capture time.
  * The dev server's port comes from devindex (http://localhost:4999) when
  * --base-url / GPU_TEST_BASE_URL aren't given.
  */
@@ -40,6 +43,7 @@ function parseArgs(argv) {
     else if (a === '--out') opts.out = path.resolve(next());
     else if (a === '--base-url') opts.baseUrl = next();
     else if (a === '--no-debug') opts.noDebug = true;
+    else if (a === '--strip') opts.strip = next().split(',').map(Number).filter((n) => Number.isFinite(n) && n >= 0);
     else if (a === '--scenario') {
       const v = next();
       const eq = v.indexOf('=');
@@ -93,6 +97,7 @@ function contactSheet(rows) {
         ${r.file ? `<img src="${esc(r.file)}" title="thumbnail">` : `<div class="none">${r.kind === 'icon' ? 'icon tile' : 'no thumbnail'}</div>`}
         ${r.inputFile ? `<img class="input" src="${esc(r.inputFile)}" title="input (effect bypassed)">` : ''}
       </div>
+      ${r.stripFile ? `<img class="strip" src="${esc(r.stripFile)}" title="capture times">` : ''}
       <div class="id">${esc(r.id)}</div>
       <div class="meta">${esc(r.kind)} · ${esc(r.bundle)}${r.diffFromInput != null ? ` · Δ ${r.diffFromInput.toFixed(1)}` : ''}${r.ms ? ` · ${r.ms} ms` : ''}</div>
       <div class="badges">
@@ -111,6 +116,7 @@ function contactSheet(rows) {
   .imgs { display:flex; gap:6px; align-items:flex-start; }
   .imgs img { width:240px; aspect-ratio:16/9; border-radius:4px; background:#000; }
   .imgs img.input { width:80px; opacity:.8; }
+  .strip { display:block; width:100%; margin-top:6px; }
   .none { width:240px; aspect-ratio:16/9; display:grid; place-items:center; color:#666; border:1px dashed #333; }
   .id { margin-top:6px; font-weight:600; }
   .meta { color:#889; font-size:12px; }
@@ -173,6 +179,11 @@ async function main() {
         if (r.input) {
           row.inputFile = `${fileSafe(e.id)}.input.${extOf(r.input.mime)}`;
           fs.writeFileSync(path.join(opts.out, row.inputFile), Buffer.from(r.input.dataBase64, 'base64'));
+        }
+        if (opts.strip?.length && r.kind !== 'icon') {
+          const st = await page.evaluate((id, scenario, times) => window.__thumbs.strip(id, { scenario, times }), e.id, override ?? undefined, opts.strip);
+          row.stripFile = `${fileSafe(e.id)}.strip.png`;
+          fs.writeFileSync(path.join(opts.out, row.stripFile), Buffer.from(st.dataBase64, 'base64'));
         }
       } catch (err) {
         row.error = String(err?.message ?? err).split('\n')[0];

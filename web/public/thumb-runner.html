@@ -16,6 +16,9 @@
  *   __thumbs.catalog()   → [{id, name, bundle, kind, hasScenario, scenario}]
  *   await __thumbs.bake(id, {scenario?, bypassSelf?})
  *       → {kind, mime, dataBase64, image?: {stats}, graph?: {stats, samples}} | null
+ *   await __thumbs.strip(id, {scenario?, times: [sec…]})
+ *       → {mime, dataBase64}: the scene captured at each time, side by side
+ *         (for choosing a scenario's capture time)
  *   await __thumbs.audit(id, {scenario?})
  *       → {thumb, input (image effects: the scene with the effect bypassed),
  *          diffFromInput, flags: ['blank' | 'same-as-input' | 'flat']}
@@ -81,6 +84,31 @@ window.__thumbs = {
       out.image = { stats: imageStats(px) };
     }
     return out;
+  },
+  async strip(id, opts = {}) {
+    const effect = engine.catalog.get(id);
+    if (!effect) throw new Error(`unknown effect ${id}`);
+    const base = JSON.parse(opts.scenario ?? effect.preview ?? '{}');
+    const times = opts.times ?? [0.5, 1, 1.5, 2, 3];
+    const W = 160, H = 90, PAD = 4;
+    const c = new OffscreenCanvas(times.length * (W + PAD) - PAD, H + 14);
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#15171c';
+    ctx.fillRect(0, 0, c.width, c.height);
+    for (let i = 0; i < times.length; i++) {
+      status.textContent = `strip ${id} @ ${times[i]}s`;
+      const baked = await engine.bakeThumbnail(effect, { scenario: JSON.stringify({ ...base, capture: times[i] }) });
+      if (baked && baked.kind !== 'icon') {
+        const bmp = await createImageBitmap(baked.blob);
+        ctx.drawImage(bmp, i * (W + PAD), 0, W, H);
+        bmp.close();
+      }
+      ctx.fillStyle = '#aab';
+      ctx.font = '10px sans-serif';
+      ctx.fillText(`${times[i]}s`, i * (W + PAD) + 2, H + 11);
+    }
+    const blob = await c.convertToBlob({ type: 'image/png' });
+    return { mime: blob.type, dataBase64: await blobBase64(blob) };
   },
   async audit(id, opts = {}) {
     const kind = engine.kindOf(id);
