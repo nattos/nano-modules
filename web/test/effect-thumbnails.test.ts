@@ -12,18 +12,27 @@
  * A flagged effect needs a (better) preview scenario — see the preview
  * section of EFFECTS_STYLE_GUIDE.md; `npm run thumbs -- --only <id>` renders
  * it to disk. The thumbnails land in /tmp/gpu-test-dumps/thumbs/.
+ *
+ * With NANO_EXTRAS_DIR set (the extras' suites run on this harness), the
+ * extras bundles — nano, lights, legacy — are audited too.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
 const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 const DUMP_DIR = '/tmp/gpu-test-dumps/thumbs';
-const IN_REPO = new Set(['com.nano.core', 'com.nano.text', 'com.nano.richtext']);
+const AUDITED = new Set([
+  'com.nano.core', 'com.nano.text', 'com.nano.richtext',
+  ...(process.env.NANO_EXTRAS_DIR ? ['com.nano.nano', 'com.nano.lights', 'com.nano.legacy'] : []),
+]);
 
 /** Known exceptions, flag by flag — keep each one justified. */
 const ALLOW: Record<string, string[]> = {
   // A flat fill is the whole effect.
   'source.solid_color': ['blank'],
+  // It only re-draws stair-stepped line edges: real, but under the ≈-input
+  // threshold even zoomed in (extras).
+  'filter.reconstruct.line': ['same-as-input'],
 };
 
 interface Audit {
@@ -35,13 +44,13 @@ interface Audit {
 describe('effect thumbnails', () => {
   jest.setTimeout(240_000);
 
-  it('every in-repo effect bakes a thumbnail that shows it', async () => {
+  it('every audited effect bakes a thumbnail that shows it', async () => {
     await page.goto(`${BASE}/thumb-runner.html`, { waitUntil: 'load' });
     await page.waitForFunction(() => !!(window as any).__thumbs, { timeout: 30_000 });
     await page.evaluate(() => (window as any).__thumbs.start());
     const catalog: Array<{ id: string; bundle: string }> = await page.evaluate(() => (window as any).__thumbs.catalog());
     const ids = catalog
-      .filter((e) => IN_REPO.has(e.bundle) && !e.id.startsWith('debug.') && !e.id.startsWith('testonly.'))
+      .filter((e) => AUDITED.has(e.bundle) && !e.id.startsWith('debug.') && !e.id.startsWith('testonly.'))
       .map((e) => e.id)
       .sort();
     expect(ids.length).toBeGreaterThan(50);

@@ -518,7 +518,9 @@ nano::registerEffect({2, "composite.blend", /* … */, NANO_INSTANCE_LIFECYCLE(v
 - `$self` is your effect; `aux` helpers are placed as sidecar-canvas nodes, so
   they never replace your chain input. `pre("key", "<effect id>")` instead puts
   a stage on the image chain AHEAD of you — for something only an upstream
-  stage makes (motion.blur's motion field). A helper whose effect isn't loaded
+  stage makes (motion.blur's motion field); `post(...)` puts one AFTER you —
+  for an effect only visible through a later stage (an SDF provider rendered
+  by a Plume). A helper whose effect isn't loaded
   is dropped, wires and all. The format is documented in
   `include/preview_scenario.h`; the web compiler is `web/src/preview/scenario.ts`.
 - Input pictures (`input` / `auxGenerator`) are drawn by the store, keyed by
@@ -538,6 +540,9 @@ nano::registerEffect({2, "composite.blend", /* … */, NANO_INSTANCE_LIFECYCLE(v
   reshapes. Drive trigger inputs from `mod.trigger.beat` with `single_frame` on.
 - **Nothing to picture** (a pass-through utility, a transport controller):
   `thumbIcon()` — the card shows its category tile and nothing is baked.
+- **Triggered effects** (they sit dark until fired): turn on their auto mode
+  (`auto_mode` Beats) or wire a `mod.trigger.beat`, then use `--strip` to catch
+  a moment where something is happening.
 - Thumbnails are cached against the bundle's contents and the scenario, so a
   rebuild re-bakes them; nothing to invalidate by hand.
 
@@ -550,6 +555,7 @@ in its scene) and *flat* (a graph that never moves):
 npm run thumbs -- --only 'color.hsl,mod.shaper.*'           # what ships now
 npm run thumbs -- --scenario color.hsl=/tmp/hsl.json         # try a scene, no rebuild
 npm run thumbs -- --scenarios /tmp/many.json                 # {id: scenario, …}
+npm run thumbs -- --only source.light.x --strip 0.5,1,2,3    # pick a capture time
 ```
 
 Iterate on the JSON, then port it into your `preview` hook. The

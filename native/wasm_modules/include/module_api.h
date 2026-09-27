@@ -23,7 +23,7 @@
 
 #include <cstdint>
 
-namespace nano { class PreviewScenario; }  // preview_scenario.h
+#include "preview_scenario.h"  // nano::PreviewScenario (dependency-free)
 
 // ── Host↔effect ABI version ────────────────────────────────────────────────
 // Version of the host<->effect CONTRACT: which host imports exist (and their
@@ -318,11 +318,9 @@ inline void registerEffect(const EffectDesc_v2& d) {
 ///   nano::registerEffect({2, "color.hsl", ..., NANO_INSTANCE_LIFECYCLE(hsl)},
 ///                        &hsl::preview);
 ///
-/// (A template only so this header needn't include preview_scenario.h; the
-/// scenario is a stack local — the host copies the string during the call.)
-template <class Scenario>
-inline void registerEffect(EffectDesc_v2 d, void (*preview)(Scenario&)) {
-    Scenario pv;
+/// (The scenario is a stack local — the host copies the string during the call.)
+inline void registerEffect(EffectDesc_v2 d, void (*preview)(PreviewScenario&)) {
+    PreviewScenario pv;
     preview(pv);
     d.preview = pv.json();
     registerEffect(d);
