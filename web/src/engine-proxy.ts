@@ -248,6 +248,18 @@ export class EngineProxy {
   }
 
   /** Bind a decoded frame to an instance's host `frame` field (null to clear). */
+  /** Draw preview generator `key` as `sketchId`'s input picture every tick
+   *  (null unbinds). See preview/generators.ts. */
+  setSketchGenerator(sketchId: string, key: string | null) {
+    this.send({ type: 'setSketchGenerator', sketchId, key });
+  }
+
+  /** Draw preview generator `key` into `instanceKey`'s injected input slot 0
+   *  every tick (null unbinds) — how a preview's aux picture node is fed. */
+  setInstanceGenerator(instanceKey: string, key: string | null) {
+    this.send({ type: 'setInstanceGenerator', instanceKey, key });
+  }
+
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
     if (bitmap) {
       this.send({ type: 'setInstanceTexture', instanceKey, bitmap }, [bitmap]);

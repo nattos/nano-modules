@@ -212,6 +212,12 @@ export type WorkerCommand =
   // field (the arrangement video pump → a `source.video.file` chain entry).
   // Keyed by the global instance key; pass null to clear.
   | { type: 'setInstanceTexture'; instanceKey: string; bitmap: ImageBitmap | null }
+  // Effect-store preview pictures (preview/generators.ts): draw generator `key`
+  // in the worker every tick, at the effect clock, as a sketch's input picture
+  // or as an instance's injected slot-0 frame (like setInstanceTexture). null
+  // unbinds. Used by the preview engine only.
+  | { type: 'setSketchGenerator'; sketchId: string; key: string | null }
+  | { type: 'setInstanceGenerator'; instanceKey: string; key: string | null }
   | { type: 'reloadWasm'; wasmUrl: string }
   // Test-only: route fusion-eligible stages through the dispatcher
   // ('force-on'), back to the standalone path ('force-off'), or use

@@ -21,6 +21,7 @@ import { TraceCapture } from './trace-capture';
 import { traceBarrierKeys } from './engine-trace-barriers';
 import type { WorkerCommand, WorkerEvent, EngineState, PluginInfo, TracePoint, DebugConsoleEntry } from './engine-types';
 import { BUCKET_SKETCH_ID, chainEntryAt, normalizeSketchChains, sketchChain, type Sketch } from './sketch-types';
+import { generatorFor } from './preview/generators';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -354,6 +355,7 @@ async function handleCommand(cmd: WorkerCommand) {
       executor?.deleteSketch(cmd.sketchId);
       // Free any user-injected input texture; the GPU pool reclaims memory.
       sketchInputTextures.delete(cmd.sketchId);
+      sketchGenerators.delete(cmd.sketchId);
       // Trace points referencing this sketch are unregistered by the UI
       // (texture-monitor.disconnectedCallback) and don't need cleanup here.
       sketchRevs.delete(cmd.sketchId);
@@ -429,6 +431,18 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     case 'setInstanceTexture':
       handleSetInstanceTexture(cmd.instanceKey, cmd.bitmap);
+      break;
+    case 'setSketchGenerator':
+      if (cmd.key) sketchGenerators.set(cmd.sketchId, cmd.key);
+      else { sketchGenerators.delete(cmd.sketchId); sketchInputTextures.delete(cmd.sketchId); }
+      break;
+    case 'setInstanceGenerator':
+      if (cmd.key) instanceGenerators.set(cmd.instanceKey, cmd.key);
+      else {
+        instanceGenerators.delete(cmd.instanceKey);
+        instanceTextures.delete(cmd.instanceKey);
+        activeExecutor()?.getInstance(cmd.instanceKey)?.host.textureFields.delete('0');
+      }
       break;
     case 'reloadWasm':
       await reloadWasmModule(cmd.wasmUrl);
@@ -925,6 +939,65 @@ function handleSetInstanceTexture(instanceKey: string, bitmap: ImageBitmap | nul
   // as handleSetSketchInput (this is a per-frame video feed, not inspector state).
 }
 
+/**
+ * Effect-store preview pictures (preview/generators.ts), drawn in this worker
+ * every tick at the effect clock so a stepped clock bakes the same frame every
+ * time. A sketch generator feeds that sketch's input picture (the per-sketch
+ * input slot); an instance generator feeds an instance's injected slot 0 (the
+ * source.video.file node a scenario's aux picture plays through). Only the
+ * preview engine binds any, so the main engine never pays for this.
+ */
+const sketchGenerators = new Map<string, string>();
+const instanceGenerators = new Map<string, string>();
+const generatorCanvases = new Map<string, OffscreenCanvas>();
+
+function drawGenerator(slot: string, key: string, t: number, w: number, h: number): OffscreenCanvas | null {
+  let c = generatorCanvases.get(slot);
+  if (!c || c.width !== w || c.height !== h) {
+    c = new OffscreenCanvas(w, h);
+    generatorCanvases.set(slot, c);
+  }
+  const ctx = c.getContext('2d');
+  if (!ctx) return null;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  generatorFor(key).draw(ctx, t, w, h);
+  return c;
+}
+
+function uploadInto(
+  map: Map<string, { handle: number; width: number; height: number }>,
+  id: string, source: OffscreenCanvas,
+) {
+  if (!gpuHost || !gpuDevice) return;
+  const w = source.width, h = source.height;
+  let entry = map.get(id);
+  if (!entry || entry.width !== w || entry.height !== h) {
+    entry = { handle: gpuHost.createTexture(w, h, 1), width: w, height: h };
+    map.set(id, entry);
+  }
+  const tex = gpuHost.getTextureByHandle(entry.handle);
+  if (tex) {
+    gpuDevice.queue.copyExternalImageToTexture({ source, flipY: false }, { texture: tex }, { width: w, height: h });
+  }
+}
+
+function pumpGenerators(t: number, w: number, h: number) {
+  if (sketchGenerators.size === 0 && instanceGenerators.size === 0) return;
+  for (const [sketchId, key] of sketchGenerators) {
+    const c = drawGenerator(`s:${sketchId}`, key, t, w, h);
+    if (c) uploadInto(sketchInputTextures, sketchId, c);
+  }
+  for (const [instanceKey, key] of instanceGenerators) {
+    const c = drawGenerator(`i:${instanceKey}`, key, t, w, h);
+    if (c) uploadInto(instanceTextures, instanceKey, c);
+  }
+  // Canvases for slots no longer bound.
+  for (const slot of generatorCanvases.keys()) {
+    const id = slot.slice(2);
+    if (slot.startsWith('s:') ? !sketchGenerators.has(id) : !instanceGenerators.has(id)) generatorCanvases.delete(slot);
+  }
+}
+
 /** Re-bind injected frame textures onto their live instances (called per tick). */
 function applyInstanceTextures() {
   const ex = activeExecutor();
@@ -1023,6 +1096,7 @@ async function simulateTick(dt: number, execDt: number = dt) {
   }
 
   // 4. Execute sketch chains (modules in chains are ticked + rendered by the executor)
+  pumpGenerators(frameState.elapsedTime, w, h); // effect-store preview pictures
   applyInstanceTextures(); // bind injected video frames to their instances first
   sketchOutputs.clear();
   for (const [sketchId, sketch] of sketches) {
