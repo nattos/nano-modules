@@ -84,7 +84,7 @@ function contactSheet(rows) {
   const card = (r) => `
     <div class="card${r.flags.length ? ' bad' : ''}">
       <div class="imgs">
-        ${r.file ? `<img src="${esc(r.file)}" title="thumbnail">` : '<div class="none">no thumbnail</div>'}
+        ${r.file ? `<img src="${esc(r.file)}" title="thumbnail">` : `<div class="none">${r.kind === 'icon' ? 'icon tile' : 'no thumbnail'}</div>`}
         ${r.inputFile ? `<img class="input" src="${esc(r.inputFile)}" title="input (effect bypassed)">` : ''}
       </div>
       <div class="id">${esc(r.id)}</div>

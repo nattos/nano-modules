@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileScenario, GENERATOR_NODE_EFFECT, DEFAULT_CAPTURE_SEC, hashString } from './scenario';
+import { compileScenario, GENERATOR_NODE_EFFECT, DEFAULT_CAPTURE_SEC, hashString, scenarioThumb } from './scenario';
 
 describe('compileScenario', () => {
   it('defaults: an image effect runs alone on the motion picture', () => {
@@ -60,7 +60,7 @@ describe('compileScenario', () => {
   it('drops malformed pieces instead of throwing', () => {
     const json = JSON.stringify({
       input: 'no-such-generator',
-      params: { a: 'x', b: 2, c: null },
+      params: { a: {}, b: 2, c: null, d: [1, 'x'], e: [1, 2, 3, 4, 5], __enable__: 0 },
       aux: [null, { key: 'bad key!', effect: 'x' }, { key: 'ok' }, { key: 'l', effect: 'mod.source.lfo' }, { key: 'l', effect: 'dup' }],
       wires: [{ src: 'nope.output', dest: '$self.x' }, { src: 'l.output' }, { src: 'l.output', dest: 'l.rate' }, 'junk'],
       capture: -1,
@@ -73,6 +73,32 @@ describe('compileScenario', () => {
     expect(c.captureSec).toBe(DEFAULT_CAPTURE_SEC);
     expect(compileScenario('fx', '{not json', 'image').input).toBe('motion');
     expect(compileScenario('fx', JSON.stringify({ input: 'none' }), 'image').input).toBeNull();
+  });
+
+  it('carries vector + string params, pre stages, plot series and the thumb mode', () => {
+    const json = JSON.stringify({
+      input: 'motion',
+      params: { color: [1, 0.5, 0.25], text: 'Hello "there"', size: 96 },
+      pre: [{ key: 'mv', effect: 'debug.motion_rect', params: { speed: 2 } }, { key: 'bad' }],
+      aux: [{ key: 'lfo', effect: 'mod.source.lfo' }],
+      wires: [{ src: 'lfo.output', dest: 'mv.speed' }],
+      plot: ['lfo.output', 'nope.output', 'lfo'],
+      output: 'meter',
+      thumb: 'icon',
+    });
+    const c = compileScenario('motion.blur', json, 'image', 'p');
+    expect(c.sketch.instances!['p:self'].state).toEqual({ color: [1, 0.5, 0.25], text: 'Hello "there"', size: 96 });
+    // The pre stage runs linearly ahead of the effect; helpers still trail.
+    expect(c.sketch.chain!.map((e) => [e.instance_key, !!e.canvas])).toEqual([['p:mv', false], ['p:self', false], ['p:lfo', true]]);
+    expect(c.sketch.instances!['p:mv']).toEqual({ module_type: 'debug.motion_rect', state: { speed: 2 } });
+    expect(c.selfKey).toBe('p:self');
+    expect(c.sketch.wires!.map((w) => w.dest)).toEqual([{ instanceKey: 'p:mv', field: 'speed' }]);
+    expect(c.plotSeries).toEqual([{ instanceKey: 'p:lfo', field: 'output' }]);
+    expect(c.plotOutput).toBe('meter');
+    expect(c.thumb).toBe('icon');
+    expect(scenarioThumb(json)).toBe('icon');
+    expect(scenarioThumb(undefined)).toBe('auto');
+    expect(compileScenario('fx', undefined, 'image').thumb).toBe('auto');
   });
 
   it('hashString is stable and discriminating', () => {

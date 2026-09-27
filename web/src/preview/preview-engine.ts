@@ -32,11 +32,19 @@ const FRAME_TIMEOUT_MS = 5000;
 /** Frames stepped at t=0 before recording, so every instance exists. */
 const WARMUP_FRAMES = 6;
 
+export interface PlotSeries {
+  values: number[];
+  min: number;
+  max: number;
+}
+
 export interface LiveSamples {
   field: string;
   min: number;
   max: number;
-  values: number[];
+  values: PlotValue[];
+  /** Ghost series (the scenario's `plot`), drawn under the output. */
+  ghosts: PlotSeries[];
 }
 
 type Frames = Record<string, ImageBitmap>;
@@ -49,10 +57,38 @@ export interface BakeOptions {
 }
 
 export interface BakedThumb {
+  /** Empty for 'icon' (the scenario asks for the category tile, no bake). */
   blob: Blob;
-  kind: 'image' | 'graph';
+  kind: 'image' | 'graph' | 'icon';
   /** A graph's plotted samples and range (for tooling). */
-  samples?: { values: number[]; min: number; max: number };
+  samples?: { values: PlotValue[]; min: number; max: number };
+}
+
+/** Output types a modulation thumbnail can plot ('any'/'raw' plot whatever
+ *  numbers or colours they carry). */
+const PLOTTABLE = ['float', 'int', 'bool', 'float3', 'float4', 'any', 'raw'];
+
+function fieldRange(f: any): { min: number; max: number } {
+  const min = typeof f?.min === 'number' ? f.min : 0;
+  const max = typeof f?.max === 'number' && f.max > min ? f.max : min + 1;
+  return { min, max };
+}
+
+/** A sample: a number, or a colour/vector (plotted as a strip). */
+export type PlotValue = number | number[];
+
+interface PlotSpec {
+  field: string;
+  min: number;
+  max: number;
+  ghosts: Array<{ instanceKey: string; field: string; min: number; max: number }>;
+}
+
+function sample(v: unknown): PlotValue {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'number')) return v.length === 1 ? v[0] : v;
+  return NaN;
 }
 
 function isTexture(f: any): boolean {
@@ -85,7 +121,7 @@ export class PreviewEngine {
   private frameWaiters: Array<(f: Frames | null) => void> = [];
   private stage: Promise<unknown> = Promise.resolve();
   private runId = 0;
-  private live: { compiled: CompiledScenario; sketchId: string; field: string | null } | null = null;
+  private live: { compiled: CompiledScenario; sketchId: string; plot: PlotSpec | null } | null = null;
   /** Set when a live preview is wanted: an in-flight bake bails out early. */
   private liveWanted = false;
   private disposed = false;
@@ -198,6 +234,11 @@ export class PreviewEngine {
     return !!this.plugins.get(effectId)?.schema;
   }
 
+  /** `effectId`'s field schema, if it has arrived (authoring tools). */
+  schemaOf(effectId: string): Record<string, any> | null {
+    return this.plugins.get(effectId)?.schema ?? null;
+  }
+
   /** How the store should present `effectId` (from its schema). */
   kindOf(effectId: string): PreviewKind {
     const p = this.plugins.get(effectId);
@@ -218,14 +259,30 @@ export class PreviewEngine {
     let first: { field: string; min: number; max: number } | null = null;
     for (const [name, f] of Object.entries(schema) as Array<[string, any]>) {
       if (!f || typeof f !== 'object' || !((f.io ?? 0) & 2)) continue;
-      if (!['float', 'int', 'bool'].includes(f.type)) continue;
-      const min = typeof f.min === 'number' ? f.min : 0;
-      const max = typeof f.max === 'number' && f.max > min ? f.max : min + 1;
-      const entry = { field: name, min, max };
+      if (!PLOTTABLE.includes(f.type)) continue;
+      const entry = { field: name, ...fieldRange(f) };
       if ((f.io & 4) !== 0) return entry;
       first ??= entry;
     }
     return first;
+  }
+
+  /** What a modulation scenario plots: its chosen (or primary) output, plus
+   *  any ghost series, each with its declared range. */
+  private plotSpec(effectId: string, compiled: CompiledScenario): PlotSpec | null {
+    if (this.kindOf(effectId) !== 'modulation') return null;
+    const schema = this.plugins.get(effectId)?.schema ?? {};
+    const chosen = compiled.plotOutput ? schema[compiled.plotOutput] : null;
+    const main = chosen && typeof chosen === 'object'
+      ? { field: compiled.plotOutput!, ...fieldRange(chosen) }
+      : this.primaryScalarOutput(effectId);
+    if (!main) return null;
+    const ghosts = compiled.plotSeries.map((g) => {
+      const type = compiled.sketch.instances?.[g.instanceKey]?.module_type;
+      const f = type ? this.plugins.get(type)?.schema?.[g.field] : null;
+      return { ...g, ...fieldRange(f) };
+    });
+    return { ...main, ghosts };
   }
 
   // ── Running a scenario ─────────────────────────────────────────────────
@@ -278,7 +335,11 @@ export class PreviewEngine {
       proxy.setPaused(true);
       const m = this.mount(effect, opts);
       const selfKey = m.compiled.selfKey;
-      const plot = this.kindOf(effect.id) === 'modulation' ? this.primaryScalarOutput(effect.id) : null;
+      if (m.compiled.thumb === 'icon') {
+        this.unmount(m);
+        return { blob: new Blob(), kind: 'icon' as const };
+      }
+      const plot = this.plotSpec(effect.id, m.compiled);
       try {
         for (let i = 0; i < WARMUP_FRAMES; i++) {
           const f = await this.step(0);
@@ -287,7 +348,8 @@ export class PreviewEngine {
         }
         const until = plot ? m.compiled.loopSec : m.compiled.captureSec;
         const steps = Math.max(1, Math.round(until * STEP_HZ));
-        const values: number[] = [];
+        const values: PlotValue[] = [];
+        const ghosts: number[][] = plot ? plot.ghosts.map(() => []) : [];
         let last: ImageBitmap | null = null;
         for (let i = 1; i <= steps; i++) {
           const f = await this.step(i / STEP_HZ);
@@ -296,12 +358,19 @@ export class PreviewEngine {
           for (const [id, b] of Object.entries(f)) {
             if (id === TRACE_ID) { last?.close(); last = b; } else b.close();
           }
-          if (plot) values.push(Number(this.pluginStates.get(selfKey)?.[plot.field] ?? NaN));
+          if (plot) {
+            values.push(sample(this.pluginStates.get(selfKey)?.[plot.field]));
+            plot.ghosts.forEach((g, gi) => {
+              const v = sample(this.pluginStates.get(g.instanceKey)?.[g.field]);
+              ghosts[gi].push(typeof v === 'number' ? v : NaN);
+            });
+          }
         }
         if (plot) {
           last?.close();
+          const series = plot.ghosts.map((g, gi) => ({ values: ghosts[gi], min: g.min, max: g.max }));
           return {
-            blob: await plotBlob(values, plot.min, plot.max), kind: 'graph' as const,
+            blob: await plotBlob(values, plot.min, plot.max, series), kind: 'graph' as const,
             samples: { values, min: plot.min, max: plot.max },
           };
         }
@@ -325,9 +394,12 @@ export class PreviewEngine {
       if (!this.proxy || this.disposed || this.liveEffect.get() !== effect.id) return;
       this.stopLiveNow();
       const m = this.mount(effect);
-      const plot = this.kindOf(effect.id) === 'modulation' ? this.primaryScalarOutput(effect.id) : null;
-      this.liveSamples = plot ? { field: plot.field, min: plot.min, max: plot.max, values: [] } : null;
-      this.live = { ...m, field: plot?.field ?? null };
+      const plot = this.plotSpec(effect.id, m.compiled);
+      this.liveSamples = plot ? {
+        field: plot.field, min: plot.min, max: plot.max, values: [],
+        ghosts: plot.ghosts.map((g) => ({ values: [], min: g.min, max: g.max })),
+      } : null;
+      this.live = { ...m, plot };
       this.proxy.setTime(0);
       this.proxy.stepFrame();
       this.proxy.setTime(null);
@@ -363,11 +435,16 @@ export class PreviewEngine {
     const live = this.live!;
     const bmp = frames[TRACE_ID];
     for (const [id, b] of Object.entries(frames)) if (id !== TRACE_ID) b.close();
-    if (live.field && this.liveSamples) {
-      const v = Number(this.pluginStates.get(live.compiled.selfKey)?.[live.field] ?? NaN);
-      const s = this.liveSamples.values;
-      s.push(v);
-      if (s.length > 120) s.splice(0, s.length - 120);
+    if (live.plot && this.liveSamples) {
+      const keep = <T,>(arr: T[], v: T) => {
+        arr.push(v);
+        if (arr.length > 120) arr.splice(0, arr.length - 120);
+      };
+      keep(this.liveSamples.values, sample(this.pluginStates.get(live.compiled.selfKey)?.[live.plot.field]));
+      live.plot.ghosts.forEach((g, gi) => {
+        const v = sample(this.pluginStates.get(g.instanceKey)?.[g.field]);
+        keep(this.liveSamples!.ghosts[gi].values, typeof v === 'number' ? v : NaN);
+      });
     }
     runInAction(() => {
       if (bmp) {
@@ -394,38 +471,71 @@ export class PreviewEngine {
 }
 
 /** Draw a modulation output as a line plot (the graph thumbnail). */
-export async function plotBlob(values: number[], min: number, max: number): Promise<Blob> {
+export async function plotBlob(values: PlotValue[], min: number, max: number, ghosts: PlotSeries[] = []): Promise<Blob> {
   const c = new OffscreenCanvas(PREVIEW_W, PREVIEW_H);
-  drawPlot(c.getContext('2d')!, values, min, max, PREVIEW_W, PREVIEW_H);
+  drawPlot(c.getContext('2d')!, values, min, max, PREVIEW_W, PREVIEW_H, ghosts);
   return c.convertToBlob({ type: 'image/png' });
 }
 
-/** Shared by the baked graph thumbnail and the live hover plot. */
+/**
+ * Shared by the baked graph thumbnail and the live hover plot. Numbers plot
+ * as a line over ghosted `ghosts` (e.g. the input a shaper reshapes); vector
+ * samples (a colour output) plot as a strip of those colours over time.
+ */
 export function drawPlot(
   ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
-  values: number[], min: number, max: number, w: number, h: number,
+  values: PlotValue[], min: number, max: number, w: number, h: number,
+  ghosts: PlotSeries[] = [],
 ) {
   ctx.fillStyle = '#15171c';
   ctx.fillRect(0, 0, w, h);
+  if (values.some((v) => Array.isArray(v))) {
+    drawStrip(ctx, values, min, max, w, h);
+    return;
+  }
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 1;
   for (let i = 1; i < 4; i++) {
     const y = Math.round((h * i) / 4) + 0.5;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
-  const pts = values.filter((v) => Number.isFinite(v));
-  if (pts.length < 2) return;
+  for (const g of ghosts) line(ctx, g.values, g.min, g.max, w, h, 'rgba(255,255,255,0.28)', Math.max(1, h / 120));
+  line(ctx, values as number[], min, max, w, h, '#6fd3ff', Math.max(1.5, h / 60));
+}
+
+function line(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  values: number[], min: number, max: number, w: number, h: number, color: string, width: number,
+) {
+  if (values.filter((v) => Number.isFinite(v)).length < 2) return;
   const pad = h * 0.1;
   const span = max - min || 1;
-  ctx.strokeStyle = '#6fd3ff';
-  ctx.lineWidth = Math.max(1.5, h / 60);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
   ctx.lineJoin = 'round';
   ctx.beginPath();
+  let started = false;
   values.forEach((v, i) => {
     if (!Number.isFinite(v)) return;
     const x = (i / (values.length - 1)) * w;
     const y = h - pad - ((Math.min(max, Math.max(min, v)) - min) / span) * (h - pad * 2);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
   });
   ctx.stroke();
+}
+
+/** A colour output over time: one vertical band per sample. */
+function drawStrip(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  values: PlotValue[], min: number, max: number, w: number, h: number,
+) {
+  const span = max - min || 1;
+  const byte = (x: number | undefined) => Math.round(255 * Math.min(1, Math.max(0, ((x ?? 0) - min) / span)));
+  const n = values.length;
+  values.forEach((v, i) => {
+    const c = Array.isArray(v) ? v : [v, v, v];
+    ctx.fillStyle = `rgb(${byte(c[0])},${byte(c[1])},${byte(c[2])})`;
+    const x0 = Math.floor((i / n) * w);
+    ctx.fillRect(x0, 0, Math.ceil(w / n) + 1, h);
+  });
 }

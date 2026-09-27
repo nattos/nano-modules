@@ -7,9 +7,10 @@
  * (native/wasm_modules/include/preview_scenario.h documents the format) — or
  * leave it to the defaults here.
  *
- * The previewed effect is the sketch's only LINEAR entry, so it reads the
- * scenario's input picture as its chain input and its output is the sketch
- * output. Every helper (a second picture, an LFO) is a sidecar-CANVAS node:
+ * The previewed effect is the sketch's last LINEAR entry, so it reads the
+ * scenario's input picture as its chain input (through any `pre` entries —
+ * upstream stages it needs, like a motion-vector producer) and its output is
+ * the sketch output. Every helper (a second picture, an LFO) is a sidecar-CANVAS node:
  * canvas stages never touch the linear image chain, so helpers can feed the
  * effect over wires without replacing its input. The execution order that
  * lets a helper run first is computed exactly as the editor does it.
@@ -45,6 +46,19 @@ export interface CompiledScenario {
   effects: string[];
   captureSec: number;
   loopSec: number;
+  /** 'icon': nothing worth rendering (a pass-through utility) — the store
+   *  shows the effect's category tile instead of baking. */
+  thumb: 'auto' | 'icon';
+  /** A modulation effect's plotted output field (null = its primary one). */
+  plotOutput: string | null;
+  /** Extra series drawn ghosted under a modulation effect's plot. */
+  plotSeries: Array<{ instanceKey: string; field: string }>;
+}
+
+/** Just the scenario's `thumb` mode, without compiling it (the store's grid
+ *  asks this per card). */
+export function scenarioThumb(previewJson: string | undefined): 'auto' | 'icon' {
+  return parse(previewJson).thumb === 'icon' ? 'icon' : 'auto';
 }
 
 interface RawAux { key?: unknown; effect?: unknown; generator?: unknown; params?: unknown }
@@ -64,11 +78,16 @@ function parse(json: string | undefined): Record<string, unknown> {
   }
 }
 
-function numberParams(v: unknown): Record<string, number> {
-  const out: Record<string, number> = {};
+/** Field overrides: numbers, short number vectors (colours, points) and
+ *  strings (text); anything else is dropped. */
+function sceneParams(v: unknown): Record<string, number | number[] | string> {
+  const out: Record<string, number | number[] | string> = {};
   if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
   for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (k.startsWith('__')) continue; // engine-reserved keys aren't the scene's
     if (typeof x === 'number' && Number.isFinite(x)) out[k] = x;
+    else if (Array.isArray(x) && x.length >= 1 && x.length <= 4 && x.every((n) => typeof n === 'number' && Number.isFinite(n))) out[k] = x as number[];
+    else if (typeof x === 'string' && x.length <= 16384) out[k] = x;
   }
   return out;
 }
@@ -101,16 +120,30 @@ export function compileScenario(
   else if (typeof raw.input === 'string') input = knownGenerator(raw.input) ?? DEFAULT_GENERATOR;
   else input = kind === 'image' ? DEFAULT_GENERATOR : null;
 
-  const chain: ChainEntry[] = [{ type: 'module', module_type: effectId, instance_key: selfKey }];
-  const instances: NonNullable<Sketch['instances']> = {
-    [selfKey]: { module_type: effectId, state: numberParams(raw.params) },
-  };
+  const chain: ChainEntry[] = [];
+  const instances: NonNullable<Sketch['instances']> = {};
   const effects = [effectId];
   const instanceGenerators: Record<string, string> = {};
   // Scenario-local key → instance key + whether it's a generator node.
   const nodes = new Map<string, { instanceKey: string; generator: boolean }>([
     ['$self', { instanceKey: selfKey, generator: false }],
   ]);
+
+  // `pre`: linear stages ahead of the effect (the chain input flows through
+  // them into it) — for effects that read something only an upstream stage
+  // makes, like motion.blur's motion vectors.
+  const pre = Array.isArray(raw.pre) ? raw.pre as RawAux[] : [];
+  for (const a of pre) {
+    if (!a || typeof a !== 'object' || typeof a.key !== 'string' || !KEY_RE.test(a.key)) continue;
+    if (nodes.has(a.key) || typeof a.effect !== 'string' || !a.effect) continue;
+    const instanceKey = `${prefix}:${a.key}`;
+    chain.push({ type: 'module', module_type: a.effect, instance_key: instanceKey });
+    instances[instanceKey] = { module_type: a.effect, state: sceneParams(a.params) };
+    if (!effects.includes(a.effect)) effects.push(a.effect);
+    nodes.set(a.key, { instanceKey, generator: false });
+  }
+  chain.push({ type: 'module', module_type: effectId, instance_key: selfKey });
+  instances[selfKey] = { module_type: effectId, state: sceneParams(raw.params) };
 
   const aux = Array.isArray(raw.aux) ? raw.aux as RawAux[] : [];
   let col = 0;
@@ -126,7 +159,7 @@ export function compileScenario(
       canvas: { x: 40 + (col % 3) * 260, y: 40 + Math.floor(col / 3) * 220 },
     });
     col++;
-    instances[instanceKey] = { module_type: effect, state: generator ? {} : numberParams(a.params) };
+    instances[instanceKey] = { module_type: effect, state: generator ? {} : sceneParams(a.params) };
     if (!effects.includes(effect)) effects.push(effect);
     if (generator) instanceGenerators[instanceKey] = generator;
     nodes.set(a.key, { instanceKey, generator: !!generator });
@@ -157,6 +190,12 @@ export function compileScenario(
     wires.push(wire);
   });
 
+  const plotSeries: CompiledScenario['plotSeries'] = [];
+  for (const p of Array.isArray(raw.plot) ? raw.plot : []) {
+    const ep = endpoint(p);
+    if (ep && plotSeries.length < 4) plotSeries.push(ep);
+  }
+
   const sketch: Sketch = { anchor: null, chain, instances };
   if (wires.length) sketch.wires = wires;
   if (chain.length > 1) {
@@ -172,6 +211,9 @@ export function compileScenario(
     effects,
     captureSec: seconds(raw.capture, DEFAULT_CAPTURE_SEC, 30),
     loopSec: seconds(raw.loop, DEFAULT_LOOP_SEC, 60) || DEFAULT_LOOP_SEC,
+    thumb: raw.thumb === 'icon' ? 'icon' : 'auto',
+    plotOutput: typeof raw.output === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(raw.output) ? raw.output : null,
+    plotSeries,
   };
 }
 

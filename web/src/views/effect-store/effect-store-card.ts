@@ -18,6 +18,7 @@ import type { AvailableEffect } from '../../state/types';
 import type { PreviewEngine } from '../../preview/preview-engine';
 import { drawPlot } from '../../preview/preview-engine';
 import type { Thumbnails } from '../../preview/thumbnails';
+import { scenarioThumb } from '../../preview/scenario';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 import { effectStore } from '../../state/effect-store-controller';
@@ -88,6 +89,18 @@ export class EffectStoreCard extends MobxLitElement {
       background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.05) 50%, transparent 80%) #121318;
       background-size: 200% 100%;
       animation: shimmer 1.4s linear infinite;
+    }
+    .icon-tile {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      text-align: center;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--app-text-color2);
+      background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--tile) 28%, transparent), transparent 70%) #121318;
     }
     @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
     .badge {
@@ -240,6 +253,7 @@ export class EffectStoreCard extends MobxLitElement {
 
   private enter = () => {
     clearTimeout(this.hoverTimer);
+    if (scenarioThumb(this.effect.preview) === 'icon') return; // nothing to run
     this.hoverTimer = window.setTimeout(() => {
       void this.engine.startLive(this.effect);
       this.watchLive();
@@ -267,7 +281,7 @@ export class EffectStoreCard extends MobxLitElement {
       if (!ctx) return;
       if (samples) {
         canvas.width = 320; canvas.height = 180;
-        drawPlot(ctx, samples.values, samples.min, samples.max, canvas.width, canvas.height);
+        drawPlot(ctx, samples.values, samples.min, samples.max, canvas.width, canvas.height, samples.ghosts);
       } else if (frame) {
         if (canvas.width !== frame.width) canvas.width = frame.width;
         if (canvas.height !== frame.height) canvas.height = frame.height;
@@ -319,7 +333,9 @@ export class EffectStoreCard extends MobxLitElement {
         @pointerenter=${this.enter} @pointerleave=${this.leave}
         @dblclick=${() => { if (canPlace) effectStore.use(e.id); }}>
         <div class="thumb">
-          ${view ? html`<img src=${view.url} alt="" draggable="false" />` : html`<div class="shimmer"></div>`}
+          ${scenarioThumb(e.preview) === 'icon'
+            ? html`<div class="icon-tile" style="--tile:${categoryColor(domain)}">${e.name || e.id}</div>`
+            : view ? html`<img src=${view.url} alt="" draggable="false" />` : html`<div class="shimmer"></div>`}
           ${live ? html`<canvas class="live"></canvas><span class="live-dot" title="Running live"></span>` : nothing}
           ${badge ? html`<span class="badge ${badge}">${badge === 'new' ? 'New' : 'Updated'}</span>` : nothing}
           <div class="actions">

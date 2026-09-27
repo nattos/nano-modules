@@ -13,6 +13,7 @@ import { observable, runInAction } from 'mobx';
 import type { EffectInfo } from '../engine-types';
 import type { PreviewEngine } from './preview-engine';
 import { bundleHash, getThumb, putThumb, thumbKey } from './thumbnail-cache';
+import { scenarioThumb } from './scenario';
 
 export interface ThumbView {
   url: string;
@@ -37,6 +38,7 @@ export class Thumbnails {
   /** Show `effect`'s thumbnail, baking it if the cache has no current one. */
   request(effect: EffectInfo) {
     if (this.disposed) return;
+    if (scenarioThumb(effect.preview) === 'icon') return; // the card draws a tile
     if (this.checked.has(effect.id)) {
       // Already resolved (or queued): just move a queued bake to the front.
       if (this.queued.has(effect.id)) {
@@ -101,6 +103,7 @@ export class Thumbnails {
           continue;
         }
         this.queued.delete(effect.id);
+        if (baked.kind === 'icon') continue;
         this.show(effect.id, baked.blob, baked.kind);
         await putThumb({ effectId: effect.id, key, blob: baked.blob, kind: baked.kind });
       }

@@ -62,12 +62,16 @@ window.__thumbs = {
       hasScenario: !!e.preview, scenario: e.preview ?? null,
     }));
   },
+  schema(id) {
+    return engine.schemaOf(id);
+  },
   async bake(id, opts = {}) {
     const effect = engine.catalog.get(id);
     if (!effect) throw new Error(`unknown effect ${id}`);
     status.textContent = `baking ${id}${opts.bypassSelf ? ' (input)' : ''}`;
     const baked = await engine.bakeThumbnail(effect, opts);
     if (!baked) return null;
+    if (baked.kind === 'icon') return { kind: 'icon' };
     const out = { kind: baked.kind, mime: baked.blob.type, dataBase64: await blobBase64(baked.blob) };
     if (baked.kind === 'graph' && baked.samples) {
       out.graph = { stats: graphStats(baked.samples.values, baked.samples.min, baked.samples.max), samples: baked.samples };
@@ -82,6 +86,7 @@ window.__thumbs = {
     const kind = engine.kindOf(id);
     const thumb = await this.bake(id, { scenario: opts.scenario, label: 'thumb' });
     if (!thumb) return { kind, thumb: null, input: null, flags: ['blank'] };
+    if (thumb.kind === 'icon') return { kind: 'icon', thumb: null, input: null, flags: [] };
     let input = null;
     let diffFromInput;
     if (kind === 'image' && thumb.image) {
