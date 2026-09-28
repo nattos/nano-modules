@@ -61,6 +61,7 @@ import { PLAYGROUND_ID_PREFIX } from './types';
 import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
 import { GlobalInputManager } from './global-input-manager';
+import { pluginInfosFromCatalog } from './plugin-catalog';
 import {
   rememberInputVideo, forgetInputVideo, restoreInputVideoFile, rememberedInputVideoLabel,
 } from './input-video-store';
@@ -3139,60 +3140,7 @@ export class AppController {
       name?: string; description?: string; category?: string; keywords?: string;
       icon?: string; thumbnail?: string;
     }>) {
-    const plugins: PluginInfo[] = remotePlugins.map(rp => {
-      const schema = rp.schema ?? {};
-      const params: PluginInfo['params'] = [];
-      const io: PluginInfo['io'] = [];
-      let paramIdx = 0;
-      for (const [name, fieldRaw] of Object.entries(schema)) {
-        const field = fieldRaw as any;
-        const ioFlags = field?.io ?? 0;
-        if (field?.type === 'texture') {
-          const dir = (ioFlags & 1) ? 0 : 1;       // 0=input, 1=output
-          const role = (ioFlags & 4) ? 0 : 1;       // 0=primary, 1=secondary
-          io.push({ index: io.length, name, kind: dir, role });
-        } else if (field?.type === 'object' || field?.type === 'array'
-                || field?.type === 'float2' || field?.type === 'float3'
-                || field?.type === 'float4'
-                // A polymorphic port is a connection, never a barrel param —
-                // classify it with the other structured io rather than letting
-                // it fall through and become a Standard float knob.
-                || field?.type === 'any') {
-          if (ioFlags & 2) {
-            const role = (ioFlags & 4) ? 0 : 1;
-            io.push({ index: io.length, name, kind: 2, role });
-          }
-        } else {
-          let type = 10;                            // Standard
-          if (field?.type === 'bool') type = 0;
-          else if (field?.type === 'event') type = 1;
-          else if (field?.type === 'int') type = 13;
-          else if (field?.type === 'string') type = 100;
-          let defaultValue = 0;
-          const fd = field?.default;
-          if (typeof fd === 'number') defaultValue = fd;
-          else if (typeof fd === 'boolean') defaultValue = fd ? 1 : 0;
-          params.push({
-            index: paramIdx++, name, type, defaultValue,
-            min: typeof field?.min === 'number' ? field.min : 0,
-            max: typeof field?.max === 'number' ? field.max : 1,
-          });
-          if (ioFlags & 2) {
-            const role = (ioFlags & 4) ? 0 : 1;
-            io.push({ index: io.length, name, kind: 2, role });
-          }
-        }
-      }
-      return {
-        key: rp.key ?? rp.id,
-        id: rp.id,
-        version: rp.version ?? '0.0.0',
-        moduleVersion: (rp as any).moduleVersion ?? '0.0.0',
-        params, io, schema,
-        // Forwarded by the barrel host when present; harmless [] otherwise.
-        capabilities: Array.isArray((rp as any).capabilities) ? (rp as any).capabilities : [],
-      };
-    });
+    const plugins = pluginInfosFromCatalog(remotePlugins);
 
     // The barrel forwards each effect's own picker metadata alongside its
     // schema (BarrelRuntime::schemasJson), because a remote editor runs no

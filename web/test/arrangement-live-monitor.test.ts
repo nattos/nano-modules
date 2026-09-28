@@ -11,15 +11,16 @@
  */
 
 import { CENTER, sampleMonitor } from './arr-test-helpers';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
 
-describe('Arrangement live monitor + transport (GPU)', () => {
+forEachCompBackend((backend) => {
+describe(`Arrangement live monitor + transport (GPU, ${backend} engine)`, () => {
   jest.setTimeout(60_000);
 
   beforeAll(async () => {
-    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.goto(arrangementUrl(BASE), { waitUntil: 'networkidle0' });
     await page.waitForFunction(
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },
@@ -82,4 +83,5 @@ describe('Arrangement live monitor + transport (GPU)', () => {
     expect(advanced.before).toBeCloseTo(0, 5);
     expect(advanced.after).toBeGreaterThan(0.05); // ~0.4s of playback advanced beats
   });
+});
 });

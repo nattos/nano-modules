@@ -280,12 +280,16 @@ export class EngineBridge {
   }
 
   /**
-   * Replace how the engine is built. Takes effect on the next boot: a running
-   * engine is torn down first, and the next sync boots the new one.
+   * Replace how the engine is built. A running engine is torn down and the new
+   * one booted in its place (the next sync re-sends the whole document, since
+   * the teardown forgets what was sent); an unbooted one simply boots the new
+   * kind when first needed.
    */
   setEngineFactory(factory: CompEngineFactory) {
     this.engineFactory = factory;
-    if (this.engine) this.destroy();
+    if (!this.engine) return;
+    this.teardownEngine();
+    this.ensureEngine();
   }
 
   /** Boot the engine on first real use; idempotent. */
@@ -665,6 +669,14 @@ export class EngineBridge {
   }
 
   destroy() {
+    this.teardownEngine();
+    this.onCompositeCb = null;
+    this.tap = null;
+  }
+
+  /** Drop the engine, its pump and everything the bridge remembers sending
+   *  it — but not the listeners (a re-boot keeps the monitor attached). */
+  private teardownEngine() {
     this.video?.destroy();
     this.video = null;
     this.engine?.destroy();
@@ -677,8 +689,6 @@ export class EngineBridge {
     this.sentVideoReady.clear();
     this.mirroredBeat = Number.NaN;
     this.compPumpDescs = null;
-    this.onCompositeCb = null;
-    this.tap = null;
     this.engineLayerN = 0;
     releaseFrame(this.compositeFrame);
     this.compositeFrame = null;

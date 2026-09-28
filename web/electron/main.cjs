@@ -43,6 +43,7 @@ const appProtocol = require('./app-protocol.cjs');
 const moduleDirs = require('./module-dirs.cjs');
 const dataRootMod = require('./data-root.cjs');
 const { resolveResourceRoot, writeInstallRecord, ffglPluginPath } = require('./resources.cjs');
+const { Compositor } = require('./compositor.cjs');
 
 /** WebGPU is not optional here — the whole renderer is dead without it. */
 app.commandLine.appendSwitch('enable-unsafe-webgpu');
@@ -231,6 +232,26 @@ ipcMain.handle('paths.showItemInFolder', (_e, absPath) => shell.showItemInFolder
 
 /** Let the renderer find the bundles/fonts without guessing at layout. */
 ipcMain.handle('nano.resourceRoot', () => resourceRoot);
+
+// -- The arrangement's native engine (compositor.cjs) --------------------------
+// `nano.compositorEngine`: which engine the arrangement should boot with when
+// the page doesn't say — NANO_ARRANGEMENT_ENGINE=native|browser, else browser.
+// `nano.compositor`: start the process (once) and answer {url, key}, or
+// {error} when it can't run here.
+let compositor = null;
+ipcMain.handle('nano.compositorEngine', () =>
+  PRODUCT === 'arrangement' && process.env.NANO_ARRANGEMENT_ENGINE === 'native' ? 'native' : 'browser');
+ipcMain.handle('nano.compositor', async () => {
+  if (PRODUCT !== 'arrangement') return { error: 'only the arrangement app runs a compositor' };
+  compositor ??= new Compositor(resourceRoot);
+  try {
+    return await compositor.ensure();
+  } catch (err) {
+    console.error('[electron] compositor unavailable:', err.message);
+    return { error: err.message };
+  }
+});
+app.on('will-quit', () => compositor?.stop());
 
 // -- Effect module directories (module-dirs.cjs) ---------------------------
 // The renderer asks which bundles exist and where to fetch them; Settings

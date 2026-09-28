@@ -108,6 +108,13 @@ export class WsBridgeClient {
     this.send({ action: 'reassign_channel', key, channel });
   }
 
+  /** Send a host-specific action — protocol the server's host adds on top of
+   *  BridgeCore (e.g. the compositor's `comp_*`). Queued until open, in order
+   *  with everything else. */
+  sendAction(action: string, payload: Record<string, unknown> = {}): void {
+    this.send({ action, ...payload });
+  }
+
   /** Hand a shared preview surface back to the barrel once this client's GPU
    *  copy of it has completed (NBPS transport — see preview-surfaces.ts). */
   previewRelease(token: number): void {

@@ -21,6 +21,14 @@ import * as dropImport from './views/arrangement/media/drop-import';
 import * as paths from './state/paths';
 import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
 import { debugPerf } from './views/arrangement/state/debug-perf';
+import { selectCompEngine } from './views/arrangement/engine/engine-select';
+
+// Pick the composition engine. With ?compositor= this completes synchronously,
+// before anything can boot the (lazy) engine; the desktop app's own compositor
+// takes an IPC round-trip, and the bridge re-boots onto it if the worker
+// already started.
+(window as any).__compEngineKind = 'browser';
+void selectCompEngine().then((kind) => { (window as any).__compEngineKind = kind; });
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;

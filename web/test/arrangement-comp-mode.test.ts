@@ -27,9 +27,9 @@
  */
 
 import { CENTER, gridUVs, luma, sampleMonitor, waitForMonitor } from './arr-test-helpers';
+import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
 
 /** Build the fixture composition in the live store and park the playhead in it. */
 const buildScenario = () => page.evaluate(() => {
@@ -100,7 +100,13 @@ async function renderAndSample(url: string): Promise<number[]> {
   return a!;
 }
 
-describe('Arrangement composition executor (GPU)', () => {
+forEachCompBackend((backend) => {
+const H264 = 'H.264 decode (M2)';
+describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
+  // Resolved per test: the backend is only live once the suite runs.
+  let URL = '';
+  beforeEach(() => { URL = arrangementUrl(BASE); });
+
   jest.setTimeout(120_000);
 
   it('renders a layered composite (blend + opacity + adjustment) with stable pixels', async () => {
@@ -384,7 +390,7 @@ describe('Arrangement composition executor (GPU)', () => {
     expect(after!).toBeLessThan(40);       // structurally dropped past it (black bg)
   });
 
-  it('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
+  nativeGap(backend, H264)('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
     // Regression: loading an arrangement leaves DEAD blob URLs in the doc until
     // relinkMedia() re-mints them — an update that deliberately bypasses
     // mutate() (not undoable). The comp-mode pump is fed from the WORKER's
@@ -439,7 +445,7 @@ describe('Arrangement composition executor (GPU)', () => {
     expect(hasPump).toBe(true);
   });
 
-  it('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
+  nativeGap(backend, H264)('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
     // Regression: readiness edges for the native gate must flow on an
     // UNCONDITIONAL cadence. They used to ride the monitor's reactive
     // showComposite — which never fires while a hold freezes the beat — so
@@ -477,4 +483,5 @@ describe('Arrangement composition executor (GPU)', () => {
     await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
     expect(beat).toBeGreaterThan(4);
   });
+});
 });
