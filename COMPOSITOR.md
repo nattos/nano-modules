@@ -91,37 +91,57 @@ These were each learned by breaking them. The details are in memory
 The M3 question is how composed frames leave the process **without passing through Electron**.
 Today the only consumer is the editor's monitor, on the preview ring.
 
-#### Where output config lives
+#### Where output config lives: devices
 
-**Decided: both, per machine AND per show; the details are still to come from the user.** The
-split below is only a starting point.
+**Decided: outputs are DEVICES**, as part of the user's "devices" push. It extends the MIDI-controller
+device model (the Devices tab: a library of definitions with templates, forks and lineage) to
+**displays and lights**:
+- a device is **defined** once, in the library;
+- it is **added to or removed from** a composition;
+- **Art-Net DMX is configured this way.**
 
-Some output settings are per machine: which display is the projector, which Syphon names a venue
-expects, the DMX node's IP. Others belong with the show. The starting proposal:
-- a settings file, `Settings/outputs.json`, following the settings-files conventions (agent-editable,
-  watched, echo-safe; see `DESKTOP.md` § Settings files);
-- the document keeps only what is artistic, for example a named output region if we ever do
-  multi-surface mapping.
+This also settles the earlier "per machine AND per show" decision:
 
-One entry per output:
+| Lives in | Holds | Examples |
+|---|---|---|
+| the **device definition** (library, per machine) | the machine facts | which physical screen, a Syphon server name, a DMX node's IP / universe / broadcast, the fixture layout, colour format, gamma, output latency |
+| the **placement** in a composition (per show) | the show facts | which port feeds the device, its enabled state, any per-output processing |
 
-```jsonc
-{ "id": "proj-left", "kind": "window" | "syphon" | "artnet",   // no NDI for now
-  "enabled": true,
-  "source": "composition",            // later: a group track's bus, or a rail
-  "crop": [x, y, w, h],               // normalized, of the composition
-  "window": { "display": "<CGDisplay UUID>", "fullscreen": true },
-  "syphon": { "name": "Nano — Main" },
-  "artnet": { "map": "<pixel-map id>", "target": "10.0.0.50", "universeBase": 0 } }
-```
+**A device is ports at the edge of the wire graph.**
+- A **display** has a texture input.
+- A **light** has a texture input that its pixel map samples, plus per-channel scalar inputs for
+  non-pixel fixtures (dimmer, colour, pan/tilt as wire destinations).
+- **Input devices** have outputs: MIDI controls, an Art-Net input (e.g. beatsync's drum triggers),
+  and an audio/FFT source.
 
-**Identify displays by CGDisplay UUID** (`CGDisplayCreateUUIDFromDisplayID`), never by index.
-Indices reshuffle on hotplug and across reboots. That class of bug already bit us (see the memory
-note on DisplayLink breaking Resolume's display output).
+The arrangement's **Composition I/O mode** (the next arrangement feature: per-track ports routed with
+the normal wires) should treat a device port as just another wire endpoint. Then feeding an output
+is a wire, not a second routing system, and an output's source can be any port, not only the master
+composite.
 
-The editor gets an **Outputs** section in the arrangement inspector. The compositor answers a
-`comp_displays` action (name, UUID, bounds, refresh rate) and supports an "identify" overlay that
-paints each display's name for a few seconds.
+Consequences for the compositor:
+- The compositor receives the composition's device placements with the document. It gets the device
+  definitions they reference from the library: a settings file per device kind, following the
+  settings-files conventions, the way `midi-devices.json` already reaches the barrel runtime
+  (`DESKTOP.md` § Settings files).
+- **A missing device is an unplugged cable, not an error.** A show opened on a machine without one
+  of its displays or light nodes keeps running, and those wires go inert. Hotplug (a display
+  appearing, a node coming online) re-binds without a reload.
+- **Identify displays by CGDisplay UUID** (`CGDisplayCreateUUIDFromDisplayID`), never by index.
+  Indices reshuffle on hotplug and across reboots. That class of bug already bit us (see the memory
+  note on DisplayLink breaking Resolume's display output).
+- The compositor answers a `comp_displays` action (name, UUID, bounds, refresh rate) so the
+  library's display-device editor can list real screens. Each display and light device has an
+  **identify** action: paint the display's name, or walk a light's pixels.
+- Every device placement can be previewed in the editor from the preview ring. A light is drawn as
+  its fixture layout.
+
+**Open (the user's design, not settled here):**
+- where device placements live in the composition model (a device list beside `rails` is the
+  obvious candidate);
+- whether a display or light placement can host a small sketch for per-output processing. The
+  Resolume shows copied their master fade onto every output path;
+- how the MIDI library (templates, forks, aliases) generalizes to kinds.
 
 #### The present API (`GPUBackend`)
 
@@ -177,7 +197,8 @@ need the main thread, so:
   (`nativeDevice()`).
 - Link the framework and stage it in the resource root's `bin/` with an rpath, the way the
   compositor binary is staged.
-- One server per Syphon output, named from config.
+- A Syphon output is a display-like device (a texture input). The server is named by its device
+  definition, and one server runs per placed device.
 - Publish on the render thread right after the frame's submit.
 - Test: a ctest that runs a `SyphonMetalClient` in-process and reads a known colour.
 
@@ -193,10 +214,19 @@ need the main thread, so:
 - **The CPU half:** a transmitter thread sends the latest mapped buffer at a fixed rate (the spec
   caps a universe at about 44 Hz), followed by an ArtSync. The DMX cadence then stays steady even
   when the render thread hitches. That is the "low-jitter" goal.
-- Pixel maps (fixture layouts, RGB/RGBW order, universe split) are a real UI of their own; size it
-  separately. A first cut is a grid map: W×H pixels, serpentine or not, a start universe.
-- **Decided: a NEW pixel-map model, owned by the compositor.** Don't build on the lights bundle's
-  model. The user has more to say on its shape before any of it is built.
+- **Decided: pixel maps are part of a LIGHT device's definition**, a new model (not the lights
+  bundle's). A definition holds:
+  - the fixtures and their layout;
+  - the colour format (RGB / RGBW, channel order);
+  - gamma;
+  - start channels and universe;
+  - target (unicast / broadcast) and output latency.
+
+  The user has more to say on its shape before any of it is built.
+- Consider a **logical canvas**: a light device declares its pixel grid (e.g. 4 bars × 10 px), and
+  whatever feeds it renders at that size. Sampling regions of a large frame stays as the other mode,
+  for mapping LEDs onto video. The Resolume shows rendered 1920×1080 only to sample 4 × 32-px strips
+  of it, because the effects already think in the 4 × 10 grid.
 
 #### NDI
 
@@ -224,11 +254,10 @@ async readback as Art-Net, at output resolution. It fits after Syphon and Art-Ne
 - the arrangement has no UI for authoring a MIDI wire.
 
 **What it would take:**
-1. **Authoring.** Wires from MIDI device controls to clip/track params and rails. The Devices tab's
-   vocabulary (templates, aliases, `midi:` sources) exists for sketches. The arrangement needs a
-   place for it: a Devices section, and pips that accept a device control as a source. A
-   `control.artnet` card inside a clip's sketch needs no new authoring; it only needs the values
-   delivered.
+1. **Authoring** comes with the devices push (see M3 § devices). MIDI controllers, an Art-Net input
+   and later an audio/FFT source are devices added to the composition, and their outputs are wire
+   sources like any port. A `control.artnet` card inside a clip's sketch needs no new authoring; it
+   only needs the values delivered.
 2. **The executor.** `CompExecutor` passes both tables through to its internal executors each
    frame. Trap to check: injected-scalar keys are chain instance keys, and the comp's executors now
    carry a namespace prefix. Decide whether the tables are keyed bare or prefixed, and pin it with a
@@ -355,12 +384,22 @@ for.
 
 ## Decisions (2026-09-28) and what's still to come
 
-1. **Output config:** both, per machine and per show. The user will give more detail before this is
-   built.
+1. **Output config:** outputs are **devices** (displays, lights), defined in a library and added to
+   or removed from a composition. The definition holds the per-machine facts; the placement holds the
+   per-show facts. The user will give more detail before this is built.
 2. **Precise with an output enabled:** flash the Live button. Don't auto-switch, and don't show a
    dialog.
 3. **NDI:** not now.
-4. **Art-Net pixel maps:** a new model, not the lights bundle's. The user will give more detail.
-5. **MIDI into the arrangement:** coming soon, as part of the user's "devices" push. The user will
-   give more detail. Wait for that design rather than inventing an authoring surface.
+4. **Art-Net pixel maps:** a new model, part of a light device's definition. It is not the lights
+   bundle's model. The user will give more detail.
+5. **MIDI into the arrangement:** part of the same devices push. Wait for that design rather than
+   inventing an authoring surface.
 6. **Windows:** general video formats are required. DXV-only is a test checkpoint, not a milestone.
+7. **The arrangement's direction**, which shapes the comp executor:
+   - **Composition I/O mode** is next. Per-track ports are routed with wires, can reach texture fields
+     in clip / track / group / main-bus sketches, and have a "send nowhere" output that still
+     renders.
+   - **Clipless layers**: a layer that generates from its own sketch.
+   - **Session mode**: an Ableton-style clip grid.
+
+   For I/O mode, device ports are just another endpoint (M3 § devices).
