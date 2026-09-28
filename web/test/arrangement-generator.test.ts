@@ -12,8 +12,10 @@
 
 import { interiorGridUVs, luma, lumaSpread, sampleMonitor, waitForMonitor, type UV } from './arr-test-helpers';
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 const GENERATOR = 'source.noise';
 
@@ -27,6 +29,9 @@ const sampleScene = async () => {
   if (!s) return null;
   return { spread: lumaSpread(s), sig: s.map(luma).join(',') };
 };
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement renders a core generator (testonly dropped)', () => {
   jest.setTimeout(60_000);
@@ -105,4 +110,5 @@ describe('Arrangement renders a core generator (testonly dropped)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

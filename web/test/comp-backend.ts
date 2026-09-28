@@ -24,7 +24,8 @@
  *
  * The native leg needs `cmake --build native/build --target nano_compositor`;
  * without the binary it fails with that instruction rather than skipping.
- * `COMP_BACKENDS=worker` (or `native`) runs one leg only.
+ * `COMP_BACKENDS=worker` (or `native`) runs one leg only; `DEBUG_COMPOSITOR=1`
+ * echoes the process's log.
  *
  * Gaps: `nativeGap(backend, reason)` returns `it.skip` on the native leg (the
  * reason is in the test name), `it` otherwise — for the things the native host
@@ -101,6 +102,8 @@ function portFor(): number {
 }
 
 async function startCompositor(): Promise<{ child: ChildProcess; url: string }> {
+  const dbg = (m: string) => { if (process.env.DEBUG_COMPOSITOR) process.stderr.write(`[comp-backend] ${m}\n`); };
+  dbg('startCompositor');
   if (!fs.existsSync(NATIVE_COMPOSITOR)) {
     throw new Error(
       `nano_compositor not found at ${NATIVE_COMPOSITOR}.\n` +
@@ -117,6 +120,7 @@ async function startCompositor(): Promise<{ child: ChildProcess; url: string }> 
     stderr += d.toString();
     if (process.env.DEBUG_COMPOSITOR) process.stderr.write(d);
   });
+  dbg(`spawned pid ${child.pid} on ${port}`);
   await new Promise<void>((resolve, reject) => {
     let out = '';
     const timer = setTimeout(() => reject(new Error(`nano_compositor not ready in 60 s\n${stderr.slice(-2000)}`)), 60_000);

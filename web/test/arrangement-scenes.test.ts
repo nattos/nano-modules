@@ -10,8 +10,10 @@
 
 import { gridUVs, sampleMonitor } from './arr-test-helpers';
 
+import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 /** Base layer (dim blue solid under the playhead) + a scene track with a RED
  *  and a GREEN scene. The base layer keeps the monitor meaningful while no
@@ -83,6 +85,10 @@ async function boot() {
   await waitForColor((c) => c.b > 30 && c.r < 30 && c.g < 30, 'base blue');
   return { ids, errors };
 }
+
+forEachCompBackend((backend) => {
+const H264 = 'H.264 decode (M2)';
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement scene tracks (GPU)', () => {
   jest.setTimeout(180_000);
@@ -177,7 +183,7 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
+  nativeGap(backend, H264)('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
     const { ids, errors } = await boot();
     await page.waitForFunction(
       () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
@@ -233,7 +239,7 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
+  nativeGap(backend, H264)('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
     const { ids, errors } = await boot();
     await page.waitForFunction(
       () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
@@ -405,4 +411,5 @@ describe('Arrangement scene tracks (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

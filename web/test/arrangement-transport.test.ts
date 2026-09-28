@@ -10,8 +10,10 @@
 
 import { CENTER, sampleMonitor } from './arr-test-helpers';
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 /** One track, one long red solid clip driven by core.transport.time at 2x. */
 const buildScenario = () => page.evaluate(() => {
@@ -42,6 +44,9 @@ const meanRgb = async () => {
   const s = await sampleMonitor(page, [CENTER]);
   return s ? { r: s[0].r, g: s[0].g, b: s[0].b } : null;
 };
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Transport-controller effects (GPU)', () => {
   jest.setTimeout(180_000);
@@ -104,4 +109,5 @@ describe('Transport-controller effects (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

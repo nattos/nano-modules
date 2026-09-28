@@ -11,8 +11,13 @@
 
 import { luma, sampleMonitor, waitForMonitor, type MonitorSample, type UV } from './arr-test-helpers';
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement real clip chain (GPU)', () => {
   jest.setTimeout(60_000);
@@ -78,4 +83,5 @@ describe('Arrangement real clip chain (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

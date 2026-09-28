@@ -11,11 +11,16 @@
 
 import { interiorGridUVs, lumaSpread, sampleMonitor, waitForMonitor } from './arr-test-helpers';
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 const GRID = interiorGridUVs(6);
 const spread = async () => lumaSpread((await sampleMonitor(page, GRID)) ?? []);
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement layer pipeline (GPU)', () => {
   jest.setTimeout(60_000);
@@ -72,4 +77,5 @@ describe('Arrangement layer pipeline (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

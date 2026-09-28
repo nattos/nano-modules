@@ -16,8 +16,10 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-multi-source
  */
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 const TEXT = 'source.text.plain';
 /** Bands (fractions of height) the two texts are anchored in. */
@@ -70,6 +72,9 @@ async function waitForBothBands(ink: Ink): Promise<{ top: number; bottom: number
   }
   throw new Error(`only one ${ink} band ever rendered — last sample ${JSON.stringify(last)}`);
 }
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement renders MULTIPLE sources (GPU)', () => {
   jest.setTimeout(150_000);
@@ -134,4 +139,5 @@ describe('Arrangement renders MULTIPLE sources (GPU)', () => {
     expect(k.top).toBeGreaterThan(20);
     expect(k.bottom).toBeGreaterThan(20);
   });
+});
 });

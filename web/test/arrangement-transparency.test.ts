@@ -14,8 +14,10 @@
 
 import { lumaSpread, sampleMonitor, waitForMonitor, type UV } from './arr-test-helpers';
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 /** Spread of luma over a sub-rectangle of the monitor (fx0..fx1, fy0..fy1). */
 const regionUVs = (fx0: number, fy0: number, fx1: number, fy1: number): UV[] => {
@@ -26,6 +28,9 @@ const regionUVs = (fx0: number, fy0: number, fx1: number, fy1: number): UV[] => 
 };
 const regionSpread = async (fx0: number, fy0: number, fx1: number, fy1: number) =>
   lumaSpread((await sampleMonitor(page, regionUVs(fx0, fy0, fx1, fy1))) ?? []);
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement source-clip transparency (GPU)', () => {
   jest.setTimeout(60_000);
@@ -88,4 +93,5 @@ describe('Arrangement source-clip transparency (GPU)', () => {
 
     expect(errors.filter((e) => /DataClone/.test(e))).toEqual([]);
   });
+});
 });
