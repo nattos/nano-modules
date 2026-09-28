@@ -13,8 +13,8 @@ This file has two parts:
 2. the thinking behind the next stages (M3 outputs, M4 Windows, M5 remote, Linux/Pi, MIDI/Art-Net
    into the comp).
 
-Everything in the second part is **proposal, not decision**. The open questions for the user are
-collected at the end.
+Everything in the second part is **proposal**, except the passages marked **Decided**. The
+user's decisions are also collected at the end.
 
 **Long-term goals:**
 - fullscreen outputs;
@@ -93,8 +93,11 @@ Today the only consumer is the editor's monitor, on the preview ring.
 
 #### Where output config lives
 
-Outputs are **per machine**: which display is the projector, which Syphon names a venue expects, the
-DMX node's IP. They are not per show. The proposal:
+**Decided: both, per machine AND per show; the details are still to come from the user.** The
+split below is only a starting point.
+
+Some output settings are per machine: which display is the projector, which Syphon names a venue
+expects, the DMX node's IP. Others belong with the show. The starting proposal:
 - a settings file, `Settings/outputs.json`, following the settings-files conventions (agent-editable,
   watched, echo-safe; see `DESKTOP.md` § Settings files);
 - the document keeps only what is artistic, for example a named output region if we ever do
@@ -103,7 +106,7 @@ DMX node's IP. They are not per show. The proposal:
 One entry per output:
 
 ```jsonc
-{ "id": "proj-left", "kind": "window" | "syphon" | "artnet" | "ndi",
+{ "id": "proj-left", "kind": "window" | "syphon" | "artnet",   // no NDI for now
   "enabled": true,
   "source": "composition",            // later: a group track's bus, or a rail
   "crop": [x, y, w, h],               // normalized, of the composition
@@ -162,8 +165,10 @@ need the main thread, so:
   still advances by `positionSec` deltas, so this only changes how smooth the clock is, not the
   semantics.
 - **Precise vs Live:** Precise waits for decode, which on a projector means a missed vsync (a visible
-  hitch). Live keeps the last frame and never misses a present. Consider warning, or auto-switching to
-  Live, when any display output is enabled. A show should never run in Precise.
+  hitch). Live keeps the last frame and never misses a present.
+
+  **Decided:** while any output is enabled and the transport is in Precise, the **Live button flashes**
+  as a nudge. Nothing switches automatically, and there is no dialog.
 
 #### Syphon
 
@@ -190,14 +195,13 @@ need the main thread, so:
   when the render thread hitches. That is the "low-jitter" goal.
 - Pixel maps (fixture layouts, RGB/RGBW order, universe split) are a real UI of their own; size it
   separately. A first cut is a grid map: W×H pixels, serpentine or not, a start universe.
-- **Relationship to the lights bundle (extras):** it already lowers sketches to DMX on the web side
-  (`web/src/artnet/`). Before building a second pixel-map model, check whether that one can be the
-  source of truth.
+- **Decided: a NEW pixel-map model, owned by the compositor.** Don't build on the lights bundle's
+  model. The user has more to say on its shape before any of it is built.
 
 #### NDI
 
-The NDI SDK is proprietary, with redistribution terms. That is a licensing decision before it is an
-engineering one. Technically it's a CPU path (BGRA/UYVY frames into `NDIlib_send`) fed by the same
+**Decided: not now.** Syphon and Spout cover it. The NDI SDK is proprietary, with redistribution
+terms, so revisiting it is a licensing decision before it is an engineering one. Technically it's a CPU path (BGRA/UYVY frames into `NDIlib_send`) fed by the same
 async readback as Art-Net, at output resolution. It fits after Syphon and Art-Net.
 
 #### Testing M3
@@ -250,13 +254,18 @@ record what already runs on D3D11:
 
 The compositor itself doesn't build there yet, for one structural reason: **`nano_media` is
 Apple-only, and `comp_host` is gated on it** (`native/CMakeLists.txt`, the `if(TARGET nano_media)`
-around `comp_host`). Proposed order, each step shippable on its own:
+around `comp_host`).
+
+**Decided: general video formats are required.** A DXV-only compositor is a stepping stone for
+running the tests, NOT a milestone to ship. Windows goes native only once Media Foundation decode
+works. Order:
 
 1. **Split `nano_media` into a portable core plus a platform layer.**
    - Portable: `dxv_source`, `frame_blitter`, `frame_source` routing, `video_pump`, the DXV demux/LZ.
    - Apple: `avf_source.mm`, `media_fetch.mm`, `video_encoder.mm`.
-   - Windows starts with **DXV and stills only**. `openFrameSource` already names each refusal, and a
-     refused clip reports ready and transparent, so H.264 clips simply don't show; nothing hangs.
+   - At this step Windows decodes **DXV and stills only**, as an internal checkpoint. `openFrameSource`
+     already names each refusal, and a refused clip reports ready and transparent, so H.264 clips
+     simply don't show; nothing hangs.
    - Stills via WIC (`IWICBitmapDecoder` → premultiplied → un-premultiply, matching
      `openImageFrameSource`'s straight-alpha output).
    - `media_fetch` via WinHTTP, or refuse URLs on Windows at first: it only matters for dev-server
@@ -299,7 +308,7 @@ around `comp_host`). Proposed order, each step shippable on its own:
      device path, not its index.
    - **Spout** via SpoutDX (BSD), on our D3D11 device.
 7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
-   steps 1–5 hold.
+   steps 1–5 hold. Step 4, general formats, is the gate.
 
 ---
 
@@ -344,15 +353,14 @@ for.
 
 ---
 
-## Open questions for the user
+## Decisions (2026-09-28) and what's still to come
 
-1. **Output config: settings file (per machine) or document (per show)?** The proposal is a settings
-   file, with only artistic regions in the document.
-2. **Precise with a display output enabled:** warn, auto-switch to Live, or leave it alone?
-3. **NDI:** worth taking on the SDK's licence terms, or is Syphon/Spout enough?
-4. **Art-Net pixel maps:** reuse the lights bundle's model (extras) as the source of truth, or a new
-   compositor-owned one?
-5. **MIDI into the arrangement:** which surface authors it (a Devices section in the arrangement, or
-   device pips on fields)? And does it land before M3, where it would share the latency measurement?
-6. **M4 order:** is "DXV-only compositor on lanes" an acceptable first Windows milestone, with MF
-   decode/encode after?
+1. **Output config:** both, per machine and per show. The user will give more detail before this is
+   built.
+2. **Precise with an output enabled:** flash the Live button. Don't auto-switch, and don't show a
+   dialog.
+3. **NDI:** not now.
+4. **Art-Net pixel maps:** a new model, not the lights bundle's. The user will give more detail.
+5. **MIDI into the arrangement:** coming soon, as part of the user's "devices" push. The user will
+   give more detail. Wait for that design rather than inventing an authoring surface.
+6. **Windows:** general video formats are required. DXV-only is a test checkpoint, not a milestone.
