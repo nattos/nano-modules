@@ -843,12 +843,29 @@ inline int32_t streamLoop(const StreamInfo& s, const StreamsTable& t, double* ou
 }
 
 /**
- * Resolve the clip that owns an executing effect from its instance key
- * ("clip_<clipId>_<suffix>", sketch_build.h). Clip ids may themselves contain
- * '_', so match against the known id set (longest match wins) instead of
- * splitting. Returns nullptr for non-clip keys (track FX, standalone).
+ * The chain's own instance key inside a SHARED-pool key. A native host scopes
+ * each executor's instances with a namespace ending in '/' (a barrel's or a
+ * comp's plugin key — SketchExecutor::setKeyNamespace), followed by "f16!" at a
+ * 16-bit working format; an effect only ever sees that pool key. Chain keys
+ * never contain '/', so everything through the last one is namespace. Web has
+ * no namespace: the key comes back unchanged.
  */
-inline const std::string* clipIdForInstanceKey(const StreamsTable& t, const std::string& key) {
+inline std::string bareInstanceKey(const std::string& poolKey) {
+  const size_t slash = poolKey.rfind('/');
+  std::string bare = slash == std::string::npos ? poolKey : poolKey.substr(slash + 1);
+  if (bare.compare(0, 4, "f16!") == 0) bare.erase(0, 4);
+  return bare;
+}
+
+/**
+ * Resolve the clip that owns an executing effect from its instance key
+ * ("clip_<clipId>_<suffix>", sketch_build.h; a pool key is reduced to that
+ * first). Clip ids may themselves contain '_', so match against the known id
+ * set (longest match wins) instead of splitting. Returns nullptr for non-clip
+ * keys (track FX, standalone).
+ */
+inline const std::string* clipIdForInstanceKey(const StreamsTable& t, const std::string& poolKey) {
+  const std::string key = bareInstanceKey(poolKey);
   constexpr size_t kPrefix = 5;  // "clip_"
   if (key.compare(0, kPrefix, "clip_") != 0) return nullptr;
   const std::string* best = nullptr;
@@ -869,7 +886,8 @@ inline const std::string* clipIdForInstanceKey(const StreamsTable& t, const std:
  * clipIdForInstanceKey (track ids may contain '_'). streams.parent() falls
  * through here so a track section's parent is its track stream.
  */
-inline const std::string* trackIdForInstanceKey(const StreamsTable& t, const std::string& key) {
+inline const std::string* trackIdForInstanceKey(const StreamsTable& t, const std::string& poolKey) {
+  const std::string key = bareInstanceKey(poolKey);
   constexpr size_t kPrefix = 6;  // "track_"
   if (key.compare(0, kPrefix, "track_") != 0) return nullptr;
   const std::string* best = nullptr;

@@ -97,6 +97,18 @@ class CompExecutor {
    */
   void resetInternalExecutor();
 
+  /** Prefix for every effect instance this comp creates in the shared pool
+   *  (SketchExecutor::setKeyNamespace), on both internal executors and across
+   *  resets — so a runtime hosting other barrels can scope a prune or a reset
+   *  to this comp. Empty (the default) on web. */
+  void setKeyNamespace(const std::string& ns);
+  const std::string& keyNamespace() const { return keyNamespace_; }
+  /** The transport pre-pass executor (instance prefix lookups). */
+  sketch_executor::SketchExecutor* transportExecutor() { return transportEx_.get(); }
+  /** Re-apply every instance's state next frame, on both executors — after a
+   *  host pruned instances that may later re-enter the chain. */
+  void forceStateReassert();
+
   /** Register a module's schema: feeds the role/defaults catalog AND the
    *  internal executor. Must cover every referenced module type before the
    *  first update() (unknown types degrade to "not in catalog": skipped). */
@@ -323,6 +335,10 @@ class CompExecutor {
    *  matching scene in order wins, a later same-frame event overwrites the
    *  slot. 1-frame latency, like the rail-bypass readback. */
   void readTriggerSignals();
+  /** effrt handle for an instance `ex` renders, by BARE key: prefixes the
+   *  executor's pool namespace. Every published-output read goes through it. */
+  int32_t instanceHandle(const sketch_executor::SketchExecutor& ex,
+                         const std::string& moduleType, const std::string& bareKey) const;
   /** Post-render: read each structural-bypass rail's live `output` (published-
    *  state mirror), threshold >= 0.5, and store per-track decisions. Next
    *  update() compares against the vector used at eval → invalidateEval on a
@@ -520,6 +536,7 @@ class CompExecutor {
   /** Its own internal executor: the section sketch must run BEFORE render()'s
    *  executor sees the frame, and shares nothing with the pixel chain. */
   std::unique_ptr<sketch_executor::SketchExecutor> transportEx_;
+  std::string keyNamespace_;
   /** One row per DRIVEN warm clip; strings precomputed at rebuild so the
    *  per-frame resolve allocates nothing. Clip pointers live in doc_ —
    *  cleared with the eval tree on loadDocument. */

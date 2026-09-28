@@ -81,14 +81,37 @@ void CompExecutor::setTraceHooks(sketch_executor::SketchExecutor::ChainEntryHook
   ex_->setBarrierPredicate(barrierHook_);
 }
 
+int32_t CompExecutor::instanceHandle(const sketch_executor::SketchExecutor& ex,
+                                     const std::string& moduleType,
+                                     const std::string& bareKey) const {
+  // The pool key the executor itself uses (namespace + format suffix), or this
+  // would mint a stray, never-rendered instance under the bare key.
+  const std::string key = ex.instanceKeyPrefix() + bareKey;
+  return effrt_instance_for(moduleType.data(), static_cast<int32_t>(moduleType.size()),
+                            key.data(), static_cast<int32_t>(key.size()));
+}
+
+void CompExecutor::setKeyNamespace(const std::string& ns) {
+  keyNamespace_ = ns;
+  ex_->setKeyNamespace(ns);
+  transportEx_->setKeyNamespace(ns);
+}
+
+void CompExecutor::forceStateReassert() {
+  ex_->forceStateReassert();
+  transportEx_->forceStateReassert();
+}
+
 void CompExecutor::resetInternalExecutor() {
   ex_ = std::make_unique<sketch_executor::SketchExecutor>(rt_, registry_, gpu_);
+  ex_->setKeyNamespace(keyNamespace_);
   ex_->setChainEntryHook(chainEntryHook_);
   ex_->setSketchOutputHook(outputHook_);
   ex_->setBarrierPredicate(barrierHook_);
   // The transport executor shares the revive contract: a pruned-then-revived
   // web instance holds DEFAULT params while lastAppliedState_ still matches.
   transportEx_ = std::make_unique<sketch_executor::SketchExecutor>(rt_, registry_, gpu_);
+  transportEx_->setKeyNamespace(keyNamespace_);
   catalog_.forEach([&](const std::string& type, const nlohmann::json& schema,
                        const std::vector<std::string>& caps) {
     ex_->registerModuleSchema(type, schema);
@@ -1444,9 +1467,7 @@ void CompExecutor::transportResolve(double dtSec) {
   for (size_t i = 0; i < transportRows_.size(); ++i) {
     const TransportRow& row = transportRows_[i];
     if (row.synthetic) continue;  // no section instance — resolved analytically below
-    const int32_t inst =
-        effrt_instance_for(row.moduleType.data(), static_cast<int32_t>(row.moduleType.size()),
-                           row.instanceKey.data(), static_cast<int32_t>(row.instanceKey.size()));
+    const int32_t inst = instanceHandle(*transportEx_, row.moduleType, row.instanceKey);
     if (inst < 0) continue;  // pre-instance frame → invalid row → fallback
     TransportResolved r;
     double* slots[10] = {&r.timeSec,       &r.active,       &r.rate,       &r.nextJumpSec,
@@ -1548,9 +1569,7 @@ void CompExecutor::transportResolve(double dtSec) {
     for (const auto& d : track->transport.devices) {
       if (!catalog_.has(d.moduleType)) continue;
       const std::string key = trackTransportInstanceKey(trackId, d.id);
-      const int32_t inst =
-          effrt_instance_for(d.moduleType.data(), static_cast<int32_t>(d.moduleType.size()),
-                             key.data(), static_cast<int32_t>(key.size()));
+      const int32_t inst = instanceHandle(*transportEx_, d.moduleType, key);
       if (inst < 0) continue;
       double mix = 0;
       if (!effrt_published_scalar(inst, "xfade_mix", 9, &mix)) continue;
@@ -1936,9 +1955,7 @@ void CompExecutor::readTriggerSignals() {
   };
   std::vector<Ev> fired;
   for (const auto& [key, route] : triggerRoutes_) {
-    const int32_t inst =
-        effrt_instance_for(route.moduleType.data(), static_cast<int32_t>(route.moduleType.size()),
-                           key.data(), static_cast<int32_t>(key.size()));
+    const int32_t inst = instanceHandle(*ex_, route.moduleType, key);
     if (inst < 0) continue;
     // Numeric ring read (effrt.h layout: seq/on/channel/velocity/deadline per
     // event). Ring caps are ≤16; 32 leaves headroom. -1 = no ring published
@@ -2005,9 +2022,7 @@ void CompExecutor::readRailBypassSignals() {
       if (read.targetDeviceId != kLayerTargetId || read.targetField != "bypass") continue;
       const std::string key = "rail_" + read.railId;
       static constexpr const char* kRailType = "mod.shaper.remap";
-      const int32_t inst = effrt_instance_for(kRailType,
-                                              static_cast<int32_t>(std::strlen(kRailType)),
-                                              key.data(), static_cast<int32_t>(key.size()));
+      const int32_t inst = instanceHandle(*ex_, kRailType, key);
       bool on = false;
       if (inst >= 0) {
         // The rail relay's live `output`, via the same numeric published-state

@@ -3,6 +3,7 @@
 #include "bridge/comp_host.h"
 
 #include <cmath>
+#include <set>
 
 #include "bridge/comp_media_resolver.h"
 #include "gpu/gpu_backend.h"
@@ -30,6 +31,7 @@ CompHost::CompHost(gpu::GPUBackend* gpu, effect_runtime::EffectRuntime* rt,
                    sketch_executor::WasmEffectBundles* bundles, const Config& cfg)
     : gpu_(gpu), rt_(rt), registry_(registry), bundles_(bundles), cfg_(cfg) {
   cx_ = std::make_unique<comp::CompExecutor>(rt_, registry_, gpu_);
+  cx_->setKeyNamespace(cfg_.keyNamespace);
   seedSchemas();
 
   // Bind the seekable-streams registry into every loaded bundle (and every one
@@ -149,6 +151,24 @@ void CompHost::ensureTextures() {
   // exists — without this it never holds.
   cx_->setVideoReadyFeed();
   if (hadPump) pump_->setActiveClips(json::parse(cx_->videoDescsJson(), nullptr, false));
+}
+
+size_t CompHost::pruneInstances(
+    const std::vector<std::pair<std::string, std::string>>& required) {
+  if (!rt_) return 0;
+  std::set<std::string> keep;
+  for (const auto& [type, key] : required) keep.insert(type + "|" + key);
+  const std::string& ns = cfg_.keyNamespace;
+  const size_t n = rt_->destroyInstancesIf([&](const std::string& type, const std::string& key) {
+    if (key.compare(0, ns.size(), ns) != 0) return false;   // not this comp's
+    std::string bare = key.substr(ns.size());
+    // A 16-bit working format mints its own instances ("f16!" + key); they're
+    // the same chain entry as far as the required set goes.
+    if (bare.compare(0, 4, "f16!") == 0) bare = bare.substr(4);
+    return keep.count(type + "|" + bare) == 0;
+  });
+  if (n > 0) cx_->forceStateReassert();
+  return n;
 }
 
 void CompHost::publishClock(double dt) {

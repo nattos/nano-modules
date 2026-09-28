@@ -419,6 +419,12 @@ class EffectRuntime {
   // the GPU is idle.
   void destroyInstancesWithKeyPrefix(const std::string& prefix);
 
+  // Destroy every pooled instance for which `pred(type, instanceKey)` holds;
+  // returns how many. A comp host prunes its namespace to the required set
+  // with it. Caller must ensure the GPU is idle.
+  size_t destroyInstancesIf(
+      const std::function<bool(const std::string& type, const std::string& instanceKey)>& pred);
+
   // Live count of pooled per-(type, instance_key) render instances. Introspection
   // for tests proving instance-key namespacing keeps barrels isolated in the
   // shared pool (two namespaces × one bare key → two distinct instances).

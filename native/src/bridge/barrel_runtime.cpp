@@ -299,6 +299,8 @@ struct BarrelRuntime::Impl {
     // comp host owns its executor and may rebuild it (resetInternalExecutor),
     // so shared code reaches the executor through ex(), never `executor`.
     std::unique_ptr<CompHost> comp;
+    // The comp's plugin key: its instances live under compKey + "/".
+    std::string compKey;
     // The last comp_control `seq` applied — echoed on every report so the
     // editor's playhead mirror-back can drop reports that predate a seek.
     double compControlSeq = 0;
@@ -609,6 +611,9 @@ struct BarrelRuntime::Impl {
 #if NANO_COMP_HOST
   /// (Re)build an entry's comp host at w x h, wired to the entry's capture
   /// hooks (the comp retains them across its internal executor rebuilds).
+  /// A comp's prefix in the shared instance pool — a barrel's shape (key + "/").
+  static std::string compNamespace(const PerExecutor& pe) { return pe.compKey + "/"; }
+
   void buildCompHost(PerExecutor& pe, int w, int h) {
     CompHost::Config cfg;
     cfg.width = w;
@@ -616,6 +621,9 @@ struct BarrelRuntime::Impl {
     // Realtime: a seek or an open must never stall the frame (and every
     // output with it). A late frame holds Precise or shows the last one in Live.
     cfg.asyncDecode = true;
+    // Scoped in the shared pool like a barrel's (key + "/"), so a reset or a
+    // prune touches only this comp's instances.
+    cfg.keyNamespace = compNamespace(pe);
     pe.comp = std::make_unique<CompHost>(gpu.get(), rt.get(), registry.get(), bundles.get(), cfg);
     const auto hooks = captureHooksFor(&pe);
     pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);
@@ -2066,6 +2074,7 @@ bool BarrelRuntime::createComp(const std::string& key, int w, int h) {
   impl_->installCompHandlers();
   auto [it, inserted] = impl_->executors.try_emplace(key);
   Impl::PerExecutor& pe = it->second;
+  pe.compKey = key;
   impl_->buildCompHost(pe, w > 0 ? w : 640, h > 0 ? h : 360);
   BRT_LOG("comp created key=%s (%dx%d)", key.c_str(), pe.comp->width(), pe.comp->height());
   return true;
@@ -2114,7 +2123,7 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       // instances go too — their keys carry no per-comp prefix to scope by.
       const int w = host.width(), h = host.height();
       pe.comp.reset();
-      if (impl_->executors.size() == 1) impl_->rt->destroyInstancesWithKeyPrefix("");
+      impl_->rt->destroyInstancesWithKeyPrefix(impl_->compNamespace(pe));
       impl_->buildCompHost(pe, w, h);
       // The editor's page url: what its dev-server media urls resolve against.
       pe.comp->setMediaBase(m.value("mediaBase", std::string()));
@@ -2186,6 +2195,9 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
                                          r.value("instanceKey", std::string()));
         }
       }
+      // …and every instance NOT in it goes (web: pruneInstancesExcept), or a
+      // long session keeps one per clip it ever composited.
+      host.pruneInstances(pe.compRequired);
     }
     if (hasClients) {
       // CompFrameInfo (engine-types.ts); change-gated fields only when changed
@@ -2235,9 +2247,15 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
     // (the arrangement store's pluginStates), and the modulation bands —
     // deduped exactly like the barrel's channels.
     nlohmann::json ps = nlohmann::json::object();
+    const std::string pixelPrefix = pe.comp->executor().sketchExecutor()->instanceKeyPrefix();
+    const std::string transportPrefix =
+        pe.comp->executor().transportExecutor()->instanceKeyPrefix();
     for (const auto& [mt, ik] : pe.compRequired) {
       if (mt.empty() || ik.empty()) continue;
-      auto* einst = impl_->rt->findInstance(mt, ik);
+      // Pixel-chain instances carry the executor's prefix (with its format
+      // suffix); transport-section ones the transport executor's.
+      auto* einst = impl_->rt->findInstance(mt, pixelPrefix + ik);
+      if (!einst) einst = impl_->rt->findInstance(mt, transportPrefix + ik);
       if (!einst) continue;
       const std::string pj = einst->publishedStateJson();
       if (pj.empty()) continue;

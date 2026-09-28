@@ -1566,6 +1566,19 @@ if(NANO_HAS_GPU_BACKEND)
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     catch_discover_tests(test_comp_render)
 
+    # CompHost::pruneInstances: the required set only, this comp's namespace only.
+    if(TARGET comp_host)
+      add_executable(test_comp_host_prune tests/test_comp_host_prune.cpp)
+      target_link_libraries(test_comp_host_prune PRIVATE
+        comp_host effect_runtime sketch_executor wasm_host gpu_backend
+        Catch2::Catch2WithMain
+)
+      target_compile_definitions(test_comp_host_prune PRIVATE
+        CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+        TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+      catch_discover_tests(test_comp_host_prune)
+    endif()
+
     # Media-ref resolution: a disk-loaded document (no runtime source.url) must
     # still emit video descs. Null GPU backends, but links the same closure.
     add_executable(test_comp_media_ref tests/test_comp_media_ref.cpp)

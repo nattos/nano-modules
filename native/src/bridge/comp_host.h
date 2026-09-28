@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -53,6 +55,10 @@ class CompHost {
     /// Decode on threads (VideoPump::Config::async) — the realtime compositor.
     /// The fixed-step runner and export keep the synchronous pump.
     bool asyncDecode = false;
+    /// Prefix for this comp's effect instances in the shared pool (see
+    /// CompExecutor::setKeyNamespace). Required for pruneInstances() whenever
+    /// the runtime hosts anything else.
+    std::string keyNamespace;
   };
 
   /// Seeds the catalog from `registry`, binds the streams table into
@@ -111,6 +117,16 @@ class CompHost {
   const std::string& chainKeysJson() const { return chainKeys_; }
   /// The output texture this host renders into.
   int32_t outputTexture() const { return outTex_; }
+
+  /**
+   * Destroy every effect instance under this comp's namespace that isn't in
+   * `required` ((moduleType, bare instanceKey) — CompExecutor::requiredJson),
+   * the web host's pruneInstancesExcept. A long session otherwise keeps an
+   * instance for every clip it ever composited. Re-asserts state when anything
+   * went, so a pruned key that re-enters the chain gets its params back.
+   * Returns how many were destroyed.
+   */
+  size_t pruneInstances(const std::vector<std::pair<std::string, std::string>>& required);
 
   /// Frames stepped, and how many of them held on unready video (Precise).
   int frames() const { return frames_; }

@@ -453,3 +453,25 @@ TEST_CASE("streamsTableJson: static registry round-trips for the web twin", "[st
     CHECK(s.contains("seed"));
   }
 }
+
+TEST_CASE("an effect's pool key resolves to its clip and track like a bare key", "[streams]") {
+  // A native host namespaces a comp's instances in the shared pool
+  // ("<plugin key>/", then "f16!" at 16-bit); streams.parent/content must see
+  // through that to the chain key, or every transport controller natively reads
+  // the session clock and follow actions never fire.
+  CHECK(comp::bareInstanceKey("clip_a_dev") == "clip_a_dev");
+  CHECK(comp::bareInstanceKey("comp1/clip_a_dev") == "clip_a_dev");
+  CHECK(comp::bareInstanceKey("comp1/f16!clip_a_dev") == "clip_a_dev");
+  CHECK(comp::bareInstanceKey("f16!track_t_x") == "track_t_x");
+
+  comp::StreamsTable t;
+  t.parentByClipId["a_b"] = 7;
+  t.parentByClipId["a"] = 3;
+  t.trackByTrackId["t1"] = 9;
+  const std::string* clip = comp::clipIdForInstanceKey(t, "comp1/clip_a_b_dev");
+  REQUIRE(clip);
+  CHECK(*clip == "a_b");  // longest match, through the namespace
+  const std::string* track = comp::trackIdForInstanceKey(t, "comp1/f16!track_t1_dev");
+  REQUIRE(track);
+  CHECK(*track == "t1");
+}

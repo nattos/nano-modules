@@ -256,7 +256,13 @@ class SketchExecutor {
    * shared-pool lookup is namespaced; the executor's own per-(bare-key) maps
    * stay bare (they're already per-executor objects).
    */
-  void setKeyNamespace(std::string ns) { keyNamespace_ = std::move(ns); }
+  void setKeyNamespace(std::string ns) {
+    keyNamespace_ = std::move(ns);
+    nsPrefix_ = keyNamespace_ + (internalFmt_ == 3 ? "f16!" : "");
+  }
+  /// The prefix this executor's instances carry in the shared pool as of the
+  /// last execute(): the namespace plus a format suffix ("f16!") at 16-bit.
+  const std::string& instanceKeyPrefix() const { return nsPrefix_; }
 
   /**
    * Identity tag this executor writes onto sidechannel-bus channels it

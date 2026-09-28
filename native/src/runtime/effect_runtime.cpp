@@ -713,6 +713,22 @@ void EffectRuntime::destroyInstancesWithKeyPrefix(const std::string& prefix) {
   }
 }
 
+size_t EffectRuntime::destroyInstancesIf(
+    const std::function<bool(const std::string&, const std::string&)>& pred) {
+  size_t n = 0;
+  for (auto it = instance_pool_.begin(); it != instance_pool_.end();) {
+    const std::string& k = it->first;  // "type|instanceKey"
+    const auto bar = k.find('|');
+    if (bar != std::string::npos && pred(k.substr(0, bar), k.substr(bar + 1))) {
+      it = instance_pool_.erase(it);  // ~EffectInstance runs doDestroy
+      ++n;
+    } else {
+      ++it;
+    }
+  }
+  return n;
+}
+
 void EffectRuntime::registerFragmentSource(const std::string& name,
                                            std::string source) {
   fragment_source_by_name_[name] = std::move(source);
