@@ -29,7 +29,7 @@ import {
 } from './paths';
 
 export type HandleRef =
-  | { kind: 'lib'; libraryId: string; path: string[] }
+  | { kind: 'lib'; libraryId: string; path: string[]; libraryLabel?: string }
   | { kind: 'direct'; handle: PathsHandle };
 
 /**
@@ -112,7 +112,7 @@ export async function resolveHandleRef(
     return ref.handle;
   }
   await libraryPaths.ensureLoaded();
-  const lib = libraryPaths.get(ref.libraryId);
+  const lib = libraryPaths.find(ref.libraryId, ref.libraryLabel);
   if (!lib) return null; // library was removed → reference invalidated
   // No handle, but we know where it lives and we have a real filesystem —
   // synthesize one. This is what makes a hand-entered absolute path resolve.
@@ -149,7 +149,7 @@ export async function resolveDirRef(
 /** A short human description of where a ref points (for relink UIs). */
 export function describeRef(ref: HandleRef): string {
   if (ref.kind === 'direct') return (ref.handle as any).name ?? 'file';
-  const lib = libraryPaths.get(ref.libraryId);
+  const lib = libraryPaths.find(ref.libraryId, ref.libraryLabel);
   const tail = ref.path.join('/') || '.';
   return lib ? `${lib.label}/${tail}` : `(missing library)/${tail}`;
 }

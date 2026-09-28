@@ -540,6 +540,13 @@ export class ArrInspector extends MobxLitElement {
       border: 1px solid var(--app-line-color);
       border-radius: 2px;
       padding: 1px 4px;
+      max-width: none; /* the panel-wide input cap is for value fields */
+    }
+    /* After .lib-abs-input: the name field shares its box, not its mono. */
+    .lib-label-input {
+      font-family: inherit;
+      font-size: var(--app-fs-sm);
+      margin: 0 2px 0 4px;
     }
     .confirm-pop {
       position: fixed;
@@ -1620,17 +1627,11 @@ export class ArrInspector extends MobxLitElement {
         <div class="row"><label>Snap to grid</label><span class="val"><span class="tag">¼ beat</span></span></div>
         <div class="row"><label>Default play mode</label><span class="val">${store.composition.playMode.defaultMode}</span></div>
 
-        ${isElectron() ? this.renderDesktopLibraries() : this.renderWebLibraries()}
+        ${isElectron() ? this.renderWebAppCompatibility() : this.renderWebLibraries()}
       </div>
     `;
   }
 
-  /**
-   * The desktop app records each clip's real file location, so it needs no
-   * library paths of its own. What's left is interop: a document made in a
-   * browser names ITS libraries (per-profile ids), and each one located here
-   * is kept under that id. Nothing to show until that happens.
-   */
   /** "Locate '<label>'…" for a missing clip whose library this profile has
    *  never seen (a document from another browser profile, or the web app). */
   private renderLocateLibrary(libraryId?: string): TemplateResult | typeof nothing {
@@ -1641,37 +1642,88 @@ export class ArrInspector extends MobxLitElement {
       @click=${() => void store.locateLibrary(libraryId)}>Locate '${label}'…</button>`;
   }
 
-  private renderDesktopLibraries(): TemplateResult | typeof nothing {
-    if (libraryPaths.paths.length === 0) return nothing;
+  /**
+   * The desktop app records each clip's real file location, so its own
+   * documents need no library paths. A document made in the BROWSER app names
+   * its libraries instead (per-profile ids + the label it recorded), and
+   * resolves here against an entry with the same id — one adopted through
+   * "Locate '<label>'…" — or the same LABEL, which is what lets a folder be set
+   * up ahead of time. Same lookup natively (`LibraryPaths::findLocked`).
+   */
+  private renderWebAppCompatibility(): TemplateResult {
     return html`
-      <div class="group-title">Libraries from browser documents</div>
-      <div class="lib-hint">
-        Folders you located for documents made in the web app. The desktop app
-        stores real file paths and doesn't need these for its own documents.
+      <div class="group-title">Web App Compatibility</div>
+      <div
+        class="lib-drop ${this.libDragOver ? 'over' : ''}"
+        @dragover=${this.onLibraryDragOver}
+        @dragleave=${() => { this.libDragOver = false; }}
+        @drop=${this.onLibraryDrop}
+      >
+        <div class="lib-hint">
+          Library paths for arrangements made in the web app, which refer to
+          media by library name rather than by file. A library resolves when its
+          name here matches the one the document recorded. Documents made in
+          this app store real file paths and don't need these. Drag folders here
+          to add them.
+        </div>
+        <div class="ws-list">
+          ${libraryPaths.paths.length === 0
+            ? html`<div class="dash-empty" style="padding:6px 0">No library paths yet.</div>`
+            : libraryPaths.paths.map((p) => this.renderDesktopLibraryPath(p))}
+        </div>
+        <div class="ws-toolbar" style="margin-top:6px">
+          <button class="btn" @click=${() => this.addLibraryPath()}>
+            <ui-icon icon="la-folder-plus"></ui-icon> Add library path…
+          </button>
+        </div>
       </div>
-      <div class="ws-list">
-        ${libraryPaths.paths.map((p) => html`<div class="lib-row">
-          <div class="ws-file">
-            <ui-icon icon="la-folder"></ui-icon>
-            <span class="ws-name" title=${p.absolutePath ?? p.label}>${p.label}</span>
-            <button class="btn" title="Point this library at a different folder"
-              @click=${() => this.relocateLibrary(p)}>Locate…</button>
-            <button
-              class="ws-del"
-              title="Forget this library"
-              @click=${(ev: PointerEvent) =>
-                this.openConfirm(ev, {
-                  message: `Forget "${p.label}"? Browser documents that use it will ask for it again.`,
-                  confirmLabel: 'Forget',
-                  onYes: () => libraryPaths.remove(p.id),
-                })}
-            ><ui-icon icon="la-trash"></ui-icon></button>
-          </div>
-          ${p.absolutePath
-            ? html`<div class="lib-abs"><span class="val" style="opacity:0.7">${p.absolutePath}</span></div>`
-            : nothing}
-        </div>`)}
-      </div>`;
+    `;
+  }
+
+  /** A desktop library row: an editable NAME (what a web document matches
+   *  by) and folder. Every desktop entry has both locators, so no badges. */
+  private renderDesktopLibraryPath(p: LibraryPath): TemplateResult {
+    return html`<div class="lib-row">
+      <div class="ws-file">
+        <ui-icon icon="la-folder"></ui-icon>
+        <input
+          class="lib-abs-input lib-label-input"
+          .value=${p.label}
+          title="Library name — web documents naming this library resolve here"
+          spellcheck="false"
+          @change=${(e: Event) => void this.relinkAfter(
+            libraryPaths.setLabel(p.id, (e.target as HTMLInputElement).value))}
+        />
+        <button class="btn" title="Point this library at a different folder"
+          @click=${() => this.relocateLibrary(p)}>Locate…</button>
+        <button
+          class="ws-del"
+          title="Remove library path"
+          @click=${(ev: PointerEvent) =>
+            this.openConfirm(ev, {
+              message: `Remove "${p.label}"? Web documents that use it will show their media as missing.`,
+              confirmLabel: 'Remove',
+              onYes: () => void this.relinkAfter(libraryPaths.remove(p.id)),
+            })}
+        ><ui-icon icon="la-trash"></ui-icon></button>
+      </div>
+      <div class="lib-abs">
+        <input
+          class="lib-abs-input"
+          .value=${p.absolutePath ?? ''}
+          placeholder="/absolute/path/to/folder"
+          spellcheck="false"
+          @change=${(e: Event) => void this.relinkAfter(
+            libraryPaths.setAbsolutePath(p.id, (e.target as HTMLInputElement).value.trim()))}
+        />
+      </div>
+    </div>`;
+  }
+
+  /** Desktop: a library edit can bring missing media back (or lose it). */
+  private async relinkAfter(edit: Promise<unknown>) {
+    await edit;
+    if (isElectron()) await store.relinkMedia();
   }
 
   private async relocateLibrary(p: LibraryPath) {
@@ -1785,12 +1837,13 @@ export class ArrInspector extends MobxLitElement {
     for (const h of await pending) {
       if (h.kind === 'directory') await libraryPaths.add(h as PathsDirectoryHandle);
     }
+    if (isElectron()) await store.relinkMedia();
   };
 
   private async addLibraryPath() {
     try {
       const dir = await showDirectoryPicker();
-      if (dir) await libraryPaths.add(dir);
+      if (dir) await this.relinkAfter(libraryPaths.add(dir));
     } catch (err) {
       if ((err as Error)?.name !== 'AbortError') console.warn('[library-paths] add failed', err);
     }

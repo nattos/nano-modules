@@ -154,3 +154,29 @@ describe('library-paths — adopting a foreign id', () => {
     expect(again.label).toBe('Footage'); // no new label → kept
   });
 });
+
+describe('library-paths — matching a web document by label', () => {
+  it('find: id first, then the recorded label, then an id that is a label', async () => {
+    await libraryPaths.adopt('mine', fsDir('/Volumes/footage'), 'Footage');
+    await libraryPaths.adopt('Stock', fsDir('/Volumes/stock'), 'Stock clips');
+    expect(libraryPaths.find('mine')?.id).toBe('mine');
+    // An id this profile never minted: the document's label is the bridge.
+    expect(libraryPaths.find('uuid-from-web', 'Footage')?.id).toBe('mine');
+    // Id beats label.
+    expect(libraryPaths.find('Stock', 'Footage')?.id).toBe('Stock');
+    // A pre-label document whose id is a label.
+    expect(libraryPaths.find('Footage')?.id).toBe('mine');
+    expect(libraryPaths.find('uuid-from-web', 'Nope')).toBeUndefined();
+  });
+
+  it('setLabel renames what a web document can match (blank is ignored)', async () => {
+    const { id } = await libraryPaths.add(fsDir('/Volumes/ssd/clips'));
+    expect(libraryPaths.find('uuid-from-web', 'Footage')).toBeUndefined();
+    await libraryPaths.setLabel(id, '  Footage ');
+    expect(libraryPaths.get(id)?.label).toBe('Footage');
+    expect(libraryPaths.find('uuid-from-web', 'Footage')?.id).toBe(id);
+    await libraryPaths.setLabel(id, '   ');
+    expect(libraryPaths.get(id)?.label).toBe('Footage');
+    expect(idb.get(id)?.label).toBe('Footage'); // persisted
+  });
+});

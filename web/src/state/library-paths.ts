@@ -178,6 +178,25 @@ class LibraryController {
   }
 
   /**
+   * The library a document's ref resolves against: by id, then by the label
+   * the document recorded, then an id that is itself a label (documents from
+   * before labels). Ids are per-profile UUIDs, so a browser-authored document
+   * opened elsewhere matches by LABEL — which is what lets a library set up
+   * ahead of time under the same name resolve it. Lock-step with the native
+   * `LibraryPaths::findLocked` (native/src/bridge/library_paths.h).
+   */
+  find(id: string, label?: string): LibraryPath | undefined {
+    const byId = this.get(id);
+    if (byId) return byId;
+    for (const want of [label, id]) {
+      if (!want) continue;
+      const hit = this.paths.find((p) => !!p.label && p.label === want);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  /**
    * Live-mode bridge mirror (wired by boot-resolume, mirroring the MIDI device
    * library). Call again on reconnect — it re-pushes.
    */
@@ -300,7 +319,26 @@ class LibraryController {
     const rec = this.get(id);
     if (!rec) return;
     const abs = normalizeAbsPath(absolutePath);
-    runInAction(() => { rec.absolutePath = abs || undefined; });
+    // Desktop: the handle IS the path, so it follows the edit (a stale one
+    // would keep resolving the old folder in the app while native used the new).
+    const handle = abs && isElectron()
+      ? (await getHandleFromAbsPath(abs)) as PathsDirectoryHandle | undefined
+      : undefined;
+    runInAction(() => {
+      rec.absolutePath = abs || undefined;
+      if (isElectron()) rec.handle = handle?.kind === 'directory' ? handle : undefined;
+    });
+    await this.persist(rec);
+    this.mirror();
+  }
+
+  /** Rename an entry. The label is what a browser document's library matches
+   *  by when its id is unknown here (see `find`). */
+  async setLabel(id: string, label: string): Promise<void> {
+    const rec = this.get(id);
+    const next = label.trim();
+    if (!rec || !next || rec.label === next) return;
+    runInAction(() => { rec.label = next; });
     await this.persist(rec);
     this.mirror();
   }

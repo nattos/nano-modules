@@ -1175,7 +1175,7 @@ export class ArrangementStore {
   private async findMediaHandle(
     key: string,
     docFile: MediaDocFile | null,
-    libRef: { kind: 'lib'; libraryId: string; path: string[] } | null,
+    libRef: { kind: 'lib'; libraryId: string; path: string[]; libraryLabel?: string } | null,
   ): Promise<PathsFileHandle | null> {
     try {
       if (docFile?.rel?.length && this.backend?.resolveRelative && this.currentName) {
@@ -1218,7 +1218,7 @@ export class ArrangementStore {
       const docRef = this.docRefFor(key);
       const rec = await resolveMedia(key);
       const libRef = docRef ?? (rec?.ref?.kind === 'lib' ? rec.ref : null);
-      const lib = libRef ? libraryPaths.get(libRef.libraryId) : undefined;
+      const lib = libRef ? libraryPaths.find(libRef.libraryId, docRef?.libraryLabel) : undefined;
       // Learned a portable ref from IDB that the document lacks, or know the
       // label the document didn't record → write it in, so opening and
       // re-saving upgrades the file in place.
