@@ -315,3 +315,26 @@ TEST_CASE("compositor: exits when its parent goes away (stdin EOF)",
   c.closeStdin();
   CHECK(c.reap(5000));
 }
+
+TEST_CASE("compositor: comp_reset starts a fresh engine (no document, transport at 0)",
+          "[compositor][integration]") {
+  Compositor c(8281);
+  c.send({{"action", "comp_resize"}, {"width", 32}, {"height", 18}});
+  c.send({{"action", "comp_load_doc"}, {"json", solidDoc(1, 0, 0).dump()}});
+  c.send({{"action", "comp_control"}, {"op", "seek"}, {"beat", 3}});
+  c.send({{"action", "comp_step"}, {"frames", 1}, {"dtSec", 1.0 / 60}});
+  CHECK(c.centre(1) == std::vector<int>{255, 0, 0, 255});
+
+  c.send({{"action", "comp_reset"}});
+  c.send({{"action", "comp_step"}, {"frames", 1}, {"dtSec", 1.0 / 60}});
+  size_t cursor = 0;
+  json rep;
+  // The first report after the reset is a full resync of an empty engine.
+  do rep = c.await("comp_report", -1, &cursor); while (rep.value("positionBeat", -1.0) != 0.0);
+  CHECK_FALSE(rep.value("hasContent", true));
+  // The render size survives the reset.
+  c.send({{"action", "comp_readback"}, {"reqId", 2}});
+  const json r = c.await("readback", 2);
+  CHECK_FALSE(r.value("hasContent", true));
+  CHECK(r.value("width", 0) == 32);
+}

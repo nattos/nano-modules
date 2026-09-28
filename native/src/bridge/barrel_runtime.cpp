@@ -545,8 +545,8 @@ struct BarrelRuntime::Impl {
   void installCompHandlers() {
     if (comp_handlers_installed) return;
     comp_handlers_installed = true;
-    for (const char* action : {"comp_load_doc", "comp_control", "comp_op", "comp_resize",
-                               "comp_clock", "comp_step", "comp_readback",
+    for (const char* action : {"comp_reset", "comp_load_doc", "comp_control", "comp_op",
+                               "comp_resize", "comp_clock", "comp_step", "comp_readback",
                                "comp_visibility"}) {
       BridgeServer::instance().set_action_handler(action,
           [this](int, const std::string& msg) {
@@ -601,6 +601,24 @@ struct BarrelRuntime::Impl {
     };
     return h;
   }
+
+#if NANO_COMP_HOST
+  /// (Re)build an entry's comp host at w x h, wired to the entry's capture
+  /// hooks (the comp retains them across its internal executor rebuilds).
+  void buildCompHost(PerExecutor& pe, int w, int h) {
+    CompHost::Config cfg;
+    cfg.width = w;
+    cfg.height = h;
+    pe.comp = std::make_unique<CompHost>(gpu.get(), rt.get(), registry.get(), bundles.get(), cfg);
+    const auto hooks = captureHooksFor(&pe);
+    pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);
+    pe.compRequired.clear();
+    pe.compControlSeq = 0;
+    pe.compResync = true;
+    pe.haveLastPluginStates = false;
+    pe.haveLastModulation = false;
+  }
+#endif
 
   std::vector<nlohmann::json> takeCompInbox(const std::string& key) {
     std::lock_guard<std::mutex> lk(comp_inbox_mu);
@@ -2038,15 +2056,8 @@ bool BarrelRuntime::createComp(const std::string& key, int w, int h) {
   impl_->installCompHandlers();
   auto [it, inserted] = impl_->executors.try_emplace(key);
   Impl::PerExecutor& pe = it->second;
-  CompHost::Config cfg;
-  cfg.width = w > 0 ? w : 640;
-  cfg.height = h > 0 ? h : 360;
-  pe.comp = std::make_unique<CompHost>(impl_->gpu.get(), impl_->rt.get(),
-                                       impl_->registry.get(), impl_->bundles.get(), cfg);
-  // The comp retains these across its internal executor rebuilds.
-  const auto hooks = Impl::captureHooksFor(&pe);
-  pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);
-  BRT_LOG("comp created key=%s (%dx%d)", key.c_str(), cfg.width, cfg.height);
+  impl_->buildCompHost(pe, w > 0 ? w : 640, h > 0 ? h : 360);
+  BRT_LOG("comp created key=%s (%dx%d)", key.c_str(), pe.comp->width(), pe.comp->height());
   return true;
 #else
   (void)key; (void)w; (void)h;
@@ -2061,8 +2072,6 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
   auto it = impl_->executors.find(key);
   if (it == impl_->executors.end() || !it->second.comp) return 0;
   Impl::PerExecutor& pe = it->second;
-  CompHost& host = *pe.comp;
-  comp::CompExecutor& cx = host.executor();
   nano_platform::ScopedPool pool;
   if (const uint64_t want = impl_->reloadRequested.load(std::memory_order_relaxed);
       want != impl_->reloadServed) {
@@ -2085,7 +2094,19 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
   std::vector<nlohmann::json> readbacks;
   for (auto& m : impl_->takeCompInbox(key)) {
     const std::string action = m.value("action", std::string());
-    if (action == "comp_load_doc") {
+    // (A reset replaces the host: never hold it across iterations.)
+    CompHost& host = *pe.comp;
+    comp::CompExecutor& cx = host.executor();
+    if (action == "comp_reset") {
+      // A fresh engine for a fresh editor session, as a worker engine would
+      // be: no document, transport at 0, no launched scenes. When this comp is
+      // all the runtime hosts (the nano_compositor process), its effect
+      // instances go too — their keys carry no per-comp prefix to scope by.
+      const int w = host.width(), h = host.height();
+      pe.comp.reset();
+      if (impl_->executors.size() == 1) impl_->rt->destroyInstancesWithKeyPrefix("");
+      impl_->buildCompHost(pe, w, h);
+    } else if (action == "comp_load_doc") {
       auto doc = nlohmann::json::parse(m.value("json", std::string("{}")), nullptr, false);
       if (!doc.is_discarded()) host.loadDocument(doc);
     } else if (action == "comp_control") {
@@ -2119,6 +2140,8 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
     }
   }
   if (!pe.compManualClock) frameDts.push_back(dt);
+  CompHost& host = *pe.comp;
+  comp::CompExecutor& cx = host.executor();
 
   const bool watched = server.key_observed(key);
   const bool hasClients = server.has_clients();
