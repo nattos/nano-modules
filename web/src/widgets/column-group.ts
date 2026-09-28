@@ -23,6 +23,7 @@ import { beginDragGesture } from '../utils/drag-gesture';
 import { FieldLayoutManager, type FieldRect } from './field-layout-manager';
 import { splitLane } from './field-anchor-lookup';
 import { connectGestureActive, WireConnect } from './taps-connect';
+import { tapHitStyles } from './tap-hit-styles';
 import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
 import type { TracePoint } from '../engine-types';
@@ -352,7 +353,7 @@ export class ColumnGroup extends MobxLitElement {
    */
   private editSession = 0;
 
-  static styles = css`
+  static styles = [tapHitStyles, css`
     :host {
       display: flex;
       gap: 0;
@@ -938,50 +939,6 @@ export class ColumnGroup extends MobxLitElement {
       pointer-events: none;
       z-index: 10;
     }
-    /* Inputs (reads) — blue. */
-    .tap-overlay-hit {
-      position: absolute;
-      background: rgba(65, 105, 225, 0.12);
-      border: 1px solid rgba(65, 105, 225, 0.3);
-      border-radius: 1px;
-      cursor: pointer;
-      pointer-events: all;
-    }
-    .tap-overlay-hit:hover {
-      background: rgba(65, 105, 225, 0.25);
-    }
-    .tap-overlay-hit[selected] {
-      outline: 1px solid var(--app-hi-color2, #4169E1);
-      outline-offset: 1px;
-      background: rgba(65, 105, 225, 0.2);
-    }
-    /* Output field overlay — writes are red. */
-    .tap-overlay-hit.output {
-      background: rgba(255, 69, 0, 0.14);
-      border: 1px solid rgba(255, 69, 0, 0.35);
-    }
-    .tap-overlay-hit.output:hover {
-      background: rgba(255, 69, 0, 0.28);
-    }
-    .tap-overlay-hit.output[selected] {
-      outline-color: var(--app-hi-color1, #ff4500);
-      background: rgba(255, 69, 0, 0.22);
-    }
-    /* Drag-to-connect visuals. Source is dashed-outlined; current target
-     * pulses brighter. Both are layered on top of normal hover styles. */
-    .tap-overlay-hit[tap-dragging] {
-      outline: 2px dashed var(--app-hi-color2, #4169E1);
-      outline-offset: 1px;
-    }
-    .tap-overlay-hit[tap-drop-target] {
-      outline: 2px solid var(--app-hi-color2, #4169E1);
-      outline-offset: 1px;
-      background: rgba(65, 105, 225, 0.35);
-    }
-    .tap-overlay-hit.output[tap-drop-target] {
-      outline-color: var(--app-hi-color1, #ff4500);
-      background: rgba(255, 69, 0, 0.35);
-    }
     /* Engine-level field-option "light" by the field row. The ELEMENT is a
        generous transparent hit box; the visible 6px green dot (the device-on
        accent, distinct from the blue/red tap rails) is drawn via ::after so the
@@ -1059,7 +1016,7 @@ export class ColumnGroup extends MobxLitElement {
     .inspector-separator {
       height: 1px; background: var(--app-tint-2); margin: 8px 0;
     }
-  `;
+  `];
 
   updated() {
     // Set explicit widths via CSS custom properties on the host element.

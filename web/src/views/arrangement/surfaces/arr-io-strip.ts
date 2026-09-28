@@ -5,6 +5,11 @@
  * a field or another port on it, click it to select it and open its popup
  * (rename / output routing / its routes), click it AGAIN to pick it up for
  * click-to-connect. A SEND-NOWHERE `out` is drawn hollow.
+ *
+ * In W (wires) mode — and during any connect gesture — each pip wears the
+ * same MASK a sketch field row does (tapHitStyles: outputs red, inputs blue,
+ * selected outline, drop-target highlight). The mask carries the connect
+ * dataset, so it is what taps-connect resolves as the click / drop target.
  */
 
 import { html, css, nothing } from 'lit';
@@ -12,7 +17,8 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { PORT_IN, PORT_OUT, type Track } from '../model/composition';
-import { WireConnect } from '../../../widgets/taps-connect';
+import { connectGestureActive, WireConnect } from '../../../widgets/taps-connect';
+import { tapHitStyles } from '../../../widgets/tap-hit-styles';
 import { setAnchor, AnchorKeys } from './anchor-registry';
 import { beginPortClickConnect, portConnect, portDir, portName } from './arr-io';
 
@@ -20,10 +26,11 @@ import { beginPortClickConnect, portConnect, portDir, portName } from './arr-io'
 export class ArrIoStrip extends MobxLitElement {
   @property({ attribute: false }) trackId!: string;
 
-  static styles = css`
+  static styles = [tapHitStyles, css`
     :host { display: flex; align-items: center; gap: 3px; min-width: 0; overflow: hidden; }
     .port {
       display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0;
+      position: relative;
       height: 16px; padding: 0 5px 0 3px; border-radius: 8px; cursor: crosshair;
       border: 1px solid var(--app-tint-4); background: var(--app-bg-color1);
       font-size: var(--app-fs-xs); color: var(--app-text-color2); user-select: none;
@@ -37,7 +44,9 @@ export class ArrIoStrip extends MobxLitElement {
     .port .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .port.wired { color: var(--app-text-color1); border-color: color-mix(in srgb, var(--io-color, #46d18c) 60%, transparent); }
     .port.sel { border-color: var(--io-color, #46d18c); color: var(--app-text-color1); }
-    .port:hover, .port[tap-drop-target] { background: color-mix(in srgb, var(--io-color, #46d18c) 20%, transparent); }
+    .port:hover { background: color-mix(in srgb, var(--io-color, #46d18c) 20%, transparent); }
+    /* The field mask, fitted to the pill. */
+    .port .tap-overlay-hit { inset: -1px; border-radius: 8px; cursor: crosshair; }
     .spacer { flex: 1 1 0; min-width: 0; }
     .add {
       flex: none; width: 16px; height: 16px; border-radius: 8px; cursor: pointer; padding: 0;
@@ -45,7 +54,7 @@ export class ArrIoStrip extends MobxLitElement {
       font-size: var(--app-fs-xs); line-height: 14px;
     }
     .add:hover { color: var(--app-text-color1); border-color: var(--app-text-color2); }
-  `;
+  `];
 
   updated() {
     // Register every pip as a route anchor (the overlay draws to them).
@@ -79,20 +88,24 @@ export class ArrIoStrip extends MobxLitElement {
     const wired = store.routesAt({ kind: 'port', trackId: t.id, portId }).length > 0;
     const none = portId === PORT_OUT && store.trackOutputMode(t.id) === 'none';
     const sel = store.isPortSelected(t.id, portId);
+    const masked = store.wiresMode || connectGestureActive();
     const title = portId === PORT_IN
       ? 'Input — route a track or port here to process it instead of the stack below'
       : portId === PORT_OUT
         ? (none ? 'Output — sent nowhere (still renders; routes still deliver)' : 'Output — this track\'s picture, post-FX')
         : `${dir === 'out' ? 'Output' : 'Input'} port “${portName(t, portId)}” — wire it to a field`;
     return html`<span
-      class="port tap-overlay-hit ${dir} ${wired ? 'wired' : ''} ${none ? 'none' : ''} ${sel ? 'sel' : ''}"
+      class="port ${dir} ${wired ? 'wired' : ''} ${none ? 'none' : ''} ${sel ? 'sel' : ''}"
       data-port-track=${t.id}
       data-port-id=${portId}
       data-port-dir=${dir}
       title=${title}
       @pointerdown=${(e: PointerEvent) => this.onPipDown(e, t, portId, dir)}
       @click=${(e: MouseEvent) => this.onPipClick(e, t, portId)}
-    ><span class="dot"></span><span class="nm">${portName(t, portId)}</span></span>`;
+    ><span class="dot"></span><span class="nm">${portName(t, portId)}</span>${masked
+      ? html`<span class="tap-overlay-hit ${dir === 'out' ? 'output' : ''}" ?selected=${sel}
+          data-port-track=${t.id} data-port-id=${portId} data-port-dir=${dir}></span>`
+      : nothing}</span>`;
   }
 
   private eatClick = false;

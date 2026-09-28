@@ -291,6 +291,34 @@ describe('Arrangement clipless layers + I/O routes (GPU)', () => {
     });
     const routes = () => page.evaluate(() => JSON.parse(JSON.stringify(
       (window as any).arrangementStore.composition.routes ?? [])));
+    // W mode masks every pip like a field row: an output mask on `out`, an
+    // input mask on `in`, carrying the connect dataset. W off: no masks.
+    const masks = () => page.evaluate(() => {
+      const out: string[] = [];
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        for (const p of root.querySelectorAll('.port')) {
+          const ms = [...p.querySelectorAll(':scope > .tap-overlay-hit')] as HTMLElement[];
+          const pip = p as HTMLElement;
+          // `ok`: exactly one mask, its class and dataset matching the pip.
+          const ok = ms.length === 1 && ms[0].dataset.portId === pip.dataset.portId
+            && ms[0].classList.contains('output') === (pip.dataset.portDir === 'out');
+          out.push(ms.length === 0 ? 'none' : ok ? 'ok' : 'bad');
+        }
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+      return out;
+    });
+    const on = await masks();
+    expect(on.length).toBeGreaterThanOrEqual(4); // ≥ two tracks × in/out
+    expect(on.every((m) => m === 'ok')).toBe(true);
+    await page.evaluate(() => (window as any).arrangementStore.toggleWiresMode());
+    await frame();
+    expect((await masks()).every((m) => m === 'none')).toBe(true);
+    await page.evaluate(() => (window as any).arrangementStore.toggleWiresMode());
+    await frame();
+
     const srcOut = (await deepCentre(`.port[data-port-track="${ids.src}"][data-port-id="__out__"]`))!;
     const texA = (await deepCentre('.tap-overlay-hit[data-field-path="tex_a"]'))!;
     const texB = (await deepCentre('.tap-overlay-hit[data-field-path="tex_b"]'))!;
