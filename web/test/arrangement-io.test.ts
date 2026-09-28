@@ -33,6 +33,35 @@ async function resetTracks(n: number) {
 
 const centre = async () => (await sampleMonitor(page, [CENTER]))?.[0];
 
+/** Centre of the first element matching `sel` anywhere in the (shadow) tree. */
+async function deepCentre(sel: string): Promise<{ x: number; y: number } | null> {
+  return page.evaluate((selector: string) => {
+    const stack: (Document | ShadowRoot)[] = [document];
+    while (stack.length) {
+      const root = stack.pop()!;
+      const hit = root.querySelector(selector) as HTMLElement | null;
+      if (hit) {
+        const r = hit.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      for (const el of root.querySelectorAll('*')) {
+        if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+    }
+    return null;
+  }, sel);
+}
+
+async function drag(from: { x: number; y: number }, to: { x: number; y: number }) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) {
+    await page.mouse.move(from.x + ((to.x - from.x) * i) / 8, from.y + ((to.y - from.y) * i) / 8);
+  }
+  await new Promise((r) => setTimeout(r, 60)); // the drop-target highlight runs on rAF
+  await page.mouse.up();
+}
+
 forEachCompBackend(() => {
 beforeAll(() => { URL = arrangementUrl(BASE); });
 
@@ -40,6 +69,8 @@ describe('Arrangement clipless layers + I/O routes (GPU)', () => {
   jest.setTimeout(60_000);
 
   beforeAll(async () => {
+    // Room for the timeline AND the inspector: the gesture test drags between them.
+    await page.setViewport({ width: 1600, height: 1000 });
     await page.goto(URL, { waitUntil: 'networkidle0' });
     await page.waitForFunction(
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
@@ -149,6 +180,76 @@ describe('Arrangement clipless layers + I/O routes (GPU)', () => {
       store.setTrackOutputMode(tap.id, 'none');
     });
     await waitForMonitor(page, [CENTER], ([s]) => s.r < 40 && s.g < 40 && s.b < 40);
+  });
+
+  it('I/O mode: dragging between header ports and inspector fields makes routes', async () => {
+    await resetTracks(2);
+    const ids = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const [src, mix] = store.composition.tracks.filter((x: any) => x.kind === 'track');
+      store.insertTrackDeviceAt(src.id, 0, 'source.noise');
+      const bl = store.insertTrackDeviceAt(mix.id, 0, 'composite.blend');
+      if (!store.ioMode) store.toggleIoMode();
+      if (!store.wiresMode) store.toggleWiresMode();
+      store.setSelection([`track/${mix.id}`]);
+      return { src: src.id, mix: mix.id, bl };
+    });
+    // Let the inspector mount the blend's card before reading its geometry.
+    await page.waitForFunction(() => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        if (root.querySelector('.tap-overlay-hit[data-field-path="tex_b"]')) return true;
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+      return false;
+    }, { timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 300));
+    // Port → field: src's out pip onto the blend's tex_b row.
+    const pip = await deepCentre(`.port[data-port-track="${ids.src}"][data-port-id="__out__"]`);
+    const texB = await deepCentre('.tap-overlay-hit[data-field-path="tex_b"]');
+    expect(pip).not.toBeNull();
+    expect(texB).not.toBeNull();
+    await drag(pip!, texB!);
+    const r1 = await page.evaluate(() => JSON.parse(JSON.stringify(
+      (window as any).arrangementStore.composition.routes ?? [])));
+    expect(r1).toHaveLength(1);
+    expect(r1[0].src).toEqual({ kind: 'port', trackId: ids.src, portId: '__out__' });
+    expect(r1[0].dest).toMatchObject({ kind: 'field', trackId: ids.mix, deviceId: ids.bl, field: 'tex_b' });
+
+    // Field → port: the same field dropped on mix's own __in__ is illegal (an
+    // input can't feed an input) — nothing changes.
+    const mixIn = await deepCentre(`.port[data-port-track="${ids.mix}"][data-port-id="__in__"]`);
+    const texA = await deepCentre('.tap-overlay-hit[data-field-path="tex_a"]');
+    await drag(texA!, mixIn!);
+    expect(await page.evaluate(() => ((window as any).arrangementStore.composition.routes ?? []).length)).toBe(1);
+
+    // Port → port: src's out onto mix's in.
+    const srcOut = await deepCentre(`.port[data-port-track="${ids.src}"][data-port-id="__out__"]`);
+    await drag(srcOut!, mixIn!);
+    const r2 = await page.evaluate(() => JSON.parse(JSON.stringify(
+      (window as any).arrangementStore.composition.routes ?? [])));
+    expect(r2).toHaveLength(2);
+    expect(r2[1].dest).toEqual({ kind: 'port', trackId: ids.mix, portId: '__in__' });
+
+    // Field → named port (a FEED): the blend's tex_out onto a new out port.
+    const port = await page.evaluate((mixId: string) => {
+      const store = (window as any).arrangementStore;
+      const id = store.addTrackPort(mixId, 'out', 'Side');
+      store.closePortPopup();
+      return id;
+    }, ids.mix);
+    await new Promise((r) => setTimeout(r, 200));
+    const side = await deepCentre(`.port[data-port-track="${ids.mix}"][data-port-id="${port}"]`);
+    const texOut = await deepCentre('.tap-overlay-hit[data-field-path="tex_out"]');
+    expect(side).not.toBeNull();
+    expect(texOut).not.toBeNull();
+    await drag(texOut!, side!);
+    const r3 = await page.evaluate(() => JSON.parse(JSON.stringify(
+      (window as any).arrangementStore.composition.routes ?? [])));
+    expect(r3).toHaveLength(3);
+    expect(r3[2].src).toMatchObject({ kind: 'field', deviceId: ids.bl, field: 'tex_out' });
+    expect(r3[2].dest).toEqual({ kind: 'port', trackId: ids.mix, portId: port });
   });
 
   it('a named out port follows whichever clip plays', async () => {

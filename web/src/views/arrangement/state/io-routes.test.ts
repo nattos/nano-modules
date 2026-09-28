@@ -83,6 +83,31 @@ describe('Composition I/O routes', () => {
     expect(store.composition.routes).toHaveLength(1);
   });
 
+  it('connectRoute orients a gesture: fields by their direction, ports out→in', () => {
+    const dev = store.insertTrackDeviceAt(b.id, 0, 'color.hsl')!;
+    const outP = store.addTrackPort(b.id, 'out')!;
+    const tex = { type: 'texture' };
+    const portInfo = (t: Track, portId: string, dir: 'in' | 'out') => ({
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: dir === 'out',
+      viewportY: 0, schemaDef: null, trackPort: { trackId: t.id, portId, dir } });
+    const fieldInfo = (field: string, isOutput: boolean) => ({
+      sketchId: `track/${b.id}`, colIdx: 0, chainIdx: 0, fieldPath: field, isOutput,
+      viewportY: 0, schemaDef: tex });
+    // Field (output) dropped on its own named out port → a FEED, either order.
+    expect(store.connectRoute(fieldInfo('tex_out', true), portInfo(b, outP, 'out'))).not.toBeNull();
+    const feed = store.composition.routes!.at(-1)!;
+    expect(feed.src).toMatchObject({ kind: 'field', deviceId: dev, field: 'tex_out' });
+    expect(feed.dest).toEqual({ kind: 'port', trackId: b.id, portId: outP });
+    // Port dropped on an input field → a SEND.
+    expect(store.connectRoute(portInfo(a, PORT_OUT, 'out'), fieldInfo('tex_b', false))).not.toBeNull();
+    expect(store.composition.routes!.at(-1)!.src).toEqual({ kind: 'port', trackId: a.id, portId: PORT_OUT });
+    // In onto in: refused.
+    expect(store.connectRoute(portInfo(a, PORT_IN, 'in'), portInfo(b, PORT_IN, 'in'))).toBeNull();
+    // A scalar field is not a route end.
+    expect(store.connectRoute(portInfo(a, PORT_OUT, 'out'),
+      { ...fieldInfo('hue', false), schemaDef: { type: 'float' } })).toBeNull();
+  });
+
   it('send nowhere toggles', () => {
     store.setTrackOutputMode(a.id, 'none');
     expect(store.trackOutputMode(a.id)).toBe('none');

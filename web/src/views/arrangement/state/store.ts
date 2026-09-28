@@ -672,6 +672,11 @@ export class ArrangementStore {
 
   /** Global automation-edit mode: reveals every track's automation lanes. */
   automationMode = false;
+  /** Composition I/O mode: track headers show their I/O ports (in place of the
+   *  mixer strip), and routes draw between ports and fields. */
+  ioMode = false;
+  /** The open port popup (rename / output routing / its routes), or null. */
+  portPopup: { trackId: string; portId: string; x: number; y: number } | null = null;
   /** Global wires mode: reveals the rail modulation wires. */
   wiresMode = true;
   /** Global "?" help mode: reveals inline effect help text + section help. */
@@ -1330,6 +1335,7 @@ export class ArrangementStore {
       monitorHeight: this.monitorHeight,
       wiresMode: this.wiresMode,
       automationMode: this.automationMode,
+      ioMode: this.ioMode,
       helpMode: this.helpMode,
       lastFile: this.currentName,
     };
@@ -1380,6 +1386,7 @@ export class ArrangementStore {
         if (typeof l.monitorHeight === 'number') this.setMonitorHeight(l.monitorHeight);
         if (typeof l.wiresMode === 'boolean') this.wiresMode = l.wiresMode;
         if (typeof l.automationMode === 'boolean') this.automationMode = l.automationMode;
+        if (typeof l.ioMode === 'boolean') this.ioMode = l.ioMode;
         if (typeof l.helpMode === 'boolean') this.helpMode = l.helpMode;
       });
     }
@@ -2594,6 +2601,17 @@ export class ArrangementStore {
     this.automationMode = !this.automationMode;
     this.requestLayoutSave();
   }
+
+  toggleIoMode() {
+    this.ioMode = !this.ioMode;
+    if (!this.ioMode) this.portPopup = null;
+    this.requestLayoutSave();
+  }
+
+  openPortPopup(trackId: string, portId: string, x: number, y: number) {
+    this.portPopup = { trackId, portId, x, y };
+  }
+  closePortPopup() { this.portPopup = null; }
 
   toggleWiresMode() {
     this.wiresMode = !this.wiresMode;
@@ -4703,6 +4721,11 @@ export class ArrangementStore {
    * sketch.
    */
   connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    // Composition I/O: a TRACK PORT on either end makes it a route.
+    if (a.trackPort || b.trackPort) {
+      this.connectRoute(a, b);
+      return;
+    }
     // Scene / scene-track TRIGGER-LISTEN endpoint: pairs with a rail — the
     // scene (or the whole scene track) launches from that rail's trigger
     // events instead of the global trigger bus.
@@ -4881,6 +4904,59 @@ export class ArrangementStore {
       d.routes = [...(d.routes ?? []).filter((r) => !replaces(r)), { id, src, dest }];
     });
     return id;
+  }
+
+  /** A sketch by its editor id (`clip/<trk>/<clip>` | `track/<trk>`), read-only. */
+  sketchForId(sketchId: string): ClipSketch | undefined {
+    if (sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = sketchId.split('/');
+      return this.clipIn(trackId, clipId)?.sketch;
+    }
+    if (sketchId.startsWith('track/')) return this.laneById(sketchId.split('/')[1])?.sketch;
+    return undefined;
+  }
+
+  /** A wire-gesture end as a route end: a track port, or a TEXTURE field of a
+   *  top-level track's sketch / clip. Null for anything a route can't address
+   *  (scalar fields, sequence interiors, rails…). */
+  private routeEndOf(info: FieldConnectInfo): RouteEnd | null {
+    if (info.trackPort) {
+      return { kind: 'port', trackId: info.trackPort.trackId, portId: info.trackPort.portId };
+    }
+    const type = (info.schemaDef as { type?: string } | null)?.type;
+    if (type !== 'texture') return null;
+    const sk = this.sketchForId(info.sketchId);
+    const dev = sk?.devices[info.chainIdx];
+    if (!dev) return null;
+    if (info.sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = info.sketchId.split('/');
+      if (!this.composition.tracks.some((t) => t.id === trackId)) return null;
+      return { kind: 'field', trackId, clipId, deviceId: dev.id, field: info.fieldPath };
+    }
+    const trackId = info.sketchId.split('/')[1];
+    if (!this.composition.tracks.some((t) => t.id === trackId)) return null; // interior lane
+    return { kind: 'field', trackId, deviceId: dev.id, field: info.fieldPath };
+  }
+
+  /**
+   * Connect a wire gesture that touches a track port: orient it (the out-facing
+   * end is the source) and add the route if it's legal. A field's direction
+   * decides for it: an OUTPUT field feeds a port, an INPUT field is fed by one.
+   * Returns the route id, or null (illegal — nothing changes).
+   */
+  connectRoute(a: FieldConnectInfo, b: FieldConnectInfo): string | null {
+    const ea = this.routeEndOf(a);
+    const eb = this.routeEndOf(b);
+    if (!ea || !eb) return null;
+    // A field decides by its own direction: an OUTPUT field is the source (it
+    // feeds a named out port), an INPUT field the destination.
+    if (ea.kind === 'field') return a.isOutput ? this.addRoute(ea, eb) : this.addRoute(eb, ea);
+    if (eb.kind === 'field') return b.isOutput ? this.addRoute(eb, ea) : this.addRoute(ea, eb);
+    // Port ↔ port: the out-facing one is the source.
+    const aOut = a.trackPort!.dir === 'out';
+    const bOut = b.trackPort!.dir === 'out';
+    if (aOut === bOut) return null;
+    return aOut ? this.addRoute(ea, eb) : this.addRoute(eb, ea);
   }
 
   removeRoute(routeId: string) {

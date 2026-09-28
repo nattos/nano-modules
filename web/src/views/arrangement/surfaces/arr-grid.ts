@@ -28,6 +28,7 @@ import { setAnchor, AnchorKeys } from './anchor-registry';
 import '../../../widgets/editable-label';
 import './arr-clip';
 import './arr-mixer-strip';
+import './arr-io-strip';
 import './arr-rail-lane';
 import './arr-scene';
 import { WireConnect } from '../../../widgets/taps-connect';
@@ -886,7 +887,9 @@ export class ArrGrid extends MobxLitElement {
                       ? 'double-click to add a scene · click a scene to launch'
                       : track.sketch.devices.length > 0
                         ? 'clipless layer — its sketch plays continuously · double-click to add a clip'
-                        : 'double-click to add a clip · drag to select · or give the track a sketch to make a clipless layer'}</span>`
+                        : store.inputRouted(track.id)
+                          ? 'clipless layer — plays its routed input · double-click to add a clip'
+                          : 'double-click to add a clip · drag to select · or give the track a sketch to make a clipless layer'}</span>`
                   : ''}
               ${repeat(
                 track.clips,
@@ -962,6 +965,8 @@ export class ArrGrid extends MobxLitElement {
    *  the mixer strip. */
   private renderHeaderBottom(track: Track, isRail: boolean, isBus: boolean) {
     if (isRail) return '';
+    // I/O mode: the track's ports replace the fader (the inspector keeps it).
+    if (store.ioMode) return html`<arr-io-strip .trackId=${track.id}></arr-io-strip>`;
     const sel = store.automationMode ? store.autoField(`track/${track.id}`) : null;
     if (sel) {
       return html`<div class="auto-pick" title=${sel.label}>

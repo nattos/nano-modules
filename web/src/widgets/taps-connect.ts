@@ -156,7 +156,28 @@ export class WireConnect implements ColumnTaps {
     this.end();
   }
 
+  /** Complete a CLICK-mode connection onto a Composition I/O track port (the
+   *  arrangement's header I/O strip). */
+  completeOnTrackPort(trackId: string, portId: string, dir: 'in' | 'out') {
+    if (!this.state) return;
+    const info: FieldConnectInfo = {
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: dir === 'out',
+      viewportY: this.state.pointerY, schemaDef: null,
+      trackPort: { trackId, portId, dir },
+    };
+    this.commit({ key: `port/${trackId}/${portId}`, info });
+    this.end();
+  }
+
   private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
+    // A Composition I/O track port (the arrangement's header I/O strip).
+    if (hit.dataset.portTrack && hit.dataset.portId) {
+      const rr = hit.getBoundingClientRect();
+      const dir = hit.dataset.portDir === 'in' ? 'in' : 'out';
+      return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: dir === 'out',
+        viewportY: rr.top + rr.height / 2, schemaDef: null,
+        trackPort: { trackId: hit.dataset.portTrack, portId: hit.dataset.portId, dir } };
+    }
     // A rail / return endpoint (e.g. an <arr-rail-lane> drop target) carries only a
     // rail id — the other endpoint supplies the device field.
     if (hit.dataset.railId) {

@@ -34,6 +34,8 @@ export const AnchorKeys = {
   rail: (railId: string) => `rail:${railId}`,
   trace: (clipId: string) => `trace:${clipId}`,
   field: (deviceId: string, field: string) => `field:${deviceId}:${field}`,
+  /** A Composition I/O port pip in a track header's I/O strip. */
+  port: (trackId: string, portId: string) => `port:${trackId}:${portId}`,
   beatwarp: () => 'beatwarp',
   mainbus: () => 'mainbus',
 };

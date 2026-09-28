@@ -736,5 +736,12 @@ export interface FieldConnectInfo {
    * midi/midi-types.ts). Devices publish normalized unsigned 0..1 values.
    */
   deviceControl?: { deviceInstanceId: string; controlId: string };
+  /**
+   * Set when this endpoint is a Composition I/O TRACK PORT (the arrangement's
+   * header I/O strip): the owning track/group, the port id (`__in__`,
+   * `__out__`, or a named port's id) and which way it faces. Either end being
+   * a port makes the gesture a ROUTE (store.connectRoute), not a wire.
+   */
+  trackPort?: { trackId: string; portId: string; dir: 'in' | 'out' };
 }
 

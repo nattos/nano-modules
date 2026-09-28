@@ -22,6 +22,7 @@ import { sequenceLaneOf, sequenceInteriorBeats, clipProcessesTexture, clipTransp
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
+import { setInspectorFieldLookup } from './arr-io';
 import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, trackTransportTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
 import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
@@ -621,11 +622,24 @@ export class ArrInspector extends MobxLitElement {
   connectedCallback() {
     super.connectedCallback();
     this.addEventListener('scroll', this.onScroll, { passive: true });
+    setInspectorFieldLookup(this.fieldHitFor);
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener('scroll', this.onScroll);
+    setInspectorFieldLookup(null);
   }
+
+  /** A field's wire hit-box in the card for `sketchId` (route field ends). */
+  private fieldHitFor = (sketchId: string, chainIdx: number, field: string): Element | null => {
+    for (const g of this.renderRoot.querySelectorAll('column-group')) {
+      if ((g as unknown as { sketchId?: string }).sketchId !== sketchId) continue;
+      const hit = (g as HTMLElement).shadowRoot?.querySelector(
+        `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${CSS.escape(field)}"]`);
+      if (hit) return hit;
+    }
+    return null;
+  };
 
   /** Stash the live scroll under the path currently on screen (the inspector tab
    *  only — other tabs don't participate in per-selection memory). */

@@ -250,6 +250,13 @@ export class TransportBar extends MobxLitElement {
           <ui-icon icon="la-project-diagram"></ui-icon> W
         </button>
         <button
+          class="autobtn io ${store.ioMode ? 'active' : ''}"
+          title="I/O mode — show each track's input/output ports and routes (O)"
+          @click=${() => store.toggleIoMode()}
+        >
+          <ui-icon icon="la-random"></ui-icon> I/O
+        </button>
+        <button
           class="autobtn help ${store.helpMode ? 'active' : ''}"
           title="Help mode — show inline effect help text (?)"
           @click=${() => store.toggleHelpMode()}
