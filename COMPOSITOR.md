@@ -136,12 +136,27 @@ Consequences for the compositor:
 - Every device placement can be previewed in the editor from the preview ring. A light is drawn as
   its fixture layout.
 
-**Open (the user's design, not settled here):**
-- where device placements live in the composition model (a device list beside `rails` is the
-  obvious candidate);
-- whether a display or light placement can host a small sketch for per-output processing. The
-  Resolume shows copied their master fade onto every output path;
-- how the MIDI library (templates, forks, aliases) generalizes to kinds.
+**Decided (2026-09-28): visual templates, instantiated into exact devices.** This borrows the MIDI
+library's concept of a template that *looks like* the hardware:
+- an LED bar is drawn as a long bar;
+- a monitor is drawn as a flat panel;
+- a template is instantiated into an exact device (this bar, at this address).
+
+**Displays stay generic:** "Display 1", "Display 2", and outputs like Syphon. Their resolution has an
+**auto** mode that follows what is detected. Reconciling "Display 1" with never-by-index:
+- the device is a portable *slot* that travels with the show;
+- each machine remembers which physical screen fills it, by CGDisplay UUID;
+- the ordinal is only the fallback when that UUID isn't present;
+- `comp_displays` reports detected size and refresh, and hotplug updates auto-sized displays.
+
+**Decided: no per-output sketch for now.** Per-output colour correction is attractive, but it
+complicates the UI. Revisit later.
+
+**Open: where placements live in the UI.** Wires must reach fields almost everywhere. The options:
+- **the bottom panel:** never hosts sketches, so it's awkward;
+- **the timeline area:** the most natural place, but wires to layers are hard from there;
+- **the layer inspector:** the right side panel exposes device inputs and outputs next to the
+  layer's own fields.
 
 #### The present API (`GPUBackend`)
 
@@ -386,7 +401,12 @@ for.
 
 1. **Output config:** outputs are **devices** (displays, lights), defined in a library and added to
    or removed from a composition. The definition holds the per-machine facts; the placement holds the
-   per-show facts. The user will give more detail before this is built.
+   per-show facts.
+   - Devices come from **visual templates** (a bar looks like a bar, a monitor like a monitor),
+     instantiated into exact devices.
+   - Displays are generic slots (Display 1 / 2, Syphon), with an **auto** resolution.
+   - **No per-output sketch for now.**
+   - Where placements live in the UI is still open (M3 § devices).
 2. **Precise with an output enabled:** flash the Live button. Don't auto-switch, and don't show a
    dialog.
 3. **NDI:** not now.
