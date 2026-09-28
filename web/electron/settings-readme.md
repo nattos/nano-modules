@@ -39,7 +39,8 @@ Rules for editing:
   next launch.
 - `workspace` is the open project folder; pointing it at another folder opens
   that folder.
-- `engine` is `browser` (the default) or `native` (the compositor process).
+- `engine` is `native` (the compositor process — the default on macOS) or
+  `browser` (the default elsewhere; the fallback if native can't start).
   It applies the next time the window loads (Settings → Engine offers the
   reload); the `NANO_ARRANGEMENT_ENGINE` environment variable overrides it.
 

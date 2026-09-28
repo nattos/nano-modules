@@ -11,8 +11,9 @@
  *                                                 NANO_ARRANGEMENT_ENGINE, else
  *                                                 Settings → Engine (the
  *                                                 `engine` key of
- *                                                 arrangement.json), else the
- *                                                 browser worker
+ *                                                 arrangement.json), else
+ *                                                 native on macOS, browser
+ *                                                 elsewhere
  *
  * A native engine that can't start falls back to the browser worker, loudly.
  */
@@ -50,6 +51,7 @@ export async function selectCompEngine(search = location.search): Promise<CompEn
         key = info.key as string | undefined;
       } else {
         console.warn(`[arrangement] native engine unavailable (${info?.error}); using the browser engine`);
+        snackbars.show({ message: 'Native engine unavailable — using the browser engine', dedupeKey: 'native-engine' });
       }
     }
   }

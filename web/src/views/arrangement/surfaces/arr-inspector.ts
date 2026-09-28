@@ -1644,8 +1644,10 @@ export class ArrInspector extends MobxLitElement {
    * document (it autosaves to its workspace; a scratch document has none).
    */
   private renderEngineSetting(): TemplateResult {
+    // Nothing saved: the platform default, which is whatever booted (or its
+    // fallback) — so no "reload" is offered for a choice nobody made.
     const saved = this.engineChoice
-        ?? readSection<CompEngineKind>(SETTINGS_FILES.arrangement, 'engine') ?? 'browser';
+        ?? readSection<CompEngineKind>(SETTINGS_FILES.arrangement, 'engine') ?? activeCompEngine;
     const pick = (k: CompEngineKind) => {
       this.engineChoice = k;
       writeSection(SETTINGS_FILES.arrangement, 'engine', k);

@@ -62,7 +62,9 @@ function runPhase(phase: 'save' | 'reopen' | 'adopt', proj: string): Promise<any
       clearTimeout(timer);
       const marker = out.lastIndexOf('PROBE ');
       if (marker < 0) return rej(new Error('probe produced no result:\n' + out));
-      try { res(JSON.parse(out.slice(marker + 6))); }
+      // The line alone: a child (the compositor) may log after it.
+      const line = out.slice(marker + 6).split('\n')[0];
+      try { res(JSON.parse(line)); }
       catch (e) { rej(new Error(`unparseable probe output: ${e}\n${out}`)); }
     });
   });
