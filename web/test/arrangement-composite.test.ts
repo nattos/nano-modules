@@ -13,10 +13,15 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-composite
  */
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 const layerCount = () => page.evaluate(() => (window as any).__engineBridge.layerCount() as number);
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement multi-track compositing (GPU)', () => {
   jest.setTimeout(60_000);
@@ -86,4 +91,5 @@ describe('Arrangement multi-track compositing (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

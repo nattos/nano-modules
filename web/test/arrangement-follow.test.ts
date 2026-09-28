@@ -8,8 +8,10 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-follow
  */
 
+import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 /** Scene track: red(bar 0) + green(bar 1) contiguous, blue(bar 3) across a
  *  gap. All carry Follow(Next, Group) with a 1-beat override so the chain
@@ -52,6 +54,10 @@ async function waitForSceneChange(st: string, from: string | null, label: string
   }
   throw new Error(`timeout waiting for ${label}; still=${from}`);
 }
+
+forEachCompBackend((backend) => {
+const H264 = 'H.264 decode + the browser pump (M2)';
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Follow actions (GPU)', () => {
   jest.setTimeout(180_000);
@@ -141,7 +147,7 @@ describe('Follow actions (GPU)', () => {
     expect(delta!).toBeLessThan(1.7);
   });
 
-  it('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
+  nativeGap(backend, H264)('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
     // The user-visible artifact this pins: with warm-only precache the follow
     // launch always DEFERRED (warm pumps never inject → readiness can't latch
     // pre-request), and the 2-4 frame commit round-trip rendered the outgoing
@@ -217,7 +223,7 @@ describe('Follow actions (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
+  nativeGap(backend, H264)('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
     // Six scenes; the follower on A picks LAST (ordinal 5) — beyond the
     // 4-nearest heuristic, so only the effect's announce can prime it. The
     // pin: the announced target ships primed and the hop commits with zero
@@ -287,4 +293,5 @@ describe('Follow actions (GPU)', () => {
     expect(endPending).toBe(basePending);
     expect(errors).toEqual([]);
   });
+});
 });

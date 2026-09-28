@@ -9,8 +9,10 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-crossfade
  */
 
+import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 const playingScene = (st: string) => page.evaluate(
   (t) => (window as any).arrangementStore.sceneLaunchState[t]?.sceneId ?? null, st);
@@ -25,10 +27,14 @@ async function waitForSceneChange(st: string, from: string | null, label: string
   throw new Error(`timeout waiting for ${label}; still=${from}`);
 }
 
+forEachCompBackend((backend) => {
+const H264 = 'H.264 decode + the browser pump (M2)';
+beforeAll(() => { URL = arrangementUrl(BASE); });
+
 describe('Crossfade transition (GPU)', () => {
   jest.setTimeout(180_000);
 
-  it('an announced follow launch crossfades: both pumps overlap, then the fork releases', async () => {
+  nativeGap(backend, H264)('an announced follow launch crossfades: both pumps overlap, then the fork releases', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.on('pageerror', (err) => errors.push(String(err)));
@@ -139,4 +145,5 @@ describe('Crossfade transition (GPU)', () => {
     expect(endPending).toBe(basePending);
     expect(errors).toEqual([]);
   });
+});
 });

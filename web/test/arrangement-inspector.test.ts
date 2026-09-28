@@ -7,8 +7,10 @@
  *   ARR_BASE_URL=http://localhost:5174 npx jest arrangement-inspector
  */
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 /** Read the hue_shift scalar-slider inside the inspector's column-group. */
 const probeSlider = () =>
@@ -30,6 +32,9 @@ const probeSlider = () =>
         : null,
     };
   });
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement real clip inspector (column-group)', () => {
   jest.setTimeout(60_000);
@@ -111,4 +116,5 @@ describe('Arrangement real clip inspector (column-group)', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });

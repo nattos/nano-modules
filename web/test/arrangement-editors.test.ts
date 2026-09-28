@@ -7,8 +7,10 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-editors
  */
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 /** Recursively search this element + all shadow roots for a tag. */
 const deepHasTag = (tag: string) =>
@@ -26,6 +28,9 @@ const deepHasTag = (tag: string) =>
     };
     return found(document);
   }, tag);
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement effect editors (real schema)', () => {
   jest.setTimeout(60_000);
@@ -104,4 +109,5 @@ describe('Arrangement effect editors (real schema)', () => {
     await page.waitForFunction(() => (window as any).__engineBridge?.framesSeen > 6, { timeout: 15_000 });
     expect(errors.filter((e) => /DataClone|could not be cloned/.test(e))).toEqual([]);
   });
+});
 });

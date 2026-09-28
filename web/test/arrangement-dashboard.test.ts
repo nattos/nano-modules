@@ -6,8 +6,10 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-dashboard
  */
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
 
 const dash = () =>
   page.evaluate(() => {
@@ -20,6 +22,9 @@ const dash = () =>
       sparks: root.querySelectorAll('spark-chart').length,
     };
   });
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement dashboard (real widgets)', () => {
   jest.setTimeout(60_000);
@@ -122,4 +127,5 @@ describe('Arrangement dashboard (real widgets)', () => {
     const counts = await dash();
     expect(counts!.sparks).toBeGreaterThan(0);
   });
+});
 });

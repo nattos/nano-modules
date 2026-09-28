@@ -6,8 +6,13 @@
  * Point at a running dev server: ARR_BASE_URL=http://localhost:5175 npx jest arrangement-smoke
  */
 
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-const URL = `${BASE}/arrangement.html`;
+let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
+
+forEachCompBackend(() => {
+beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement mockup smoke', () => {
   jest.setTimeout(30_000);
@@ -77,4 +82,5 @@ describe('Arrangement mockup smoke', () => {
 
     expect(errors).toEqual([]);
   });
+});
 });
