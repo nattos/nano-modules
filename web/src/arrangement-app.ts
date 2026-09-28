@@ -23,6 +23,7 @@ import * as dropImport from './views/arrangement/media/drop-import';
 import * as paths from './state/paths';
 import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
 import { debugPerf } from './views/arrangement/state/debug-perf';
+import { previewSurfaces } from './preview-surfaces';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -40,3 +41,5 @@ import { debugPerf } from './views/arrangement/state/debug-perf';
 // Per-clip provider telemetry bus (cache hit rate, seeks, notReady, decode path).
 // Producers only collect while `active` — the stall benchmark flips it on.
 (window as any).__debugPerf = debugPerf;
+// Shared-surface preview transport stats (native engine in the desktop app).
+(window as any).__previewSurfaces = previewSurfaces;
