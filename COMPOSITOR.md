@@ -416,10 +416,10 @@ for.
    inventing an authoring surface.
 6. **Windows:** general video formats are required. DXV-only is a test checkpoint, not a milestone.
 7. **The arrangement's direction**, which shapes the comp executor:
-   - **Composition I/O mode** is next. Per-track ports are routed with wires, can reach texture fields
+   - **Composition I/O mode + clipless layers: SHIPPED (2026-09-28)** — see CLAUDE.md and the
+     arrangement PRD ("Innovation 3"). Per-track ports are routed with wires, can reach texture fields
      in clip / track / group / main-bus sketches, and have a "send nowhere" output that still
      renders.
-   - **Clipless layers**: a layer that generates from its own sketch.
-   - **Session mode**: an Ableton-style clip grid.
+   - **Session mode**: an Ableton-style clip grid (next).
 
    For I/O mode, device ports are just another endpoint (M3 § devices).

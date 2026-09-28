@@ -318,6 +318,36 @@ sketch; the worker precomputes a warp curve when the binding/source goes dirty.
 
 ---
 
+## Innovation 3 — Composition I/O + clipless layers — *as-built*
+
+Picture routing between tracks, replacing the Resolume-era sidechannels (texture and value
+channels named by string, "Cut < 50%" layers that render unseen, output-tap layers, dummy carrier
+clips).
+
+- **Clipless layers.** A timeline track with NO clips whose own sketch holds devices is a layer: that
+  sketch is its content (a generator anchors a source layer; an effect-only sketch is an adjustment
+  layer), running continuously. Any clip at all restores the track sketch's FX-bus role.
+- **Ports.** Every track and group has an implicit `in` (heads its chain) and `out` (its post-FX
+  picture, before blend/opacity), plus NAMED ports added from the header (`+`; shift for an input).
+  A named OUT port is fed from a texture field inside its own track (one feed per clip, plus one from
+  the track sketch, so the port has a source whichever clip plays); a named IN port feeds fields
+  inside its track.
+- **Routes** (`Composition.routes`). Ports are hubs — every route has a port end: *feed* (field →
+  its track's named out port), *send* (out port → an input field anywhere, or an in port),
+  *receive* (named in port → a field inside its track). One route per destination. A routed `in`
+  makes an effect-only track (or a track with nothing but its input) a source layer; on a group it
+  replaces the group's base.
+- **Send nowhere.** A track's `out` can be set to *nowhere*: it still renders (its routes deliver,
+  its side effects run) but never composites into its parent.
+- **Causality.** A route whose source renders after its reader arrives one frame late (dotted in the
+  UI); a route whose source isn't rendering is inert (dimmed). Solo keeps (sent nowhere) any track
+  that feeds a soloed one.
+- **UI.** I/O mode (`I/O` / key `O`) shows each header's ports in place of the fader; drag between a
+  port and a port or an inspector texture field. Routes whose far end isn't on screen show as chips.
+  A port's popup renames it, sets the output (normal / nowhere), and lists its routes.
+- **Next** (designed for, not built): device rows (displays, lights, MIDI) whose ports are just
+  another route end; same-frame ordering (render producers first); scalar ports.
+
 ## Automation (track-level and clip-level)
 
 - **Track/group automation** targets only fields in **that track's/group's** sketch. Lanes

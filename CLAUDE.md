@@ -141,6 +141,20 @@ Arrangement UI suites run on both through `test/comp-backend.ts` (`forEachCompBa
 `COMPOSITOR.md` maps what is built (decode pump, namespacing, native export) and holds the
 roadmap: M3 outputs, M4 Windows, M5 remote, MIDI/Art-Net into the comp.
 
+The WHOLE composition folds into ONE executor sketch (`native/src/sketch/comp/sketch_build.h`, the
+only implementation — its existing output is pinned byte-for-byte by the `build*.json` goldens).
+**Composition I/O** rides on that: `Composition.routes` connect track PORTS and texture fields
+(ports are hubs — every route has a port end; `routeIsLegal` in both `composition.ts` and
+`sketch_build.h`), and the builder resolves them into plain texture wires at the END of the build;
+the executor delays any back edge by one frame on its own. A routed `__in__` enters a chain through a
+`composite.blend` RELAY with BOTH slots wired (it no-ops with either unbound). `output.mode 'none'`
+(send nowhere) renders a track without compositing it, which leaves the executor's column cursor on
+the hidden track — `ensureCursor` re-emits the stack before anything that reads the cursor, and at
+the end (the sketch's image is its LAST linear stage). A timeline track with NO clips is a
+**clipless layer**: its own sketch is its content. UI: I/O mode (`store.ioMode`) swaps header
+faders for `<arr-io-strip>` ports; routes are drawn by `arr-overlay` to the inspector's field
+hit-boxes (the inspector registers the lookup — there are no field anchors otherwise).
+
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 
 Effects author each shader stage **once as HLSL**. The build (DXC) compiles HLSL → SPIR-V and bakes
