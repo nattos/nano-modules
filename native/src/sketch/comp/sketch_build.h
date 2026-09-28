@@ -1,12 +1,11 @@
 // sketch_build.h — fold a composite tree into ONE executor sketch.
 //
-// LOCK-STEP: web/src/views/arrangement/engine/clip-sketch.ts
-// (buildCompositeSketch + clipInstanceKey/trackInstanceKey). The emitted sketch
-// JSON must DEEP-EQUAL the TS build for the same inputs — including wire-id
-// counters and array order — since byte-equal sketch in ⇒ identical pixels out
-// (the same executor consumes it). Shared goldens: test_comp_build.cpp ↔
-// comp-goldens.test.ts. Every traversal below deliberately mirrors the TS
-// closure structure; do not "clean up" iteration order.
+// This is the ONLY implementation: the TS twin (clip-sketch.ts) was retired
+// once executor.wasm ran this code on the web too. Its output is still pinned
+// byte-for-byte by the frozen goldens it was ported against
+// (native/tests/fixtures/comp/build*.json, replayed by test_comp_build.cpp), so
+// wire-id counters and array order are a contract: do not "clean up" iteration
+// order, and new behaviour must leave every existing golden identical.
 //
 // The instance-key strings are a cross-boundary CONTRACT: the TS video decode
 // pump injects frames by `clipInstanceKey(clipId, deviceId)`, and engine
@@ -236,6 +235,12 @@ struct CompNode {
   double interiorBpm = 120;       // doc.baseBPM (the interior is unwarped)
   bool interiorLive = false;      // false ⇒ contentSec was nullopt (transparent)
   std::vector<CompNode> children;
+  /** CLIPLESS leaf: a timeline track with no clips at all, whose own sketch IS
+   *  its content (generators included) and runs continuously. `track` is set,
+   *  `clip` is null — every leaf walk must check `clip` before dereferencing.
+   *  Keys are the track's own (`track_<trackId>_<devId>`), the same keys its FX
+   *  bus would use, so telemetry and automation resolve unchanged. */
+  bool clipless = false;
 };
 
 /** Build result: hasContent=false ⇔ the TS build returned null. */
@@ -790,6 +795,109 @@ struct Builder {
     return inner;
   }
 
+  /**
+   * Composite a CLIPLESS layer over `acc`: the track's own sketch is its
+   * content, keyed `track_<trackId>_<devId>`.
+   *   - With a generator: a SOURCE layer. The first generator anchors it (it
+   *     heads the chain), every other catalog device follows in declaration
+   *     order, and the result blends over `acc` — compositeClip's source path.
+   *   - Without one: an ADJUSTMENT layer processing `acc` inline, the first
+   *     non-mod stage carrying the layer's `__opacity__` — compositeClip's
+   *     effect-only path.
+   * There is no separate FX bus: the track sketch already IS the chain. Its
+   * intra-sketch wires fold like pushTrackFx's (both ends pushed), and the
+   * owner paths (rail reads, `__layer__` wires, layer target) run as for any
+   * leaf.
+   */
+  std::optional<std::string> compositeClipless(const CompNode& node,
+                                               std::optional<std::string> acc) {
+    const TrackM* track = node.track;
+    if (!track) return acc;
+    std::vector<const DeviceM*> catDevs;
+    for (const auto& d : track->sketch.devices) {
+      if (cat.has(d.moduleType)) catDevs.push_back(&d);
+    }
+    if (catDevs.empty()) return acc;  // nothing the engine can run → no layer
+    const DeviceM* gen = nullptr;
+    for (const DeviceM* d : catDevs) {
+      if (cat.isGenerator(d->moduleType)) { gen = d; break; }
+    }
+
+    std::string layerKey;
+    std::string layerField;
+    if (gen) {
+      std::vector<const DeviceM*> segment{gen};
+      for (const DeviceM* d : catDevs) {
+        if (d != gen) segment.push_back(d);
+      }
+      std::string firstKey;
+      std::string lastKey;
+      for (const DeviceM* d : segment) {
+        const std::string key = trackInstanceKey(track->id, d->id);
+        push(d->moduleType, key, defaultsPlus(*d));
+        if (!isMod(d->moduleType)) {
+          if (firstKey.empty()) firstKey = key;
+          lastKey = key;
+        }
+      }
+      if (!lastKey.empty()) {
+        if (!acc) {
+          if (node.opacity < 1) instances[firstKey]["state"]["__opacity__"] = node.opacity;
+          layerKey = firstKey;
+          layerField = "__opacity__";
+          acc = lastKey;
+        } else {
+          const std::string b = trackInstanceKey(track->id, "blend");
+          push(kBlend, b, {{"mode", node.blendMode}, {"opacity", node.opacity}});
+          wires.push_back({{"id", "w" + std::to_string(wid++)},
+                           {"src", {{"instanceKey", *acc}, {"field", "tex_out"}}},
+                           {"dest", {{"instanceKey", b}, {"field", "0"}}}});
+          wires.push_back({{"id", "w" + std::to_string(wid++)},
+                           {"src", {{"instanceKey", lastKey}, {"field", "tex_out"}}},
+                           {"dest", {{"instanceKey", b}, {"field", "1"}}}});
+          layerKey = b;
+          layerField = "opacity";
+          acc = b;
+        }
+      }
+    } else {
+      bool appliedOpacity = false;
+      for (const DeviceM* d : catDevs) {
+        nlohmann::json state = defaultsPlus(*d);
+        const std::string key = trackInstanceKey(track->id, d->id);
+        if (!isMod(d->moduleType) && !appliedOpacity) {
+          if (node.opacity < 1) state["__opacity__"] = node.opacity;
+          layerKey = key;
+          layerField = "__opacity__";
+          appliedOpacity = true;
+        }
+        push(d->moduleType, key, std::move(state));
+        if (!isMod(d->moduleType)) acc = key;
+      }
+    }
+
+    // The sketch's own wires (both ends pushed; `__layer__` wires go through
+    // pushOwnerLayerWires below, once the layer slot is known).
+    std::set<std::string> pushedIds;
+    for (const DeviceM* d : catDevs) pushedIds.insert(d->id);
+    for (const auto& w : track->sketch.wires) {
+      if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
+      const std::string srcKey = w["src"].value("instanceKey", std::string());
+      const std::string destKey = w["dest"].value("instanceKey", std::string());
+      if (!pushedIds.count(srcKey) || !pushedIds.count(destKey)) continue;
+      nlohmann::json w2 = w;
+      w2["id"] = "tw" + std::to_string(wid++);
+      w2["src"] = remapEndpoint(w["src"], trackInstanceKey(track->id, srcKey));
+      w2["dest"] = remapEndpoint(w["dest"], trackInstanceKey(track->id, destKey));
+      wires.push_back(std::move(w2));
+    }
+
+    if (!layerKey.empty()) recordLayerTarget(track->id, layerKey, layerField);
+    collectOwnerReads(track, layerKey, layerField);
+    pushOwnerLayerWires(track, layerKey, layerField);
+    return acc;
+  }
+
   /** Composite a GROUP over `acc`: children → sub-image over the group's input
    *  base, group FX over that, result blends up (group blend + opacity). */
   std::optional<std::string> compositeGroup(const CompNode& node,
@@ -847,6 +955,7 @@ struct Builder {
                                             std::optional<std::string> acc) {
     for (const auto& n : ns) {
       acc = n.isGroup      ? compositeGroup(n, acc)
+            : n.clipless   ? compositeClipless(n, acc)
             : n.isSequence ? compositeSequence(n, acc)
                            : compositeClip(n, acc);
     }
@@ -858,7 +967,7 @@ inline void collectClips(const std::vector<CompNode>& ns, std::vector<const Clip
   for (const auto& n : ns) {
     if (n.isGroup) {
       collectClips(n.children, out);
-    } else {
+    } else if (n.clip) {
       out.push_back(n.clip);
       // A sequence node is a leaf AND a parent: its interior sub-clips must
       // reach the background gate + the rail pre-pass like any other clip.
@@ -880,6 +989,16 @@ inline void collectOwners(const std::vector<CompNode>& ns, std::vector<const Tra
       if (n.isSequence) collectOwners(n.children, out);
     }
   }
+}
+
+/** Does the tree hold a clipless leaf anywhere? (It has no clip, so the
+ *  clip-leaf walks miss it — but it is content all the same.) */
+inline bool anyClipless(const std::vector<CompNode>& ns) {
+  for (const auto& n : ns) {
+    if (n.clipless) return true;
+    if (n.isGroup && anyClipless(n.children)) return true;
+  }
+  return false;
 }
 
 }  // namespace build_detail
@@ -914,7 +1033,7 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
   // Background base: an opaque solid-color layer UNDER all clips — only when
   // there IS content; `transparent` keeps the old transparent base.
   const std::string& bgMode = bg.mode;
-  if (!flatClips.empty() && bgMode != "transparent") {
+  if ((!flatClips.empty() || anyClipless(nodes)) && bgMode != "transparent") {
     const auto rgb = bgMode == "custom" ? hexToRgb01(bg.color.value_or("#000000"))
                                         : std::array<double, 3>{0, 0, 0};
     b.push(kImplicitAnchor, "arr_bg", {{"color", rgb}});

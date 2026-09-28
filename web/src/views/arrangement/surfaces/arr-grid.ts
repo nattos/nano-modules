@@ -882,7 +882,11 @@ export class ArrGrid extends MobxLitElement {
               ${isGroup
                 ? html`<span class="empty-hint">${isBus ? 'main bus — all tracks sum here' : 'group — child tracks sum here'}</span>`
                 : track.clips.length === 0
-                  ? html`<span class="empty-hint">${isScene ? 'double-click to add a scene · click a scene to launch' : 'double-click to add a clip · drag to select'}</span>`
+                  ? html`<span class="empty-hint">${isScene
+                      ? 'double-click to add a scene · click a scene to launch'
+                      : track.sketch.devices.length > 0
+                        ? 'clipless layer — its sketch plays continuously · double-click to add a clip'
+                        : 'double-click to add a clip · drag to select · or give the track a sketch to make a clipless layer'}</span>`
                   : ''}
               ${repeat(
                 track.clips,

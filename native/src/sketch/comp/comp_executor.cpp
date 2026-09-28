@@ -893,6 +893,7 @@ nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree
             walk(n.children);
             continue;
           }
+          if (!n.clip) continue;  // a clipless layer decodes no media
           const bool scene = n.track && n.track->kind == TrackKind::Scene;
           nlohmann::json d = videoDescFor(*n.clip, n.anchorBeat, scene);
           if (!d.is_null()) {

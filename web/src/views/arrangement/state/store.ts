@@ -2889,6 +2889,17 @@ export class ArrangementStore {
       }
       if (track.kind !== 'track' && track.kind !== 'scene') return null; // rails aren't layers
       if (anySolo && !soloedHere) return null; // solo restricts to soloed lineages
+      // A timeline track with NO clips is a clipless layer when its own sketch
+      // holds devices (comp_eval.h twin): the sketch is its content.
+      if (track.kind === 'track' && track.clips.length === 0) {
+        if (track.sketch.devices.length === 0) return null;
+        return {
+          type: 'clipless',
+          track,
+          opacity: Math.max(0, Math.min(1, track.level ?? 1)),
+          blendMode: track.blendMode ?? 0,
+        };
+      }
       // Scene tracks: the LAUNCHED scene is the active clip (comp_eval.h twin —
       // the launch map replaces the beat overlap).
       const clip = track.kind === 'scene'

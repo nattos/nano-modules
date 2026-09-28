@@ -3904,3 +3904,40 @@ TEST_CASE("a live modulation wire keeps flowing across a structural change",
   INFO("mean range after the structural change: [" << lo << ", " << hi << "]");
   CHECK(hi - lo > 60.0);
 }
+
+// ── Clipless layers: a track with no clips renders its own sketch ─────────────
+
+TEST_CASE("clipless layers render continuously from the track sketch", "[comp_render][clipless]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+
+  auto renderAt = [&](const json& doc, double beat) {
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    cx.loadDocument(doc);
+    cx.seekBeat(beat);
+    int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+    cx.update(0.0);
+    return hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0));
+  };
+
+  SECTION("a generator in the track sketch is a source layer, at any beat") {
+    json t = mkTrack("t1", json::array(),
+                     {{"sketch", {{"devices", json::array({mkDevice(
+                         "g", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})})}}}});
+    const json doc = mkComposition(json::array({t}));
+    CHECK(meanRgb(renderAt(doc, 0.5)) > 220.0);
+    CHECK(meanRgb(renderAt(doc, 1000.0)) > 220.0);  // no clip span to fall out of
+  }
+
+  SECTION("an effect-only track sketch processes the stack below it") {
+    // Black solid clip on t1; t2 is clipless with only an invert → white.
+    json t1 = mkTrack("t1", json::array({mkClip(
+        "c1", 0, 8,
+        json::array({mkDevice("d1", "source.solid_color", {{"color", {0.0, 0.0, 0.0}}})}))}));
+    json t2 = mkTrack("t2", json::array(),
+                      {{"sketch", {{"devices", json::array({mkDevice("inv", "color.invert")})}}}});
+    const json doc = mkComposition(json::array({t1, t2}));
+    CHECK(meanRgb(renderAt(doc, 1.0)) > 220.0);
+  }
+}

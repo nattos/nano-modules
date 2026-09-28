@@ -84,4 +84,14 @@ export interface CompositeGroupNode {
   children: CompositeNode[];
 }
 
-export type CompositeNode = CompositeClipNode | CompositeGroupNode;
+/** A CLIPLESS layer: a timeline track with no clips whose own `sketch` is its
+ *  content (generators included), running continuously — comp_eval.h's
+ *  `CompNode.clipless`. Keyed like the track FX bus (`track_<id>_<dev>`). */
+export interface CompositeCliplessNode {
+  type: 'clipless';
+  track: Track;
+  opacity: number;
+  blendMode?: number;
+}
+
+export type CompositeNode = CompositeClipNode | CompositeGroupNode | CompositeCliplessNode;

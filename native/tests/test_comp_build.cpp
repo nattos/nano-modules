@@ -413,3 +413,123 @@ TEST_CASE("comp-built sketches carry no sidecar-canvas keys", "[comp]") {
     CHECK_FALSE(e.contains("canvas"));
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIPLESS layers: a timeline track with no clips runs its own sketch as its
+// content — generators included — continuously.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+json deviceJson(const std::string& id, const std::string& type, json state = json::object()) {
+  return {{"id", id}, {"moduleType", type}, {"name", type},
+          {"capabilities", json::array()}, {"state", std::move(state)}};
+}
+
+/** A timeline track. `clipDevices` empty ⇒ no clips at all (clipless). */
+json trackJson(const std::string& id, json sketchDevices, json clipDevices = json::array(),
+               json extra = json::object()) {
+  json clips = json::array();
+  if (!clipDevices.empty()) {
+    clips.push_back({{"id", id + "_c"}, {"name", id + "_c"}, {"startBeat", 0},
+                     {"lengthBeat", 8}, {"kind", "effect"},
+                     {"sketch", {{"devices", std::move(clipDevices)}}},
+                     {"automation", json::array()}, {"exports", json::array()},
+                     {"warps", json::array()}, {"blendMode", 0}});
+  }
+  json t = {{"id", id}, {"name", id}, {"kind", "track"}, {"parentId", nullptr},
+            {"sketch", {{"devices", std::move(sketchDevices)}}},
+            {"automation", json::array()}, {"clips", std::move(clips)}};
+  for (auto& [k, v] : extra.items()) t[k] = v;
+  return t;
+}
+
+json compOf(json tracks) {
+  return {{"meta", {{"resolution", {{"width", 64}, {"height", 64}}},
+                    {"baseBPM", 120}, {"timeSignature", {4, 4}}}},
+          {"tracks", std::move(tracks)},
+          {"rails", json::array()}};
+}
+
+}  // namespace
+
+TEST_CASE("clipless layer: a sketch with a generator is a source layer", "[comp][clipless]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  // The generator is hoisted to anchor the chain, exactly as in a clip.
+  const auto b = buildOne(compOf(json::array({
+      trackJson("t1", json::array({deviceJson("fx", "color.invert"),
+                                   deviceJson("g", "source.noise")})),
+  })), cat);
+  REQUIRE(b.hasContent);
+  CHECK(chainKeys(b) == std::vector<std::string>{
+      "arr_bg", "track_t1_g", "track_t1_fx", "track_t1_blend"});
+  // The layer's opacity rides its blend node.
+  CHECK(b.layerTargets["t1"]["instanceKey"] == "track_t1_blend");
+  CHECK(b.layerTargets["t1"]["field"] == "opacity");
+}
+
+TEST_CASE("clipless layer: an effect-only sketch processes the stack", "[comp][clipless]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  const auto b = buildOne(compOf(json::array({
+      trackJson("src", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+      trackJson("adj", json::array({deviceJson("fx", "color.invert")}), json::array(),
+                {{"level", 0.5}}),
+  })), cat);
+  REQUIRE(b.hasContent);
+  CHECK(chainKeys(b) == std::vector<std::string>{
+      "arr_bg", "clip_src_c_g", "clip_src_c_blend", "track_adj_fx"});
+  // An adjustment layer carries its level as the reserved wet/dry key.
+  CHECK(b.sketch["instances"]["track_adj_fx"]["state"]["__opacity__"] == 0.5);
+  CHECK(b.layerTargets["adj"]["field"] == "__opacity__");
+}
+
+TEST_CASE("clipless layer: only tracks with NO clips qualify", "[comp][clipless]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  SECTION("a track whose clips are all elsewhere in time keeps its FX-bus role") {
+    json t = trackJson("t1", json::array({deviceJson("g", "source.noise")}),
+                       json::array({deviceJson("cg", "source.solid_color")}));
+    t["clips"][0]["startBeat"] = 100;  // not active at beat 0
+    const auto b = buildOne(compOf(json::array({t})), cat);
+    CHECK_FALSE(b.hasContent);
+  }
+  SECTION("an empty sketch is no layer") {
+    const auto b = buildOne(compOf(json::array({trackJson("t1", json::array())})), cat);
+    CHECK_FALSE(b.hasContent);
+  }
+  SECTION("unknown modules only is no layer (the backdrop alone)") {
+    const auto b = buildOne(compOf(json::array({
+        trackJson("t1", json::array({deviceJson("x", "nope.unknown")}))})), cat);
+    REQUIRE(b.hasContent);
+    CHECK(chainKeys(b) == std::vector<std::string>{"arr_bg"});
+  }
+}
+
+TEST_CASE("clipless layer: its wires and automation resolve to track keys", "[comp][clipless]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json t = trackJson("t1", json::array({deviceJson("g", "source.solid_color"),
+                                         deviceJson("lfo", "mod.source.lfo"),
+                                         deviceJson("fx", "color.saturate")}));
+  t["sketch"]["wires"] = json::array({
+      {{"id", "w1"}, {"src", {{"instanceKey", "lfo"}, {"field", "output"}}},
+       {"dest", {{"instanceKey", "fx"}, {"field", "amount"}}}, {"combine", "add"}}});
+  t["automation"] = json::array({
+      {{"id", "l1"}, {"targetDeviceId", "fx"}, {"targetField", "amount"}, {"label", "amt"},
+       {"points", json::array({{{"x", 0}, {"y", 0.25}}, {{"x", 8}, {"y", 0.25}}})}}});
+  const json c = compOf(json::array({t}));
+  const auto b = buildOne(c, cat);
+  REQUIRE(b.hasContent);
+  bool found = false;
+  for (const auto& w : b.sketch["wires"]) {
+    if (w["src"]["instanceKey"] == "track_t1_lfo" && w["dest"]["instanceKey"] == "track_t1_fx") {
+      found = true;
+      CHECK(w["dest"]["field"] == "amount");
+    }
+  }
+  CHECK(found);
+  const json autos = comp::automationEntriesAtBeat(comp::parseComposition(c), 0.0);
+  bool laneFound = false;
+  for (const auto& e : autos) {
+    if (e["instance"] == "track_t1_fx" && e["field"] == "amount") laneFound = true;
+  }
+  CHECK(laneFound);
+}

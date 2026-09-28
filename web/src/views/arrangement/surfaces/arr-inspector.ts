@@ -246,6 +246,12 @@ export class ArrInspector extends MobxLitElement {
       opacity: 0.7;
       line-height: 1.6;
     }
+    .hint {
+      padding: var(--app-sp-2) var(--app-sp-4);
+      color: var(--app-text-color2);
+      opacity: 0.8;
+      line-height: 1.4;
+    }
     .dash-row {
       display: flex;
       flex-wrap: wrap;
@@ -1302,7 +1308,8 @@ export class ArrInspector extends MobxLitElement {
         ${track.kind === 'scene' ? this.renderTrackTransportSection(track) : ''}
         ${isRail
           ? '' /* Returns carry no effect chain — they're value-only rails. */
-          : html`<div class="group-title chain-hdr"><span>Chain (sketch)</span></div>
+          : html`<div class="group-title chain-hdr"><span>${this.trackChainTitle(track)}</span></div>
+            ${this.trackChainNote(track)}
             <column-group
               class="chain"
               .colIdx=${0}
@@ -1315,6 +1322,25 @@ export class ArrInspector extends MobxLitElement {
              not the inspector. -->
       </div>
     `;
+  }
+
+  /** The track chain's role: a clipless timeline track's sketch IS its
+   *  content (generators render, continuously); otherwise it's the FX bus the
+   *  playing clip runs through. */
+  private trackChainTitle(track: Track): string {
+    if (track.kind === 'group') return 'Group effects (sketch)';
+    if (track.kind === 'track' && track.clips.length === 0) return 'Track sketch · clipless layer';
+    return 'Track effects (sketch)';
+  }
+
+  /** A generator in the track sketch only renders while the track has no
+   *  clips — say so rather than let it sit there silently inert. */
+  private trackChainNote(track: Track) {
+    if (track.kind !== 'track' || track.clips.length === 0) return '';
+    const hasSource = track.sketch.devices.some(
+      (d) => store.enginePlugins[d.moduleType]?.capabilities?.includes('generator'));
+    if (!hasSource) return '';
+    return html`<div class="hint">Sources here are inactive while the track has clips. Remove its clips to make it a clipless layer.</div>`;
   }
 
   /** A scene TRACK's TRANSPORT section (transition effects — e.g. Crossfade):

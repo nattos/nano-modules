@@ -238,6 +238,14 @@ export class ArrMonitor extends MobxLitElement {
           const st = d.state;
           if (st) for (const k in st) void (st as Record<string, unknown>)[k];
         }
+        // A clipless layer's sketch is its whole content: its wires and its
+        // layer props re-issue the composite like a clip's would.
+        if (n.type === 'clipless') {
+          void n.track.level; void n.track.blendMode; void n.track.clips.length;
+          for (const w of n.track.sketch.wires ?? []) {
+            void w.id; void w.dest.lane; void w.convert; void w.combine; void w.magnitude;
+          }
+        }
         if (n.type === 'group') {
           void n.group.level; void n.group.blendMode;
           void n.group.groupInput?.mode; void n.group.groupInput?.color;

@@ -264,6 +264,19 @@ struct TreeBuilder {
     if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene)
       return false;                             // rails aren't composite layers
     if (anySolo && !soloedHere) return false;   // solo restricts to soloed lineages
+    // CLIPLESS layer: a timeline track with no clips whose own sketch is its
+    // content. Whether that sketch holds anything the catalog knows is the
+    // sketch builder's call (it has the catalog); an empty sketch is no layer.
+    if (track.kind == TrackKind::Track && track.clips.empty()) {
+      if (track.sketch.devices.empty()) return false;
+      out.isGroup = false;
+      out.clipless = true;
+      out.track = &track;
+      out.opacity = clamp01(track.level.value_or(1));
+      out.blendMode = track.blendMode.value_or(0);
+      out.layerOpacityModulated = hasLayerOpacityModulation(track, nullptr);
+      return true;
+    }
     const ClipM* clip;
     double anchor = 0;
     if (track.kind == TrackKind::Scene) {
@@ -540,7 +553,9 @@ inline void railBasesAtBeat(const CompositionM& comp, const std::vector<CompNode
     railSigned[railId] = rt ? rt->railSigned : false;
   };
   for (const CompNode* leaf : leaves) {
-    for (const auto& read : leaf->clip->reads) seed(read.railId);
+    if (leaf->clip) {
+      for (const auto& read : leaf->clip->reads) seed(read.railId);
+    }
     if (leaf->track) {
       for (const auto& read : leaf->track->reads) seed(read.railId);
     }
@@ -751,6 +766,15 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
             pushTrackLanes(*n.group);
             for (const auto& read : n.group->reads) pushRailBase(read);
             walk(n.children);
+            continue;
+          }
+          if (n.clipless) {
+            // A clipless layer's lanes ARE its track lanes (its sketch is the
+            // track sketch) — no clip-relative timing to resolve.
+            if (n.track) {
+              pushTrackLanes(*n.track);
+              for (const auto& read : n.track->reads) pushRailBase(read);
+            }
             continue;
           }
           const ClipM& clip = *n.clip;
