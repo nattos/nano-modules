@@ -90,6 +90,27 @@ if [ "${SKIP_FFGL:-0}" != "1" ] && [ "$(uname -s)" = "Darwin" ]; then
   fi
 fi
 
+# The arrangement's native composition engine: nano_compositor plus its own
+# libbridge_server.dylib (it finds it through @executable_path). A separate
+# process from any Resolume, so this second copy of the dylib is fine — it
+# listens on its own port. Packaged into NanoModules only
+# (electron-builder.config.cjs `compositor`).
+if [ "${SKIP_COMPOSITOR:-0}" != "1" ] && [ "$(uname -s)" = "Darwin" ]; then
+  comp="$repo/native/build/nano_compositor"
+  dylib="$repo/native/build/libbridge_server.dylib"
+  if [ -f "$comp" ] && [ -f "$dylib" ]; then
+    mkdir -p "$root/bin"
+    cp -f "$comp" "$root/bin/nano_compositor"
+    cp -f "$dylib" "$root/bin/libbridge_server.dylib"
+    id="${NANOBARREL_CODESIGN_IDENTITY:--}"
+    codesign --force --sign "$id" "$root/bin/libbridge_server.dylib" 2>/dev/null || true
+    codesign --force --sign "$id" "$root/bin/nano_compositor" 2>/dev/null || true
+  else
+    echo "note: no built native/build/nano_compositor — the arrangement app will"
+    echo "      run only its browser engine"
+  fi
+fi
+
 # The WINDOWS plugin, into its own directory. Kept apart from ffgl/ rather than
 # merged: the mac package copies ffgl/ wholesale, and a stray pair of .dll files
 # inside a signed .app is 30 MB of something the notary has to be told about.

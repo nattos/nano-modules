@@ -1457,6 +1457,12 @@ if(NANO_HAS_GPU_BACKEND)
     add_executable(nano_compositor tools/nano_compositor.cpp)
     target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(nano_compositor PRIVATE bridge_server)
+    # Staged (web/scripts/stage_resources.sh → <root>/bin/) with its own
+    # libbridge_server beside it: find that one, not the build tree's.
+    if(APPLE)
+      set_target_properties(nano_compositor PROPERTIES
+        BUILD_RPATH "@executable_path;${CMAKE_BINARY_DIR}")
+    endif()
 
     # The process, driven over its WebSocket as the editor drives it.
     if(TARGET Catch2::Catch2WithMain)

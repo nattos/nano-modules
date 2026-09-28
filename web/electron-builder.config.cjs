@@ -50,11 +50,15 @@ const PRODUCTS = {
     appId: 'com.nano.modules',
     productName: 'NanoModules',
     plugin: false,
+    // The native composition engine (bin/nano_compositor, macOS for now) —
+    // opt-in via NANO_ARRANGEMENT_ENGINE=native until it reaches parity.
+    compositor: true,
   },
   remote: {
     appId: 'com.nano.modules.remote',
     productName: 'NanoModules Remote Control',
     plugin: true,
+    compositor: false,
   },
 };
 
@@ -178,6 +182,16 @@ module.exports = {
         // The addon that opens the plugin's shared preview surfaces for
         // Electron's sharedTexture import (web/native/, src/preview-surfaces.ts).
         // Without it the app keeps the socket transport.
+        { from: '../build/native/darwin-arm64', to: 'nano/native/darwin-arm64',
+          filter: ['nano_shared_surface.node'] },
+      ] : []),
+      ...(product.compositor ? [
+        // The arrangement's native engine: nano_compositor with its OWN
+        // libbridge_server beside it (a separate process from any Resolume —
+        // it listens on its own port), the AOT sidecars it prefers, and the
+        // surface addon its previews arrive through.
+        { from: '../build/bin', to: 'nano/bin', filter: ['nano_compositor', 'libbridge_server.dylib'] },
+        { from: '../build/wasm', to: 'nano/wasm', filter: aot(['core', 'text', 'richtext']) },
         { from: '../build/native/darwin-arm64', to: 'nano/native/darwin-arm64',
           filter: ['nano_shared_surface.node'] },
       ] : []),

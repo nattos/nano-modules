@@ -125,6 +125,20 @@ One C++ source (`sketch_executor.cpp`) builds into **both** the native barrel/FF
 web. The web build serves the **same** `build/wasm/*.wasm` files, so rebuild bundles
 (`native/wasm_modules/build_all.sh`) before running web e2e — a stale bundle is a common false failure.
 
+### The arrangement's two engines
+
+The arrangement's composition executor (`comp::CompExecutor`) runs either in the browser worker
+(`ArrEngine`) or in a native **`nano_compositor`** process (`native/tools/nano_compositor.cpp`),
+behind one seam: `views/arrangement/engine/comp-engine.ts`. The native one is a comp instance on
+the shared runtime (`BarrelRuntime::createComp`, driven by `bridge/comp_host.h` — the same host
+`comp_test_runner` uses), reached over the bridge WebSocket exactly as Remote Control reaches a
+NanoBarrel: `comp_*` actions in, NBCJ `comp_report`s + NBPS/NBPV previews out
+(`remote-comp-engine.ts`). `?compositor=ws://…` or, in the desktop app, `?engine=native` /
+`NANO_ARRANGEMENT_ENGINE=native` selects it (`engine-select.ts`, `electron/compositor.cjs`).
+Arrangement UI suites run on both through `test/comp-backend.ts` (`forEachCompBackend`; build
+`nano_compositor` first); tests read the monitor through `engineBridge.sampleComposite`
+(`test/arr-test-helpers.ts`), never the canvas.
+
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 
 Effects author each shader stage **once as HLSL**. The build (DXC) compiles HLSL → SPIR-V and bakes
