@@ -1128,12 +1128,16 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
   layerTargets_ = std::move(build.layerTargets);
+  routeStatus_ = std::move(build.routeStatus);
   if (build.hasContent) {
     if (cleanSketch_.is_null() || build.sketch != cleanSketch_) {
       cleanSketch_ = std::move(build.sketch);
       dirty_ = true;
     }
     std::string sig = chainSigOf(cleanSketch_);
+    // Route status rides the structure report (like layerTargets), and it can
+    // change with no chain change — a route added between existing stages.
+    if (!routeStatus_.empty()) sig += routeStatus_.dump();
     if (sig != chainSig_) {
       chainSig_ = std::move(sig);
       flags |= kCompStructureChanged;
@@ -2093,6 +2097,11 @@ const std::string& CompExecutor::videoDescsJson() {
 const std::string& CompExecutor::layerTargetsJson() {
   layerTargetsScratch_ = layerTargets_.dump();
   return layerTargetsScratch_;
+}
+
+const std::string& CompExecutor::routeStatusJson() {
+  routeStatusScratch_ = routeStatus_.dump();
+  return routeStatusScratch_;
 }
 
 const std::string& CompExecutor::streamsJson() {

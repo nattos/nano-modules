@@ -533,3 +533,250 @@ TEST_CASE("clipless layer: its wires and automation resolve to track keys", "[co
   }
   CHECK(laneFound);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Composition I/O: routes between track ports and texture fields.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+json portEnd(const std::string& track, const std::string& port) {
+  return {{"kind", "port"}, {"trackId", track}, {"portId", port}};
+}
+json fieldEnd(const std::string& track, const std::string& clip, const std::string& dev,
+              const std::string& field) {
+  json e = {{"kind", "field"}, {"trackId", track}, {"deviceId", dev}, {"field", field}};
+  if (!clip.empty()) e["clipId"] = clip;
+  return e;
+}
+json route(const std::string& id, json src, json dest) {
+  return {{"id", id}, {"src", std::move(src)}, {"dest", std::move(dest)}};
+}
+
+/** One wire in the build from `srcKey` to `destKey`, or null. */
+json findWire(const comp::SketchBuild& b, const std::string& srcKey, const std::string& destKey,
+              const std::string& destField = "") {
+  for (const auto& w : b.sketch["wires"]) {
+    if (w["src"]["instanceKey"] == srcKey && w["dest"]["instanceKey"] == destKey &&
+        (destField.empty() || w["dest"]["field"] == destField))
+      return w;
+  }
+  return nullptr;
+}
+
+comp::SketchBuild buildAt(const json& compJson, const comp::Catalog& cat, double beat) {
+  const comp::CompositionM c = comp::parseComposition(compJson);
+  const comp::WarpClock clock(
+      comp::WarpCurve(comp::derivedWarpSegments(c), comp::compositionLengthBeats(c)), c.baseBPM);
+  return comp::buildCompositeRenderAtBeat(c, cat, clock, beat, false);
+}
+
+size_t indexOf(const std::vector<std::string>& keys, const std::string& k) {
+  for (size_t i = 0; i < keys.size(); i++) if (keys[i] == k) return i;
+  return keys.size();
+}
+
+}  // namespace
+
+TEST_CASE("io: a send carries a track's output into a field on another track", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json c = compOf(json::array({
+      trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+      trackJson("b", json::array({deviceJson("inv", "color.invert")})),
+  }));
+  c["routes"] = json::array({route("r1", portEnd("a", "__out__"),
+                                   fieldEnd("b", "", "inv", "mask"))});
+  const auto b = buildOne(c, cat);
+  REQUIRE(b.hasContent);
+  const json w = findWire(b, "clip_a_c_g", "track_b_inv", "mask");
+  REQUIRE(w.is_object());
+  CHECK(w["src"]["field"] == "tex_out");
+  CHECK(b.routeStatus["r1"]["live"] == true);
+  CHECK(b.routeStatus["r1"]["delayed"] == false);
+}
+
+TEST_CASE("io: a source rendering after its reader is marked delayed", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json c = compOf(json::array({
+      trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color"),
+                                                 deviceJson("fx", "color.invert")})),
+      trackJson("b", json::array(), json::array({deviceJson("n", "source.noise")})),
+  }));
+  c["routes"] = json::array({route("r1", portEnd("b", "__out__"),
+                                   fieldEnd("a", "a_c", "fx", "mask"))});
+  const auto b = buildOne(c, cat);
+  REQUIRE(findWire(b, "clip_b_c_n", "clip_a_c_fx", "mask").is_object());
+  CHECK(b.routeStatus["r1"]["delayed"] == true);
+}
+
+TEST_CASE("io: a named out port is fed from inside the track and survives a clip change",
+          "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json a = trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")}));
+  a["clips"].push_back({{"id", "a_c2"}, {"name", "a_c2"}, {"startBeat", 8}, {"lengthBeat", 8},
+                        {"kind", "effect"},
+                        {"sketch", {{"devices", json::array({deviceJson("g2", "source.noise")})}}},
+                        {"automation", json::array()}, {"exports", json::array()},
+                        {"warps", json::array()}, {"blendMode", 0}});
+  a["ports"] = json::array({{{"id", "L"}, {"name", "Left"}, {"dir", "out"}}});
+  json c = compOf(json::array({a, trackJson("b", json::array({deviceJson("inv", "color.invert")}))}));
+  c["routes"] = json::array({
+      route("f1", fieldEnd("a", "a_c", "g", "left_out"), portEnd("a", "L")),
+      route("f2", fieldEnd("a", "a_c2", "g2", "left_out"), portEnd("a", "L")),
+      route("s1", portEnd("a", "L"), fieldEnd("b", "", "inv", "mask")),
+  });
+  const auto b0 = buildAt(c, cat, 1.0);
+  const json w0 = findWire(b0, "clip_a_c_g", "track_b_inv", "mask");
+  REQUIRE(w0.is_object());
+  CHECK(w0["src"]["field"] == "left_out");
+  CHECK(b0.routeStatus["f1"]["live"] == true);
+  CHECK(b0.routeStatus["f2"]["live"] == false);  // that clip isn't playing
+  const auto b1 = buildAt(c, cat, 9.0);
+  CHECK(findWire(b1, "clip_a_c2_g2", "track_b_inv", "mask").is_object());
+  CHECK(b1.routeStatus["s1"]["live"] == true);
+}
+
+TEST_CASE("io: a routed __in__ makes an effect-only track a source layer", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  SECTION("clipless") {
+    json c = compOf(json::array({
+        trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+        trackJson("b", json::array({deviceJson("inv", "color.invert")})),
+    }));
+    c["routes"] = json::array({route("r1", portEnd("a", "__out__"), portEnd("b", "__in__"))});
+    const auto b = buildOne(c, cat);
+    const auto keys = chainKeys(b);
+    // The relay heads b's chain, and b blends over the stack like a source.
+    CHECK(indexOf(keys, "track_b_in") < indexOf(keys, "track_b_inv"));
+    CHECK(indexOf(keys, "track_b_blend") < keys.size());
+    CHECK(findWire(b, "clip_a_c_g", "track_b_in", "1").is_object());
+    CHECK(findWire(b, "clip_a_c_g", "track_b_in", "0").is_object());
+    CHECK(findWire(b, "track_b_inv", "track_b_blend", "1").is_object());
+  }
+  SECTION("an effect-only clip") {
+    json c = compOf(json::array({
+        trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+        trackJson("b", json::array(), json::array({deviceJson("inv", "color.invert")})),
+    }));
+    c["routes"] = json::array({route("r1", portEnd("a", "__out__"), portEnd("b", "__in__"))});
+    const auto b = buildOne(c, cat);
+    const auto keys = chainKeys(b);
+    CHECK(indexOf(keys, "track_b_in") < indexOf(keys, "clip_b_c_inv"));
+    CHECK(findWire(b, "clip_b_c_inv", "clip_b_c_blend", "1").is_object());
+  }
+  SECTION("a track whose only content is its input") {
+    json c = compOf(json::array({
+        trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+        trackJson("b", json::array()),
+    }));
+    c["routes"] = json::array({route("r1", portEnd("a", "__out__"), portEnd("b", "__in__"))});
+    const auto b = buildOne(c, cat);
+    CHECK(findWire(b, "track_b_in", "track_b_blend", "1").is_object());
+  }
+}
+
+TEST_CASE("io: a routed __in__ replaces a group's base", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json g = {{"id", "g"}, {"name", "g"}, {"kind", "group"}, {"parentId", nullptr},
+            {"sketch", {{"devices", json::array()}}}, {"automation", json::array()},
+            {"clips", json::array()}, {"groupInput", {{"mode", "underlying"}}}};
+  json child = trackJson("k", json::array({deviceJson("inv", "color.invert")}));
+  child["parentId"] = "g";
+  json c = compOf(json::array({
+      trackJson("a", json::array(), json::array({deviceJson("g1", "source.solid_color")})),
+      g, child}));
+  c["routes"] = json::array({route("r1", portEnd("a", "__out__"), portEnd("g", "__in__"))});
+  const auto b = buildOne(c, cat);
+  const auto keys = chainKeys(b);
+  // The child processes the relay, and the group blends over the stack.
+  CHECK(indexOf(keys, "track_g_in") < indexOf(keys, "track_k_inv"));
+  CHECK(indexOf(keys, "group_g_blend") < keys.size());
+}
+
+TEST_CASE("io: send nowhere renders a track without compositing it", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  SECTION("an adjustment layer after it processes the stack, not the hidden track") {
+    json hidden = trackJson("h", json::array(), json::array({deviceJson("g", "source.noise")}),
+                            {{"output", {{"mode", "none"}}}});
+    json c = compOf(json::array({
+        trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+        hidden,
+        trackJson("adj", json::array({deviceJson("inv", "color.invert")})),
+    }));
+    const auto b = buildOne(c, cat);
+    const auto keys = chainKeys(b);
+    CHECK(indexOf(keys, "clip_h_c_g") < keys.size());   // it renders
+    CHECK(indexOf(keys, "clip_h_c_blend") == keys.size());  // but never blends
+    // A resync relay re-emits the stack before the adjustment reads it.
+    const size_t resync = indexOf(keys, "io_resync_0");
+    REQUIRE(resync < keys.size());
+    CHECK(resync < indexOf(keys, "track_adj_inv"));
+    CHECK(findWire(b, "clip_a_c_blend", "io_resync_0", "1").is_object());
+  }
+  SECTION("as the LAST layer, the output is re-emitted from the stack") {
+    json hidden = trackJson("h", json::array(), json::array({deviceJson("g", "source.noise")}),
+                            {{"output", {{"mode", "none"}}}});
+    json c = compOf(json::array({
+        trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+        hidden}));
+    const auto b = buildOne(c, cat);
+    const auto keys = chainKeys(b);
+    REQUIRE(!keys.empty());
+    CHECK(keys.back() == "io_resync_0");
+  }
+  SECTION("its routes still deliver") {
+    json hidden = trackJson("h", json::array(), json::array({deviceJson("g", "source.noise")}),
+                            {{"output", {{"mode", "none"}}}});
+    json c = compOf(json::array({
+        hidden, trackJson("b", json::array({deviceJson("inv", "color.invert")}))}));
+    c["routes"] = json::array({route("r1", portEnd("h", "__out__"),
+                                     fieldEnd("b", "", "inv", "mask"))});
+    const auto b = buildOne(c, cat);
+    CHECK(findWire(b, "clip_h_c_g", "track_b_inv", "mask").is_object());
+  }
+}
+
+TEST_CASE("io: solo keeps a track that feeds a soloed one, sent nowhere", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json soloed = trackJson("s", json::array({deviceJson("inv", "color.invert")}));
+  soloed["soloed"] = true;
+  json c = compOf(json::array({
+      trackJson("feed", json::array(), json::array({deviceJson("g", "source.noise")})),
+      trackJson("other", json::array(), json::array({deviceJson("g", "source.solid_color")})),
+      soloed}));
+  c["routes"] = json::array({route("r1", portEnd("feed", "__out__"),
+                                   fieldEnd("s", "", "inv", "mask"))});
+  const auto b = buildOne(c, cat);
+  const auto keys = chainKeys(b);
+  CHECK(indexOf(keys, "clip_feed_c_g") < keys.size());      // kept for the route
+  CHECK(indexOf(keys, "clip_feed_c_blend") == keys.size()); // but not composited
+  CHECK(indexOf(keys, "clip_other_c_g") == keys.size());    // solo still drops the rest
+  CHECK(findWire(b, "clip_feed_c_g", "track_s_inv", "mask").is_object());
+}
+
+TEST_CASE("io: inert and illegal routes", "[comp][io]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  json a = trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")}));
+  json bT = trackJson("b", json::array({deviceJson("inv", "color.invert")}));
+  SECTION("a bypassed source leaves the route inert") {
+    a["bypassed"] = true;
+    json c = compOf(json::array({a, bT}));
+    c["routes"] = json::array({route("r1", portEnd("a", "__out__"),
+                                     fieldEnd("b", "", "inv", "mask"))});
+    const auto b = buildOne(c, cat);
+    CHECK(b.routeStatus["r1"]["live"] == false);
+  }
+  SECTION("field → field, __out__ as a destination, __in__ as a source") {
+    json c = compOf(json::array({a, bT}));
+    c["routes"] = json::array({
+        route("x1", fieldEnd("a", "a_c", "g", "tex_out"), fieldEnd("b", "", "inv", "mask")),
+        route("x2", portEnd("a", "__out__"), portEnd("b", "__out__")),
+        route("x3", portEnd("a", "__in__"), fieldEnd("b", "", "inv", "mask")),
+    });
+    const auto b = buildOne(c, cat);
+    CHECK_FALSE(b.routeStatus.contains("x1"));
+    CHECK_FALSE(b.routeStatus.contains("x2"));
+    CHECK_FALSE(b.routeStatus.contains("x3"));
+    CHECK_FALSE(findWire(b, "clip_a_c_g", "track_b_inv").is_object());
+  }
+}

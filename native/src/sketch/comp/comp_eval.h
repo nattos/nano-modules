@@ -231,6 +231,21 @@ struct TreeBuilder {
   /** Transport-resolved content seconds per clip (streamsTable.appliedContentSec):
    *  a transport-controller-driven sequence clip's interior time comes from here. */
   const std::unordered_map<std::string, double>* appliedContentSec = nullptr;
+  /** Solo closure: tracks solo would drop that feed (transitively) a route
+   *  into one it lets through. They stay in the tree, sent nowhere. */
+  const std::set<std::string>* soloForced = nullptr;
+
+  /** Does a route land on this track's `__in__`? (Its legality — the source
+   *  must be an out port — is the sketch builder's to judge; a dangling route
+   *  just renders an empty input.) */
+  bool inputRouted(const std::string& trackId) const {
+    for (const auto& r : comp.routes) {
+      if (r.dest.isPort && r.dest.trackId == trackId && r.dest.portId == kPortIn &&
+          r.src.isPort)
+        return true;
+    }
+    return false;
+  }
 
   std::vector<const TrackM*> childrenOf(const std::string& parentId) const {
     std::vector<const TrackM*> out;
@@ -240,18 +255,28 @@ struct TreeBuilder {
     return out;
   }
 
-  bool build(const TrackM& track, bool ancestorSoloed, double beat, CompNode& out) const {
+  bool build(const TrackM& track, bool ancestorSoloed, double beat, CompNode& out,
+             bool ancestorForced = false) const {
     // Bypassed track/group → drop the subtree (static OR modulated).
     if (track.bypassed || dynamicBypassed(track, beat, railBypass)) return false;
     const bool soloedHere = ancestorSoloed || track.soloed;
+    // Kept ONLY for a route (solo would drop it): this node is the forced
+    // root — it renders sent nowhere; its descendants composite into it.
+    const bool forcedRoot = anySolo && !soloedHere && !ancestorForced && soloForced &&
+                            soloForced->count(track.id) > 0;
+    const bool forcedHere = ancestorForced || forcedRoot;
     if (track.kind == TrackKind::Group) {
       if (isMainBus(track)) return false;  // master bus isn't a content group
       std::vector<CompNode> children;
       for (const TrackM* c : childrenOf(track.id)) {
         CompNode n;
-        if (build(*c, soloedHere, beat, n)) children.push_back(std::move(n));
+        if (build(*c, soloedHere, beat, n, forcedHere)) children.push_back(std::move(n));
       }
       if (children.empty()) return false;  // nothing to composite → omit the group
+      // A group that solo only keeps for its forced children is itself hidden:
+      // composited, its FX would run over the stack with nothing of its own.
+      bool allForced = !soloedHere && !forcedHere;
+      for (const auto& c : children) allForced = allForced && c.soloForced;
       out.isGroup = true;
       out.group = &track;
       out.opacity = clamp01(track.level.value_or(1));
@@ -259,16 +284,21 @@ struct TreeBuilder {
       out.input = track.groupInput.present ? track.groupInput : GroupInputM{};
       out.layerOpacityModulated = hasLayerOpacityModulation(track, nullptr);
       out.children = std::move(children);
+      out.soloForced = forcedRoot || allForced;
+      out.outputNone = track.outputNone || out.soloForced;
       return true;
     }
     if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene)
       return false;                             // rails aren't composite layers
-    if (anySolo && !soloedHere) return false;   // solo restricts to soloed lineages
+    if (anySolo && !soloedHere && !forcedHere) return false;  // solo restricts to soloed lineages
+    out.soloForced = forcedRoot;
+    out.outputNone = track.outputNone || forcedRoot;
     // CLIPLESS layer: a timeline track with no clips whose own sketch is its
     // content. Whether that sketch holds anything the catalog knows is the
     // sketch builder's call (it has the catalog); an empty sketch is no layer.
     if (track.kind == TrackKind::Track && track.clips.empty()) {
-      if (track.sketch.devices.empty()) return false;
+      // No sketch and no routed input → nothing to be.
+      if (track.sketch.devices.empty() && !inputRouted(track.id)) return false;
       out.isGroup = false;
       out.clipless = true;
       out.track = &track;
@@ -397,6 +427,38 @@ inline std::vector<CompNode> compositeTreeAtBeat(
   }
   eval_detail::TreeBuilder builder{comp,      anySolo, railBypass, sceneLaunch,
                                    forkLaunch, clock,   appliedContentSec};
+  // SOLO CLOSURE: solo narrows what COMPOSITES, not what a soloed track can
+  // see. A track solo would drop whose port feeds (transitively) a route into
+  // a track solo keeps — or into the main bus — stays in the tree, sent
+  // nowhere, so the soloed track still receives its input.
+  std::set<std::string> soloForced;
+  if (anySolo && !comp.routes.empty()) {
+    std::map<std::string, const TrackM*> byId;
+    for (const auto& t : comp.tracks) byId[t.id] = &t;
+    auto passesSolo = [&](const std::string& id) {
+      for (auto it = byId.find(id); it != byId.end(); it = byId.find(it->second->parentId)) {
+        if (it->second->soloed) return true;
+        if (it->second->parentId.empty()) break;
+      }
+      return false;
+    };
+    const TrackM* bus = mainBusTrack(comp);
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (const auto& r : comp.routes) {
+        if (!r.src.isPort || r.src.trackId == r.dest.trackId) continue;
+        const std::string& dest = r.dest.trackId;
+        const bool destKept = passesSolo(dest) || soloForced.count(dest) ||
+                              (bus && bus->id == dest);
+        if (!destKept) continue;
+        const std::string& src = r.src.trackId;
+        if (passesSolo(src) || soloForced.count(src)) continue;
+        soloForced.insert(src);
+        changed = true;
+      }
+    }
+    builder.soloForced = &soloForced;
+  }
   std::vector<CompNode> roots;
   for (const TrackM* t : builder.childrenOf(std::string())) {
     CompNode n;
@@ -642,7 +704,7 @@ inline SketchBuild buildCompositeRenderFromTree(const CompositionM& comp, const 
   const TrackM* bus = mainBusTrack(comp);
   const TrackM* masterBus = bus && !bus->bypassed ? bus : nullptr;
   return buildCompositeSketch(tree, comp.background, railBases, railSigned, masterBus, cat,
-                              keepAlive.empty() ? nullptr : &keepAlive);
+                              keepAlive.empty() ? nullptr : &keepAlive, &comp);
 }
 
 /**

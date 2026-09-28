@@ -65,7 +65,8 @@ import {
 } from '../../../state/paths';
 import { resolveFileRef } from '../../../state/handle-ref';
 import { ALL_MIGRATION_IDS, migrateDeviceState } from '../../../state/effect-migrations';
-import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
+import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID, PORT_IN, PORT_OUT, pruneDanglingRoutes, routeIsLegal, sameRouteEnd } from '../model/composition';
+import type { Route, RouteEnd } from '../model/composition';
 import {
   allLanes,
   mediaSourceKeys,
@@ -757,6 +758,13 @@ export class ArrangementStore {
   setLayerTargets(t: Record<string, { instanceKey: string; field: string }>) {
     runInAction(() => { this.layerTargets = t; });
   }
+  /** Composition I/O route status from the current build (routeId →
+   *  {live, delayed}): drives the route wires' inert / delayed styling.
+   *  A route missing here is illegal (the builder ignored it). */
+  routeStatus: Record<string, { live: boolean; delayed: boolean }> = {};
+  setRouteStatus(t: Record<string, { live: boolean; delayed: boolean }>) {
+    runInAction(() => { this.routeStatus = t; });
+  }
 
   /**
    * Launched-scene state per scene track (trackId → {sceneId, launchBeat}).
@@ -952,7 +960,9 @@ export class ArrangementStore {
     recipe: (d: Composition) => void,
     coalesceKey?: string,
   ) {
-    this.history.record(description, recipe, coalesceKey);
+    // Composition I/O: a delete (track / clip / device / port) takes its
+    // routes with it, inside the same undo step.
+    this.history.record(description, (d) => { recipe(d); pruneDanglingRoutes(d); }, coalesceKey);
     // A full-doc ship supersedes any pending cheap-edit reconcile.
     this.clearCheapReconcile();
     this.docRev++;
@@ -2862,6 +2872,14 @@ export class ArrangementStore {
    * hierarchy, and DROPS groups with no contributing descendants. Top → bottom
    * (downward sum); the main bus is excluded (it pins the bottom and isn't a content
    * group). `ignoreSolo` (the exporter) renders the full mix. */
+  /** Does a route land on this track's main input (comp_eval.h
+   *  TreeBuilder::inputRouted twin)? */
+  inputRouted(trackId: string): boolean {
+    return (this.composition.routes ?? []).some((r) =>
+      r.dest.kind === 'port' && r.dest.trackId === trackId && r.dest.portId === PORT_IN
+      && r.src.kind === 'port');
+  }
+
   compositeTreeAtBeat(beat: number, ignoreSolo = false): CompositeNode[] {
     const anySolo = !ignoreSolo && this.composition.tracks.some((t) => t.soloed);
     const childrenOf = (parentId: string | null) =>
@@ -2892,7 +2910,8 @@ export class ArrangementStore {
       // A timeline track with NO clips is a clipless layer when its own sketch
       // holds devices (comp_eval.h twin): the sketch is its content.
       if (track.kind === 'track' && track.clips.length === 0) {
-        if (track.sketch.devices.length === 0) return null;
+        // No sketch and no routed input → nothing to be.
+        if (track.sketch.devices.length === 0 && !this.inputRouted(track.id)) return null;
         return {
           type: 'clipless',
           track,
@@ -4786,6 +4805,88 @@ export class ArrangementStore {
           combine: 'add', magnitude: 'auto',
         });
       }
+    });
+  }
+
+  // ── Composition I/O: ports + routes ─────────────────────────────────────
+
+  /** Add a NAMED port to a track/group; returns its id. */
+  addTrackPort(trackId: string, dir: 'in' | 'out', name?: string): string | null {
+    const t = this.trackById(trackId);
+    if (!t || t.kind === 'rail') return null;
+    const id = uid('port');
+    const n = (t.ports ?? []).filter((p) => p.dir === dir).length + 1;
+    const label = name ?? `${dir === 'out' ? 'Out' : 'In'} ${n}`;
+    this.mutate('add port', (d) => {
+      const dt = d.tracks.find((x) => x.id === trackId);
+      if (!dt) return;
+      dt.ports = [...(dt.ports ?? []), { id, name: label, dir }];
+    });
+    return id;
+  }
+
+  renameTrackPort(trackId: string, portId: string, name: string) {
+    this.mutate('rename port', (d) => {
+      const p = d.tracks.find((x) => x.id === trackId)?.ports?.find((x) => x.id === portId);
+      if (p) p.name = name;
+    });
+  }
+
+  /** Remove a named port (its routes go with it — see mutate's prune). */
+  removeTrackPort(trackId: string, portId: string) {
+    this.mutate('remove port', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (t?.ports) t.ports = t.ports.filter((p) => p.id !== portId);
+      if (t?.ports?.length === 0) delete t.ports;
+    });
+  }
+
+  /** SEND NOWHERE ('none') keeps the track rendering but never composites it. */
+  setTrackOutputMode(trackId: string, mode: 'normal' | 'none') {
+    this.mutate('output routing', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      if (mode === 'none') t.output = { mode };
+      else delete t.output;
+    });
+  }
+
+  trackOutputMode(trackId: string): 'normal' | 'none' {
+    return this.trackById(trackId)?.output?.mode === 'none' ? 'none' : 'normal';
+  }
+
+  /** Routes touching `end` (either side). */
+  routesAt(end: RouteEnd): Route[] {
+    return (this.composition.routes ?? []).filter(
+      (r) => sameRouteEnd(r.src, end) || sameRouteEnd(r.dest, end));
+  }
+
+  /**
+   * Add a route (refused unless legal — see composition.ts routeIsLegal).
+   * ONE route per destination, except a named out port's FEEDS: one per clip
+   * (plus one from the track sketch), so the port has a source whichever clip
+   * plays. Returns the new route id, or null.
+   */
+  addRoute(src: RouteEnd, dest: RouteEnd): string | null {
+    if (!routeIsLegal(this.composition, { src, dest })) return null;
+    const id = uid('route');
+    this.mutate('connect route', (d) => {
+      const replaces = (r: Route) => {
+        if (!sameRouteEnd(r.dest, dest)) return false;
+        if (src.kind === 'field' && r.src.kind === 'field') {
+          return (r.src.clipId ?? '') === (src.clipId ?? '');
+        }
+        return true;
+      };
+      d.routes = [...(d.routes ?? []).filter((r) => !replaces(r)), { id, src, dest }];
+    });
+    return id;
+  }
+
+  removeRoute(routeId: string) {
+    this.mutate('disconnect route', (d) => {
+      d.routes = (d.routes ?? []).filter((r) => r.id !== routeId);
+      if (d.routes.length === 0) delete d.routes;
     });
   }
 

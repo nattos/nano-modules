@@ -392,6 +392,9 @@ export class EngineBridge {
       // modulation bands through it (the blend key churns with the active clip).
       try { store.setLayerTargets(JSON.parse(info.layerTargets)); } catch { /* keep prev */ }
     }
+    if (info.routeStatus !== undefined) {
+      try { store.setRouteStatus(JSON.parse(info.routeStatus)); } catch { /* keep prev */ }
+    }
     if (info.scenes !== undefined) {
       // The executor owns launch state (triggers can launch engine-side); the
       // store's copy is a mirror for the playing highlight. PENDING handovers

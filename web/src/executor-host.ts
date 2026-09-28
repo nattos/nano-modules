@@ -125,6 +125,7 @@ interface ExecutorExports {
   comp_chain_keys_json(c: number, out: number, cap: number): number;
   comp_video_descs_json(c: number, out: number, cap: number): number;
   comp_layer_targets_json(c: number, out: number, cap: number): number;
+  comp_route_status_json(c: number, out: number, cap: number): number;
   comp_launch_scene(c: number, track: number, trackLen: number, scene: number, sceneLen: number,
                     cls: number): void;
   comp_stop_scene(c: number, track: number, len: number): void;
@@ -1140,6 +1141,7 @@ export class WasmSketchExecutor {
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
+               routeStatus?: string;
                scenes?: string; scenesPending?: string; controlSeq: number;
                transportOrder?: string[]; transportTimes?: Float64Array }> {
     const c = this.ensureComp();
@@ -1200,7 +1202,10 @@ export class WasmSketchExecutor {
 
     let chainKeys: string[] | undefined;
     let layerTargets: string | undefined;
+    let routeStatus: string | undefined;
     if (structureChanged) {
+      routeStatus =
+          this.compRead((o, n) => this.exports.comp_route_status_json(c, o, n)) || '{}';
       // The build's `__layer__` resolution (ownerId → {instanceKey, field}) —
       // shipped alongside chainKeys so UI modulation bands survive the
       // per-clip blend-key churn.
@@ -1406,6 +1411,7 @@ export class WasmSketchExecutor {
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
                  chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
+                 routeStatus?: string;
                  scenes?: string; scenesPending?: string; controlSeq: number;
                  transportOrder?: string[]; transportTimes?: Float64Array } = {
       handle, hasContent, structureChanged, holding,
@@ -1415,6 +1421,7 @@ export class WasmSketchExecutor {
     };
     if (chainKeys) out.chainKeys = chainKeys;
     if (layerTargets !== undefined) out.layerTargets = layerTargets;
+    if (routeStatus !== undefined) out.routeStatus = routeStatus;
     if (videoSetChanged) {
       out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
     }

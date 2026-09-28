@@ -283,6 +283,40 @@ struct GroupInputM {
   bool present = false;  // track.groupInput ?? {mode:'transparent'}
 };
 
+/** Composition I/O: a NAMED track port (composition.ts TrackPort). The two
+ *  main ports are implicit — kPortIn / kPortOut — and never listed. */
+struct TrackPortM {
+  std::string id;
+  std::string name;
+  bool isOut = true;
+};
+
+/** The implicit main ports every track/group has. `__in__` is only ever a
+ *  route DESTINATION (it heads the track's chain); `__out__` only ever a
+ *  SOURCE (the track's post-FX output, before blend and opacity). */
+inline constexpr const char* kPortIn = "__in__";
+inline constexpr const char* kPortOut = "__out__";
+
+/** One end of a route (composition.ts RouteEnd): a track port, or a texture
+ *  field of a device in a track's own sketch (clipId empty) or one of its
+ *  clips. */
+struct RouteEndM {
+  bool isPort = false;
+  std::string trackId;
+  std::string portId;    // isPort
+  std::string clipId;    // !isPort; empty ⇒ the track's own sketch
+  std::string deviceId;  // !isPort
+  std::string field;     // !isPort
+};
+
+/** A Composition I/O route (composition.ts Route). Ports are hubs: every
+ *  legal route has at least one PORT end — see sketch_build.h routeWires. */
+struct RouteM {
+  std::string id;
+  RouteEndM src;
+  RouteEndM dest;
+};
+
 struct TrackM {
   std::string id;
   std::string name;
@@ -314,6 +348,11 @@ struct TrackM {
    *  track exists; devices key as track_<trackId>_transport_<devId>. */
   SketchSpecM transport;
   bool hasTransport = false;
+  /** Composition I/O: named ports (the main in/out are implicit). */
+  std::vector<TrackPortM> ports;
+  /** `output.mode === 'none'` — SEND NOWHERE: the track renders (its ports and
+   *  side effects stay live) but never composites into its parent. */
+  bool outputNone = false;
 };
 
 // ── Sequence clips ────────────────────────────────────────────────────────
@@ -388,6 +427,8 @@ struct CompositionM {
   double timeSignatureNum = 4;
   BackgroundM background;
   std::vector<TrackM> tracks;
+  /** Composition I/O routes (composition.ts Composition.routes). */
+  std::vector<RouteM> routes;
 };
 
 /**
@@ -658,7 +699,35 @@ inline TrackM parseTrack(const nlohmann::json& j, int depth = 0) {
   if (j.contains("clips") && j["clips"].is_array()) {
     for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c, depth));
   }
+  if (j.contains("ports") && j["ports"].is_array()) {
+    for (const auto& p : j["ports"]) {
+      if (!p.is_object()) continue;
+      TrackPortM port;
+      port.id = p.value("id", std::string());
+      port.name = p.value("name", std::string());
+      port.isOut = p.value("dir", std::string("out")) != "in";
+      if (!port.id.empty()) t.ports.push_back(std::move(port));
+    }
+  }
+  if (j.contains("output") && j["output"].is_object())
+    t.outputNone = j["output"].value("mode", std::string("normal")) == "none";
   return t;
+}
+
+/** composition.ts RouteEnd. */
+inline RouteEndM parseRouteEnd(const nlohmann::json& j) {
+  RouteEndM e;
+  if (!j.is_object()) return e;
+  e.isPort = j.value("kind", std::string()) == "port";
+  e.trackId = j.value("trackId", std::string());
+  if (e.isPort) {
+    e.portId = j.value("portId", std::string());
+  } else {
+    if (j.contains("clipId") && j["clipId"].is_string()) e.clipId = j["clipId"].get<std::string>();
+    e.deviceId = j.value("deviceId", std::string());
+    e.field = j.value("field", std::string());
+  }
+  return e;
 }
 
 inline CompositionM parseComposition(const nlohmann::json& j) {
@@ -680,6 +749,16 @@ inline CompositionM parseComposition(const nlohmann::json& j) {
   }
   if (j.contains("tracks") && j["tracks"].is_array()) {
     for (const auto& t : j["tracks"]) comp.tracks.push_back(parseTrack(t));
+  }
+  if (j.contains("routes") && j["routes"].is_array()) {
+    for (const auto& r : j["routes"]) {
+      if (!r.is_object()) continue;
+      RouteM route;
+      route.id = r.value("id", std::string());
+      route.src = parseRouteEnd(r.contains("src") ? r["src"] : nlohmann::json());
+      route.dest = parseRouteEnd(r.contains("dest") ? r["dest"] : nlohmann::json());
+      comp.routes.push_back(std::move(route));
+    }
   }
   return comp;
 }

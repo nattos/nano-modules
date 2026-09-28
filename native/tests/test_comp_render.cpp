@@ -3941,3 +3941,102 @@ TEST_CASE("clipless layers render continuously from the track sketch", "[comp_re
     CHECK(meanRgb(renderAt(doc, 1.0)) > 220.0);
   }
 }
+
+// ── Composition I/O: routes reach the pixels ─────────────────────────────────
+
+namespace {
+json ioPort(const std::string& t, const std::string& p) {
+  return {{"kind", "port"}, {"trackId", t}, {"portId", p}};
+}
+json ioField(const std::string& t, const std::string& dev, const std::string& field) {
+  return {{"kind", "field"}, {"trackId", t}, {"deviceId", dev}, {"field", field}};
+}
+json cliplessTrack(const std::string& id, json devices, json over = json::object()) {
+  json t = mkTrack(id, json::array(), {{"sketch", {{"devices", std::move(devices)}}}});
+  t.update(over);
+  return t;
+}
+struct Rgb { double r, g, b; };
+Rgb meanOf(const std::vector<uint8_t>& px) {
+  double r = 0, g = 0, b = 0;
+  size_t n = 0;
+  for (size_t i = 0; i + 3 < px.size(); i += 4, n++) { r += px[i]; g += px[i + 1]; b += px[i + 2]; }
+  return n ? Rgb{r / n, g / n, b / n} : Rgb{0, 0, 0};
+}
+}  // namespace
+
+TEST_CASE("io routes reach the pixels", "[comp_render][io]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+
+  auto renderFrames = [&](const json& doc, int frames) {
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+    std::vector<uint8_t> px;
+    for (int i = 0; i < frames; i++) {
+      cx.update(0.0);
+      px = hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0));
+    }
+    return meanOf(px);
+  };
+
+  const json red = json::array({mkDevice("g", "source.solid_color", {{"color", {1.0, 0.0, 0.0}}})});
+  const json blue = json::array({mkDevice("g", "source.solid_color", {{"color", {0.0, 0.0, 1.0}}})});
+
+  SECTION("a send into a blend field, from a track that is sent nowhere") {
+    // `hid` (red) never composites; `vis` (blue) does. `mix` is a clipless
+    // A/B blend at B: tex_a ← vis, tex_b ← hid → red, though hid is hidden.
+    json doc = mkComposition(json::array({
+        cliplessTrack("vis", blue),
+        cliplessTrack("hid", red, {{"output", {{"mode", "none"}}}}),
+        cliplessTrack("mix", json::array({mkDevice("bl", "composite.blend",
+                                                   {{"mode", 0}, {"opacity", 1.0}})})),
+    }));
+    doc["routes"] = json::array({
+        {{"id", "ra"}, {"src", ioPort("vis", "__out__")}, {"dest", ioField("mix", "bl", "tex_a")}},
+        {{"id", "rb"}, {"src", ioPort("hid", "__out__")}, {"dest", ioField("mix", "bl", "tex_b")}},
+    });
+    const Rgb m = renderFrames(doc, 3);
+    INFO("r " << m.r << " g " << m.g << " b " << m.b);
+    CHECK(m.r > 220.0);
+    CHECK(m.b < 30.0);
+  }
+
+  SECTION("without the route, the hidden track is absent from the output") {
+    json doc = mkComposition(json::array({
+        cliplessTrack("vis", blue),
+        cliplessTrack("hid", red, {{"output", {{"mode", "none"}}}}),
+    }));
+    const Rgb m = renderFrames(doc, 2);
+    INFO("r " << m.r << " b " << m.b);
+    CHECK(m.b > 220.0);
+    CHECK(m.r < 30.0);
+  }
+
+  SECTION("a track whose content is its routed input shows it") {
+    json doc = mkComposition(json::array({
+        cliplessTrack("hid", red, {{"output", {{"mode", "none"}}}}),
+        cliplessTrack("tap", json::array()),
+    }));
+    doc["routes"] = json::array({
+        {{"id", "r"}, {"src", ioPort("hid", "__out__")}, {"dest", ioPort("tap", "__in__")}}});
+    const Rgb m = renderFrames(doc, 3);
+    INFO("r " << m.r << " b " << m.b);
+    CHECK(m.r > 220.0);
+  }
+
+  SECTION("a route from a track rendering AFTER its reader arrives (one frame late)") {
+    json doc = mkComposition(json::array({
+        cliplessTrack("tap", json::array()),
+        cliplessTrack("hid", red, {{"output", {{"mode", "none"}}}}),
+    }));
+    doc["routes"] = json::array({
+        {{"id", "r"}, {"src", ioPort("hid", "__out__")}, {"dest", ioPort("tap", "__in__")}}});
+    const Rgb m = renderFrames(doc, 4);
+    INFO("r " << m.r << " b " << m.b);
+    CHECK(m.r > 220.0);
+  }
+}

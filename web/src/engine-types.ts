@@ -302,6 +302,9 @@ export interface CompFrameInfo {
    *  present when the structure changed; UI modulation bands resolve track/
    *  group opacity through it (the blend key churns with the active clip). */
   layerTargets?: string;
+  /** Composition I/O route status (routeId → {live, delayed} JSON) — present
+   *  when the structure changed, like layerTargets. */
+  routeStatus?: string;
   /** Launched scenes ({trackId: {sceneId, launchBeat}} JSON) — present when
    *  the launch state changed (kCompScenesChanged). */
   scenes?: string;

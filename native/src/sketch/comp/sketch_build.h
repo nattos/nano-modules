@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -241,6 +242,14 @@ struct CompNode {
    *  Keys are the track's own (`track_<trackId>_<devId>`), the same keys its FX
    *  bus would use, so telemetry and automation resolve unchanged. */
   bool clipless = false;
+  /** SEND NOWHERE (composition.ts Track.output.mode 'none', or forced by the
+   *  solo closure): the node renders — its I/O ports and side effects stay
+   *  live — but never composites into its parent's accumulator. */
+  bool outputNone = false;
+  /** Kept in the tree ONLY because a route carries its output into a track
+   *  solo lets through (comp_eval.h's solo closure). A group whose every child
+   *  is solo-forced is itself forced. */
+  bool soloForced = false;
 };
 
 /** Build result: hasContent=false ⇔ the TS build returned null. */
@@ -258,6 +267,15 @@ struct SketchBuild {
    * per-build key churn.
    */
   nlohmann::json layerTargets = nlohmann::json::object();
+  /**
+   * Composition I/O route status: routeId → {live, delayed}. `live` = both
+   * ends resolved in THIS build (a route whose source track isn't rendering,
+   * or whose field's device isn't pushed, is inert); `delayed` = the source's
+   * chain position is at/after the destination's, so the executor delivers it
+   * one frame late. A sibling of the sketch like layerTargets (never
+   * serialized into it), shipped to the UI for the route markers.
+   */
+  nlohmann::json routeStatus = nlohmann::json::object();
 };
 
 namespace build_detail {
@@ -337,6 +355,19 @@ struct Builder {
   /** ownerId → {instanceKey, field}: where each layer's opacity landed. */
   nlohmann::json layerTargets = nlohmann::json::object();
 
+  // ── Composition I/O ──
+  /** Track ids whose `__in__` port has a legal route into it: their chain
+   *  starts from an input relay instead of the stack. */
+  std::set<std::string> inRouted;
+  /** Track/group id → its `__out__` key: the post-FX output, before blend and
+   *  opacity. Recorded for every owner that renders. */
+  std::map<std::string, std::string> outKeys;
+  /** The LAST non-mod stage pushed: what the executor's column cursor (the
+   *  next linear stage's `tex_in`) will hold. Equal to the accumulator in
+   *  every flow without I/O; a send-nowhere track makes them diverge. */
+  std::string cursor;
+  int relayN = 0;
+
   static bool isMod(const std::string& t) { return t.rfind("mod.", 0) == 0; }
 
   void push(const std::string& moduleType, const std::string& key, nlohmann::json state,
@@ -349,6 +380,65 @@ struct Builder {
     if (startSec) entry["startSec"] = *startSec;
     chain.push_back(std::move(entry));
     instances[key] = {{"module_type", moduleType}, {"state", std::move(state)}};
+    if (!isMod(moduleType)) cursor = key;
+  }
+
+  /** A RELAY stage re-emitting `srcKey`: composite.blend at opacity 1 is pure
+   *  B. It renders only with BOTH slots bound, so both carry the source. The
+   *  wires are written at once unless `deferWire` (an input relay, whose
+   *  source is only known once every track has composited). */
+  void pushRelay(const std::string& key, const std::string& srcKey) {
+    push("composite.blend", key, {{"mode", 0}, {"opacity", 1.0}});
+    if (srcKey.empty()) return;
+    for (const char* slot : {"0", "1"}) {
+      wires.push_back({{"id", "iow" + std::to_string(wid++)},
+                       {"src", {{"instanceKey", srcKey}, {"field", "tex_out"}}},
+                       {"dest", {{"instanceKey", key}, {"field", slot}}}});
+    }
+  }
+
+  /** Before a stage that reads the column cursor as "what's below": if a
+   *  send-nowhere track left the cursor on ITS output, re-emit `accKey` so the
+   *  stage processes the stack, not the hidden track. A no-op in every flow
+   *  without I/O (the cursor already is the accumulator). */
+  void ensureCursor(const std::string& accKey) {
+    if (accKey.empty() || cursor == accKey) return;
+    pushRelay("io_resync_" + std::to_string(relayN++), accKey);
+  }
+
+  /** The owner's INPUT relay, when its `__in__` has a route: pushed at the
+   *  head of its chain (its wires are emitted with the routes, at the end).
+   *  Empty when the input isn't routed. */
+  std::string inRelay(const TrackM* owner) {
+    if (!owner || !inRouted.count(owner->id)) return std::string();
+    const std::string key = trackInstanceKey(owner->id, "in");
+    pushRelay(key, std::string());
+    return key;
+  }
+
+  /** Composite a finished layer image [firstKey..lastKey] over `acc` — the
+   *  source-clip rule: the top layer becomes the accumulator (its opacity on
+   *  the reserved `__opacity__`), any later one blends over it. */
+  std::optional<std::string> blendOver(std::optional<std::string> acc, const CompNode& node,
+                                       const std::string& firstKey, const std::string& lastKey,
+                                       const std::string& blendKey, std::string& layerKey,
+                                       std::string& layerField) {
+    if (!acc) {
+      if (node.opacity < 1) instances[firstKey]["state"]["__opacity__"] = node.opacity;
+      layerKey = firstKey;
+      layerField = "__opacity__";
+      return lastKey;
+    }
+    push(kBlend, blendKey, {{"mode", node.blendMode}, {"opacity", node.opacity}});
+    wires.push_back({{"id", "w" + std::to_string(wid++)},
+                     {"src", {{"instanceKey", *acc}, {"field", "tex_out"}}},
+                     {"dest", {{"instanceKey", blendKey}, {"field", "0"}}}});
+    wires.push_back({{"id", "w" + std::to_string(wid++)},
+                     {"src", {{"instanceKey", lastKey}, {"field", "tex_out"}}},
+                     {"dest", {{"instanceKey", blendKey}, {"field", "1"}}}});
+    layerKey = blendKey;
+    layerField = "opacity";
+    return blendKey;
   }
 
   /** { ...defaultStateFor(type), ...(device.state ?? {}) } */
@@ -367,9 +457,14 @@ struct Builder {
       if (cat.has(d.moduleType)) tcat.push_back(&d);
     }
     std::string last = std::move(startKey);
+    bool ensured = false;
     for (const DeviceM* d : tcat) {
       if (cat.isGenerator(d->moduleType)) continue;  // tfx = role 'effect' only
       const std::string key = trackInstanceKey(track->id, d->id);
+      if (!ensured && !isMod(d->moduleType)) {
+        ensureCursor(last);  // the bus processes `startKey`, whatever came last
+        ensured = true;
+      }
       push(d->moduleType, key, defaultsPlus(*d));
       if (!isMod(d->moduleType)) last = key;
     }
@@ -484,6 +579,10 @@ struct Builder {
 
     if (gen || catDevs.empty()) {
       // ── SOURCE clip: render standalone, then composite OVER the accumulator ──
+      // A routed input heads the chain (a generator that reads tex_in draws
+      // over it); otherwise the generator sees what's below, as always.
+      const std::string relay = inRelay(node.track);
+      if (relay.empty() && acc) ensureCursor(*acc);
       std::string firstKey;
       std::string lastKey;
       if (gen) {
@@ -569,7 +668,10 @@ struct Builder {
 
       if (!lastKey.empty()) {
         lastKey = pushTrackFx(node.track, lastKey);  // track FX bus over the clip output
-        if (!acc) {
+        if (node.track) outKeys[node.track->id] = lastKey;
+        if (node.outputNone) {
+          // SEND NOWHERE: rendered (its ports read `lastKey`), never composited.
+        } else if (!acc) {
           // First (top) layer becomes the accumulator; sub-1 opacity fades via the
           // reserved wet/dry key.
           if (node.opacity < 1) instances[firstKey]["state"]["__opacity__"] = node.opacity;
@@ -591,12 +693,34 @@ struct Builder {
           acc = b;
         }
       }
+    } else if (const std::string relay = inRelay(node.track); !relay.empty()) {
+      // ── EFFECT-only clip with a ROUTED INPUT: it processes the route, not
+      // the stack — so it is a source layer, composited over `acc` like one.
+      std::string firstKey;
+      std::string lastKey = relay;
+      for (const DeviceM* d : fx) {
+        const std::string key = clipInstanceKey(clip.id, d->id);
+        push(d->moduleType, key, defaultsPlus(*d), startSec);
+        if (!isMod(d->moduleType)) {
+          if (firstKey.empty()) firstKey = key;
+          lastKey = key;
+        }
+      }
+      if (firstKey.empty()) firstKey = relay;
+      lastKey = pushTrackFx(node.track, lastKey);
+      if (node.track) outKeys[node.track->id] = lastKey;
+      if (!node.outputNone) {
+        acc = blendOver(acc, node, firstKey, lastKey, clipInstanceKey(clip.id, "blend"),
+                        layerKey, layerField);
+      }
     } else {
       // ── EFFECT-only clip: process the accumulator inline (adjustment layer) ──
+      if (acc) ensureCursor(*acc);
+      const std::optional<std::string> below = acc;
       bool appliedOpacity = false;
       for (const DeviceM* d : fx) {
         nlohmann::json state = defaultsPlus(*d);
-        if (!isMod(d->moduleType) && !appliedOpacity) {
+        if (!isMod(d->moduleType) && !appliedOpacity && !node.outputNone) {
           if (node.opacity < 1) state["__opacity__"] = node.opacity;
           layerKey = clipInstanceKey(clip.id, d->id);
           layerField = "__opacity__";
@@ -606,6 +730,9 @@ struct Builder {
         if (!isMod(d->moduleType)) acc = clipInstanceKey(clip.id, d->id);
       }
       if (acc) acc = pushTrackFx(node.track, *acc);  // track FX bus over the adjustment
+      if (node.track && acc) outKeys[node.track->id] = *acc;
+      // SEND NOWHERE: it processed a COPY of the stack; the stack is untouched.
+      if (node.outputNone) acc = below;
     }
 
     if (node.track && !layerKey.empty()) {
@@ -759,6 +886,13 @@ struct Builder {
       collectOwnerReads(node.track, std::string(), std::string());
       return acc;  // nothing rendered → leave the accumulator alone
     }
+    if (node.track) outKeys[node.track->id] = *inner;
+    if (node.outputNone) {
+      // SEND NOWHERE: the interior + own chain rendered over a COPY of the
+      // stack (the `underlying` seed); the accumulator is untouched.
+      foldClipModulation(clip, catDevs, node.track, std::string(), std::string());
+      return acc;
+    }
 
     // 4. Blend up. PARITY with compositeGroup: an `underlying` seed at full
     //    opacity already CONTAINS the below content, so it just replaces the
@@ -817,7 +951,9 @@ struct Builder {
     for (const auto& d : track->sketch.devices) {
       if (cat.has(d.moduleType)) catDevs.push_back(&d);
     }
-    if (catDevs.empty()) return acc;  // nothing the engine can run → no layer
+    // Nothing the engine can run and no routed input → no layer. (A track
+    // whose ONLY content is its routed input is a layer: it shows the route.)
+    if (catDevs.empty() && !inRouted.count(track->id)) return acc;
     const DeviceM* gen = nullptr;
     for (const DeviceM* d : catDevs) {
       if (cat.isGenerator(d->moduleType)) { gen = d; break; }
@@ -825,47 +961,42 @@ struct Builder {
 
     std::string layerKey;
     std::string layerField;
-    if (gen) {
-      std::vector<const DeviceM*> segment{gen};
+    const std::string relay = inRelay(track);
+    if (gen || !relay.empty()) {
+      // SOURCE layer: the generator anchors it — or, with a routed input and no
+      // generator, the input relay does (the sketch processes the route).
+      if (relay.empty() && acc) ensureCursor(*acc);
+      std::vector<const DeviceM*> segment;
+      if (gen) segment.push_back(gen);
       for (const DeviceM* d : catDevs) {
         if (d != gen) segment.push_back(d);
       }
-      std::string firstKey;
-      std::string lastKey;
+      std::string firstKey = gen ? std::string() : relay;
+      std::string lastKey = gen ? std::string() : relay;
       for (const DeviceM* d : segment) {
         const std::string key = trackInstanceKey(track->id, d->id);
         push(d->moduleType, key, defaultsPlus(*d));
         if (!isMod(d->moduleType)) {
-          if (firstKey.empty()) firstKey = key;
+          if (firstKey.empty() || firstKey == relay) firstKey = key;
           lastKey = key;
         }
       }
       if (!lastKey.empty()) {
-        if (!acc) {
-          if (node.opacity < 1) instances[firstKey]["state"]["__opacity__"] = node.opacity;
-          layerKey = firstKey;
-          layerField = "__opacity__";
-          acc = lastKey;
-        } else {
-          const std::string b = trackInstanceKey(track->id, "blend");
-          push(kBlend, b, {{"mode", node.blendMode}, {"opacity", node.opacity}});
-          wires.push_back({{"id", "w" + std::to_string(wid++)},
-                           {"src", {{"instanceKey", *acc}, {"field", "tex_out"}}},
-                           {"dest", {{"instanceKey", b}, {"field", "0"}}}});
-          wires.push_back({{"id", "w" + std::to_string(wid++)},
-                           {"src", {{"instanceKey", lastKey}, {"field", "tex_out"}}},
-                           {"dest", {{"instanceKey", b}, {"field", "1"}}}});
-          layerKey = b;
-          layerField = "opacity";
-          acc = b;
+        outKeys[track->id] = lastKey;
+        if (!node.outputNone) {
+          acc = blendOver(acc, node, firstKey, lastKey, trackInstanceKey(track->id, "blend"),
+                          layerKey, layerField);
         }
       }
     } else {
+      // ADJUSTMENT layer over the stack.
+      if (acc) ensureCursor(*acc);
+      const std::optional<std::string> below = acc;
       bool appliedOpacity = false;
       for (const DeviceM* d : catDevs) {
         nlohmann::json state = defaultsPlus(*d);
         const std::string key = trackInstanceKey(track->id, d->id);
-        if (!isMod(d->moduleType) && !appliedOpacity) {
+        if (!isMod(d->moduleType) && !appliedOpacity && !node.outputNone) {
           if (node.opacity < 1) state["__opacity__"] = node.opacity;
           layerKey = key;
           layerField = "__opacity__";
@@ -874,6 +1005,8 @@ struct Builder {
         push(d->moduleType, key, std::move(state));
         if (!isMod(d->moduleType)) acc = key;
       }
+      if (acc) outKeys[track->id] = *acc;
+      if (node.outputNone) acc = below;
     }
 
     // The sketch's own wires (both ends pushed; `__layer__` wires go through
@@ -905,7 +1038,13 @@ struct Builder {
     const std::string& mode = node.input.mode;
 
     std::optional<std::string> sub;
-    if (mode == "underlying") {
+    // A ROUTED input replaces the group's base: its children draw over the
+    // route instead of the stack below / a fresh backdrop.
+    const std::string relay = inRelay(node.group);
+    const bool passThrough = relay.empty() && mode == "underlying";
+    if (!relay.empty()) {
+      sub = relay;
+    } else if (mode == "underlying") {
       sub = acc;  // pass-through: seed with everything composited BELOW the group
     } else if (mode == "transparent") {
       sub = std::nullopt;  // fresh transparent base
@@ -922,6 +1061,12 @@ struct Builder {
     std::optional<std::string> inner = compositeNodes(node.children, sub);
     if (inner) inner = pushTrackFx(node.group, *inner);
     if (!inner) return acc;  // children produced nothing → leave the parent as-is
+    outKeys[node.group->id] = *inner;
+    if (node.outputNone) {
+      // SEND NOWHERE: rendered for its ports; the parent keeps `acc`.
+      collectOwnerReads(node.group, std::string(), std::string());
+      return acc;
+    }
 
     // `underlying` at full opacity already CONTAINS the below content — it just
     // replaces the accumulator. Otherwise composite the group OVER the parent.
@@ -929,7 +1074,7 @@ struct Builder {
     // target even while the static value would elide it).
     const bool needBlend =
         acc.has_value() &&
-        (node.layerOpacityModulated || !(mode == "underlying" && node.opacity >= 1));
+        (node.layerOpacityModulated || !(passThrough && node.opacity >= 1));
     if (!needBlend) {
       // No blend, no opacity application — a group over nothing has no layer
       // opacity even statically; group FX-bus rail reads still resolve.
@@ -1001,6 +1146,164 @@ inline bool anyClipless(const std::vector<CompNode>& ns) {
   return false;
 }
 
+/** A track's port: does it exist, and which way does it face? The main ports
+ *  are implicit; named ones come from Track.ports. */
+struct PortInfo {
+  bool exists = false;
+  bool isOut = false;
+};
+
+inline PortInfo portInfo(const CompositionM& comp, const std::string& trackId,
+                         const std::string& portId) {
+  for (const auto& t : comp.tracks) {
+    if (t.id != trackId) continue;
+    if (portId == kPortIn) return {true, false};
+    if (portId == kPortOut) return {true, true};
+    for (const auto& p : t.ports) {
+      if (p.id == portId) return {true, p.isOut};
+    }
+    return {};
+  }
+  return {};
+}
+
+/**
+ * Is this route one of the three legal shapes? (Ports are hubs.)
+ *   feed    — a field inside T → a NAMED out port of T;
+ *   send    — an out port → an input field anywhere, or an in port;
+ *   receive — an in port of T → an input field inside T.
+ * `__in__` is never a source; `__out__` is never a destination.
+ */
+inline bool routeIsLegal(const CompositionM& comp, const RouteM& r) {
+  const RouteEndM& s = r.src;
+  const RouteEndM& d = r.dest;
+  if (!s.isPort && !d.isPort) return false;  // field → field: not through a hub
+  if (!s.isPort) {
+    // feed
+    if (d.portId == kPortOut || d.portId == kPortIn) return false;
+    const PortInfo dp = portInfo(comp, d.trackId, d.portId);
+    return dp.exists && dp.isOut && s.trackId == d.trackId && !s.deviceId.empty();
+  }
+  const PortInfo sp = portInfo(comp, s.trackId, s.portId);
+  if (!sp.exists || s.portId == kPortIn) return false;
+  if (!d.isPort) {
+    if (d.deviceId.empty() || d.field.empty()) return false;
+    // send (from an out port) or receive (an in port into its own track)
+    return sp.isOut || s.trackId == d.trackId;
+  }
+  // port → port: an out port into an in port of another track
+  if (d.portId == kPortOut) return false;
+  const PortInfo dp = portInfo(comp, d.trackId, d.portId);
+  return sp.isOut && dp.exists && !dp.isOut && s.trackId != d.trackId;
+}
+
+/** Owner key of a field end: its clip's device, or the track's own. */
+inline std::string fieldEndKey(const RouteEndM& e) {
+  return e.clipId.empty() ? trackInstanceKey(e.trackId, e.deviceId)
+                          : clipInstanceKey(e.clipId, e.deviceId);
+}
+
+/**
+ * Resolve every legal route against the finished build: port sources, the
+ * wires that carry them, and their status. Emitted AFTER the whole tree so a
+ * source can live anywhere in the chain — one below its reader is same-frame,
+ * one above is the executor's delayed (1-frame) back edge, which it detects
+ * from chain position on its own.
+ */
+inline void emitRoutes(Builder& b, const CompositionM& comp, nlohmann::json& status) {
+  std::vector<const RouteM*> legal;
+  for (const auto& r : comp.routes) {
+    if (routeIsLegal(comp, r)) legal.push_back(&r);
+  }
+  std::map<std::string, size_t> chainIdx;
+  for (size_t i = 0; i < b.chain.size(); i++) {
+    chainIdx[b.chain[i].value("instance_key", std::string())] = i;
+  }
+  auto pushed = [&](const std::string& key) { return b.instances.contains(key); };
+
+  struct Src {
+    std::string key;
+    std::string field;
+  };
+  // A port's source texture in THIS build (depth-bounded: port chains are
+  // at most out → in → field, so 4 hops only guards a malformed cycle).
+  std::function<std::optional<Src>(const std::string&, const std::string&, int)> portSource =
+      [&](const std::string& trackId, const std::string& portId, int depth) -> std::optional<Src> {
+    if (depth > 4) return std::nullopt;
+    if (portId == kPortOut) {
+      auto it = b.outKeys.find(trackId);
+      if (it == b.outKeys.end()) return std::nullopt;
+      return Src{it->second, "tex_out"};
+    }
+    const PortInfo pi = portInfo(comp, trackId, portId);
+    if (!pi.exists) return std::nullopt;
+    if (pi.isOut) {
+      // A named out port: its FEED. A field in the playing clip wins over one
+      // in the track sketch; the first pushed feed of each class is taken.
+      std::optional<Src> trackFeed;
+      for (const RouteM* r : legal) {
+        if (!r->dest.isPort || r->dest.trackId != trackId || r->dest.portId != portId) continue;
+        if (r->src.isPort) continue;
+        const std::string key = fieldEndKey(r->src);
+        if (!pushed(key)) continue;
+        if (!r->src.clipId.empty()) return Src{key, r->src.field};
+        if (!trackFeed) trackFeed = Src{key, r->src.field};
+      }
+      return trackFeed;
+    }
+    // An in port: whatever out port is routed into it.
+    for (const RouteM* r : legal) {
+      if (!r->dest.isPort || r->dest.trackId != trackId || r->dest.portId != portId) continue;
+      if (r->src.isPort) return portSource(r->src.trackId, r->src.portId, depth + 1);
+    }
+    return std::nullopt;
+  };
+
+  auto delayedBetween = [&](const std::string& srcKey, const std::string& destKey) {
+    const auto si = chainIdx.find(srcKey);
+    const auto di = chainIdx.find(destKey);
+    return si != chainIdx.end() && di != chainIdx.end() && si->second >= di->second;
+  };
+
+  for (const RouteM* r : legal) {
+    bool live = false;
+    bool delayed = false;
+    if (!r->src.isPort) {
+      // feed: live when its field's device is actually rendering.
+      live = pushed(fieldEndKey(r->src));
+    } else if (!r->dest.isPort) {
+      // send / receive → a texture field
+      const auto src = portSource(r->src.trackId, r->src.portId, 0);
+      const std::string destKey = fieldEndKey(r->dest);
+      if (src && pushed(destKey)) {
+        nlohmann::json w = {{"id", "io" + std::to_string(b.wid++)},
+                            {"src", {{"instanceKey", src->key}, {"field", src->field}}},
+                            {"dest", {{"instanceKey", destKey}, {"field", r->dest.field}}}};
+        b.wires.push_back(std::move(w));
+        live = true;
+        delayed = delayedBetween(src->key, destKey);
+      }
+    } else if (r->dest.portId == kPortIn) {
+      // → a track's main input: its relay (pushed at the head of its chain)
+      const auto src = portSource(r->src.trackId, r->src.portId, 0);
+      const std::string relay = trackInstanceKey(r->dest.trackId, "in");
+      if (src && pushed(relay)) {
+        for (const char* slot : {"0", "1"}) {
+          b.wires.push_back({{"id", "io" + std::to_string(b.wid++)},
+                             {"src", {{"instanceKey", src->key}, {"field", src->field}}},
+                             {"dest", {{"instanceKey", relay}, {"field", slot}}}});
+        }
+        live = true;
+        delayed = delayedBetween(src->key, relay);
+      }
+    } else {
+      // → a named in port: resolved through when its receive routes emit.
+      live = portSource(r->src.trackId, r->src.portId, 0).has_value();
+    }
+    if (!r->id.empty()) status[r->id] = {{"live", live}, {"delayed", delayed}};
+  }
+}
+
 }  // namespace build_detail
 
 /**
@@ -1021,9 +1324,18 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
                                         // value can flip the track back in (the comp
                                         // readback loop). Writers live on other tracks
                                         // by construction.
-                                        const std::set<std::string>* keepAliveRails = nullptr) {
+                                        const std::set<std::string>* keepAliveRails = nullptr,
+                                        // The document, for Composition I/O
+                                        // (ports + routes). Null ⇒ no routes.
+                                        const CompositionM* comp = nullptr) {
   using namespace build_detail;
   Builder b{cat, railBases, railSigned};
+  if (comp) {
+    for (const auto& r : comp->routes) {
+      if (r.dest.isPort && r.dest.portId == kPortIn && routeIsLegal(*comp, r))
+        b.inRouted.insert(r.dest.trackId);
+    }
+  }
   std::optional<std::string> accKey;
 
   // Flatten to clip leaves for the rail pre-pass + background gate.
@@ -1097,6 +1409,10 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
 
   // MASTER FX BUS over the finished composite (only when there IS a composite).
   if (mainBus && accKey) accKey = b.pushTrackFx(mainBus, *accKey);
+  // The sketch's image is its LAST linear stage. A send-nowhere track rendered
+  // after the final composite would otherwise BE the output — re-emit it.
+  // (No-op without I/O: the cursor is the accumulator.)
+  if (accKey) b.ensureCursor(*accKey);
 
   auto isRailSigned = [&](const std::string& railId) {
     const auto it = railSigned.find(railId);
@@ -1135,6 +1451,9 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
     b.wires.push_back(std::move(wire));
   }
 
+  nlohmann::json routeStatus = nlohmann::json::object();
+  if (comp && !comp->routes.empty()) emitRoutes(b, *comp, routeStatus);
+
   if (b.chain.empty()) return {};
   SketchBuild out;
   out.hasContent = true;
@@ -1143,6 +1462,7 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
                 {"wires", std::move(b.wires)},
                 {"instances", std::move(b.instances)}};
   out.layerTargets = std::move(b.layerTargets);
+  out.routeStatus = std::move(routeStatus);
   return out;
 }
 

@@ -2302,6 +2302,7 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       if (structure) {
         rep["chainKeys"] = nlohmann::json::parse(host.chainKeysJson(), nullptr, false);
         rep["layerTargets"] = cx.layerTargetsJson();
+        rep["routeStatus"] = cx.routeStatusJson();
       }
       if ((flags & comp::kCompVideoSetChanged) || pe.compResync) rep["videoDescs"] = cx.videoDescsJson();
       if ((flags & comp::kCompScenesChanged) || pe.compResync) {

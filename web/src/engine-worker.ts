@@ -1153,6 +1153,7 @@ async function simulateTick(dt: number, execDt: number = dt) {
         ...(r.chainKeys ? { chainKeys: r.chainKeys } : {}),
         ...(r.videoDescs !== undefined ? { videoDescs: r.videoDescs } : {}),
         ...(r.layerTargets !== undefined ? { layerTargets: r.layerTargets } : {}),
+        ...(r.routeStatus !== undefined ? { routeStatus: r.routeStatus } : {}),
         ...(r.scenes !== undefined ? { scenes: r.scenes } : {}),
         ...(r.scenesPending !== undefined ? { scenesPending: r.scenesPending } : {}),
         ...(r.transportOrder ? { transportOrder: r.transportOrder } : {}),

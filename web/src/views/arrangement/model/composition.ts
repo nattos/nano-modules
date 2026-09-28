@@ -753,6 +753,49 @@ export interface Track {
    *  crossfade). Devices key as track_<trackId>_transport_<devId> and execute
    *  whenever the track exists. Lock-step: comp_model.h TrackM.transport. */
   transport?: ClipSketch;
+  /** Composition I/O: NAMED ports (the main `__in__` / `__out__` are implicit
+   *  and never listed). An out port is fed from a field inside this track; an
+   *  in port feeds fields inside it. Lock-step: comp_model.h TrackM.ports. */
+  ports?: TrackPort[];
+  /** Composition I/O: where this track's output goes. 'none' = SEND NOWHERE —
+   *  the track still renders (its ports and side effects stay live) but never
+   *  composites into its parent. Omitted ⇒ normal. */
+  output?: { mode: 'normal' | 'none' };
+}
+
+// ── Composition I/O ─────────────────────────────────────────────────────────
+
+/** A track's main input port id (implicit): heads the track's chain. Only
+ *  ever a route DESTINATION. Lock-step: comp_model.h kPortIn. */
+export const PORT_IN = '__in__';
+/** A track's main output port id (implicit): its post-FX output, before blend
+ *  and opacity. Only ever a route SOURCE. Lock-step: comp_model.h kPortOut. */
+export const PORT_OUT = '__out__';
+
+/** A named track port. */
+export interface TrackPort {
+  id: string;
+  name: string;
+  dir: 'in' | 'out';
+}
+
+/** One end of a route: a track port, or a texture field of a device in a
+ *  track's own sketch (`clipId` omitted) or one of its clips. */
+export type RouteEnd =
+  | { kind: 'port'; trackId: string; portId: string }
+  | { kind: 'field'; trackId: string; clipId?: string; deviceId: string; field: string };
+
+/**
+ * A Composition I/O route — PORTS ARE HUBS: every legal route has a port end.
+ *   feed    — a field inside track T → a named OUT port of T;
+ *   send    — an out port (named or `__out__`) → an input field anywhere, or an in port;
+ *   receive — a named IN port of T → an input field inside T.
+ * Lock-step: comp_model.h RouteM + sketch_build.h routeIsLegal.
+ */
+export interface Route {
+  id: string;
+  src: RouteEnd;
+  dest: RouteEnd;
 }
 
 export interface PlayModeConfig {
@@ -780,6 +823,8 @@ export interface Composition {
    * files saved before migrations existed ⇒ all of them run.
    */
   migrations?: string[];
+  /** Composition I/O routes (see {@link Route}). Omitted ⇒ none. */
+  routes?: Route[];
 }
 
 /** Stable id of the master/main-bus group. Identity is by THIS id (not just
@@ -1082,4 +1127,76 @@ export function sceneChannelAssignments(track: Track): number[] {
     out[i] = next;
   }
   return out;
+}
+
+// ── Composition I/O helpers (lock-step: sketch_build.h routeIsLegal) ─────────
+
+/** Does `trackId` have port `portId`, and which way does it face? The main
+ *  ports are implicit; named ones come from `Track.ports`. */
+export function portInfo(
+  comp: Composition, trackId: string, portId: string,
+): { exists: boolean; isOut: boolean } {
+  const t = comp.tracks.find((x) => x.id === trackId);
+  if (!t) return { exists: false, isOut: false };
+  if (portId === PORT_IN) return { exists: true, isOut: false };
+  if (portId === PORT_OUT) return { exists: true, isOut: true };
+  const p = t.ports?.find((x) => x.id === portId);
+  return p ? { exists: true, isOut: p.dir === 'out' } : { exists: false, isOut: false };
+}
+
+/**
+ * Is `r` one of the three legal shapes (see {@link Route})? The engine ignores
+ * anything else; the store refuses to create it.
+ */
+export function routeIsLegal(comp: Composition, r: Pick<Route, 'src' | 'dest'>): boolean {
+  const s = r.src;
+  const d = r.dest;
+  if (s.kind !== 'port' && d.kind !== 'port') return false; // field → field: not via a hub
+  if (s.kind === 'field') {
+    // feed: a field inside T → a NAMED out port of T
+    if (d.kind !== 'port' || d.portId === PORT_OUT || d.portId === PORT_IN) return false;
+    const dp = portInfo(comp, d.trackId, d.portId);
+    return dp.exists && dp.isOut && s.trackId === d.trackId && !!s.deviceId;
+  }
+  const sp = portInfo(comp, s.trackId, s.portId);
+  if (!sp.exists || s.portId === PORT_IN) return false;
+  if (d.kind === 'field') {
+    if (!d.deviceId || !d.field) return false;
+    return sp.isOut || s.trackId === d.trackId; // send, or receive into its own track
+  }
+  if (d.portId === PORT_OUT) return false;
+  const dp = portInfo(comp, d.trackId, d.portId);
+  return sp.isOut && dp.exists && !dp.isOut && s.trackId !== d.trackId;
+}
+
+/** Does this route end still point at something that exists? */
+export function routeEndExists(comp: Composition, e: RouteEnd): boolean {
+  const t = comp.tracks.find((x) => x.id === e.trackId);
+  if (!t) return false;
+  if (e.kind === 'port') return portInfo(comp, e.trackId, e.portId).exists;
+  const sketch = e.clipId ? t.clips.find((c) => c.id === e.clipId)?.sketch : t.sketch;
+  return !!sketch?.devices.some((dv) => dv.id === e.deviceId);
+}
+
+/** Two route ends address the same thing. */
+export function sameRouteEnd(a: RouteEnd, b: RouteEnd): boolean {
+  if (a.kind !== b.kind || a.trackId !== b.trackId) return false;
+  if (a.kind === 'port' && b.kind === 'port') return a.portId === b.portId;
+  if (a.kind === 'field' && b.kind === 'field') {
+    return (a.clipId ?? '') === (b.clipId ?? '') && a.deviceId === b.deviceId && a.field === b.field;
+  }
+  return false;
+}
+
+/**
+ * Drop every route whose end no longer exists (a deleted track, clip, device
+ * or port). Runs after each document mutation, inside it, so a delete and its
+ * route cleanup are one undo step. Returns whether anything was dropped.
+ */
+export function pruneDanglingRoutes(comp: Composition): boolean {
+  if (!comp.routes?.length) return false;
+  const kept = comp.routes.filter((r) => routeEndExists(comp, r.src) && routeEndExists(comp, r.dest));
+  if (kept.length === comp.routes.length) return false;
+  comp.routes = kept;
+  return true;
 }

@@ -259,6 +259,9 @@ class CompExecutor {
    *  each layer's opacity lives (SketchBuild.layerTargets). Refreshed per eval;
    *  the UI resolves modulation bands through it across per-clip key churn. */
   const std::string& layerTargetsJson();
+  /** Composition I/O route status (SketchBuild.routeStatus): routeId →
+   *  {live, delayed}. Refreshed per eval, shipped with layerTargets. */
+  const std::string& routeStatusJson();
   /** Launched scenes: {trackId: {sceneId, launchBeat}} (UI playing highlight). */
   const std::string& sceneStatesJson();
   /** Deferred handovers (trackId → incoming {sceneId, launchBeat, launchSec}). */
@@ -371,6 +374,7 @@ class CompExecutor {
 
   nlohmann::json cleanSketch_;  // structural basis (mirror-built, no live outputs)
   nlohmann::json layerTargets_ = nlohmann::json::object();  // ownerId → {instanceKey, field}
+  nlohmann::json routeStatus_ = nlohmann::json::object();   // routeId → {live, delayed}
   /** A FLAT clock at the document tempo — a sequence clip's interior is
    *  unwarped by construction (warp segments are arrangement-beat spans, so
    *  they don't reach inside). Rebuilt with clock_. */
@@ -578,6 +582,7 @@ class CompExecutor {
   std::string chainKeysScratch_;
   std::string videoDescsScratch_;
   std::string layerTargetsScratch_;
+  std::string routeStatusScratch_;
   std::string sceneStatesScratch_;
   std::string pendingScenesScratch_;
   std::string streamsScratch_;
