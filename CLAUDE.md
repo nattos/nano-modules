@@ -138,6 +138,8 @@ NanoBarrel: `comp_*` actions in, NBCJ `comp_report`s + NBPS/NBPV previews out
 Arrangement UI suites run on both through `test/comp-backend.ts` (`forEachCompBackend`; build
 `nano_compositor` first); tests read the monitor through `engineBridge.sampleComposite`
 (`test/arr-test-helpers.ts`), never the canvas.
+`COMPOSITOR.md` maps what is built (decode pump, namespacing, native export) and holds the
+roadmap: M3 outputs, M4 Windows, M5 remote, MIDI/Art-Net into the comp.
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 

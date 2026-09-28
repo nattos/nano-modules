@@ -1,0 +1,358 @@
+# The native compositor: where it stands, and the road from here
+
+The arrangement app's composition engine (`comp::CompExecutor`) runs in one of two places:
+- in a browser worker (`ArrEngine`), or
+- in a native **`nano_compositor`** process, reached over the bridge WebSocket.
+
+Both sit behind one seam, `web/src/views/arrangement/engine/comp-engine.ts`. The browser engine
+stays first-class. It is the second leg of every arrangement test, and it is the engine wherever the
+native one doesn't build yet.
+
+This file has two parts:
+1. a map of what is built (M0–M2);
+2. the thinking behind the next stages (M3 outputs, M4 Windows, M5 remote, Linux/Pi, MIDI/Art-Net
+   into the comp).
+
+Everything in the second part is **proposal, not decision**. The open questions for the user are
+collected at the end.
+
+**Long-term goals:**
+- fullscreen outputs;
+- no GC between the compositor and its outputs;
+- free-running native frame pacing;
+- low-jitter Art-Net/DMX;
+- Syphon, Spout and NDI;
+- remote "media server" deployments: the same binary, on another machine.
+
+---
+
+## Part 1 — what exists (M0–M2, macOS, 2026-09-28)
+
+### Map
+
+| Piece | Where |
+|---|---|
+| Engine seam (`ownsVideoPump`, `on*` callbacks, `readbackTrace`) | `web/src/views/arrangement/engine/comp-engine.ts` |
+| Remote engine (actions in, NBCJ `comp_report` + NBPS/NBPV previews out, `exportFile`) | `engine/remote-comp-engine.ts` |
+| Engine choice: URL, then env, then `arrangement.json` `engine`, then native on darwin | `engine/engine-select(-boot).ts`, `electron/main.cjs` `arrangementEngine()` |
+| Spawn/kill/restart the process; the dev tree prefers `native/build` | `electron/compositor.cjs` |
+| Settings → Engine segmented control | `surfaces/arr-inspector.ts` `renderEngineSetting()` |
+| The process: bridge init, runtime acquire, steady-clock render loop | `native/tools/nano_compositor.cpp` |
+| Comp instance in the shared runtime; `comp_*` actions; export job stepping | `native/src/bridge/barrel_runtime.cpp` (`createComp`, `renderComp`) |
+| Host around `CompExecutor`: seeding, streams table, pump, frame order | `native/src/bridge/comp_host.{h,cpp}` (also drives `comp_test_runner`) |
+| Offline MP4 export beside live playback | `native/src/bridge/comp_export.{h,cpp}` |
+| FrameSource seam: DXV, ImageIO still, AVFoundation | `native/src/media/frame_source.h`, `dxv_source`, `avf_source.mm` |
+| Decode pump: sync (runners, export) or async (a worker thread per clip) | `native/src/media/video_pump.{h,cpp}` |
+| H.264 encode (AVAssetWriter, BT.709-tagged) | `native/src/media/video_encoder.mm` |
+| Dev-server media download + cache | `native/src/media/media_fetch.mm` |
+| Dual-backend UI suites | `web/test/comp-backend.ts` (`forEachCompBackend`), `test/arr-test-helpers.ts` |
+| Protocol ctest | `native/tests/test_compositor_protocol.cpp` |
+
+### Measured
+
+- CPU in the desktop app: about 34% native against about 52% for the worker, with previews on the
+  IOSurface ring.
+- Decode per 1080p frame:
+  - DXV: about 0.6 ms;
+  - H.264: 1.3 ms sequential, about 24 ms per seek (hence the threaded pump).
+- Export: 120 frames of 1080p in 1.1 s.
+
+### Invariants any later stage must keep
+
+These were each learned by breaking them. The details are in memory
+(`project_arrangement_native_compositor`).
+
+- **Effects step by the TRANSPORT's motion, never the wall clock.** Paused means a static frame, and
+  a scrub means a seek. An output-driven clock (M3) must keep this.
+- **Namespaced instance keys.**
+  - The live comp's keys are `<key>/`. The export's are `<key>.export/`: a sibling, because a child
+    would be pruned.
+  - Every published-output read goes through `CompExecutor::instanceHandle`, because
+    `effrt_instance_for` mints a stray instance on a miss.
+  - Keys crossing into streams are stripped with `comp::bareInstanceKey`.
+- **Two CompHosts in one process share global state:** the bundles' streams table and the backend
+  surface. `publishClock` rebinds both every frame. A third host (a second output resolution,
+  say) inherits this rule.
+- **The GPU backend is single-threaded.**
+  - Decode threads only `prepare()` on the CPU; `upload()` happens on the render thread.
+  - The export is stepped in slices on the render thread, not run on its own thread.
+  - Anything new that touches the GPU (present, Syphon publish, pixel-map readback) goes on the
+    render thread too.
+- **Uploads batched before one submit each need a fresh staging texture.** A shared one is
+  last-write-wins.
+- **A clip the pump can't open reports READY** (transparent). Otherwise Precise mode stalls.
+
+---
+
+## Part 2 — the road ahead
+
+### M3 — outputs (macOS first)
+
+The M3 question is how composed frames leave the process **without passing through Electron**.
+Today the only consumer is the editor's monitor, on the preview ring.
+
+#### Where output config lives
+
+Outputs are **per machine**: which display is the projector, which Syphon names a venue expects, the
+DMX node's IP. They are not per show. The proposal:
+- a settings file, `Settings/outputs.json`, following the settings-files conventions (agent-editable,
+  watched, echo-safe; see `DESKTOP.md` § Settings files);
+- the document keeps only what is artistic, for example a named output region if we ever do
+  multi-surface mapping.
+
+One entry per output:
+
+```jsonc
+{ "id": "proj-left", "kind": "window" | "syphon" | "artnet" | "ndi",
+  "enabled": true,
+  "source": "composition",            // later: a group track's bus, or a rail
+  "crop": [x, y, w, h],               // normalized, of the composition
+  "window": { "display": "<CGDisplay UUID>", "fullscreen": true },
+  "syphon": { "name": "Nano — Main" },
+  "artnet": { "map": "<pixel-map id>", "target": "10.0.0.50", "universeBase": 0 } }
+```
+
+**Identify displays by CGDisplay UUID** (`CGDisplayCreateUUIDFromDisplayID`), never by index.
+Indices reshuffle on hotplug and across reboots. That class of bug already bit us (see the memory
+note on DisplayLink breaking Resolume's display output).
+
+The editor gets an **Outputs** section in the arrangement inspector. The compositor answers a
+`comp_displays` action (name, UUID, bounds, refresh rate) and supports an "identify" overlay that
+paints each display's name for a few seconds.
+
+#### The present API (`GPUBackend`)
+
+Add a small, optional surface, next to `createSharedSurface` / `blitScaledToSurfaceAsync`:
+
+```cpp
+virtual int32_t createPresentTarget(void* nativeLayer, uint32_t w, uint32_t h);  // CAMetalLayer* / HWND
+virtual void    resizePresentTarget(int32_t target, uint32_t w, uint32_t h);
+virtual bool    present(int32_t target, int32_t srcTexture, const float crop[4]);  // scale+crop blit, then present
+```
+
+- **Metal:** `nextDrawable` → one render pass with the existing scaled-blit shader (HLSL-authored,
+  per the executor-shaders rule) → `presentDrawable` → commit.
+  - Set `CAMetalLayer.maximumDrawableCount = 2` and `displaySyncEnabled = YES` for fullscreen.
+  - If no drawable is free, **skip the present, don't block**. The render loop mustn't stall on a
+    slow display.
+- **D3D11 (M4):** a flip-model swap chain with
+  `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`, and the same blit.
+- Colour: outputs are sRGB-encoded 8-bit, as previews are. Wide gamut and HDR are out of scope. If
+  they come, it's a per-output format.
+
+#### Threading and pacing: the loop must move
+
+`nano_compositor.cpp` runs its render loop **on the main thread** with `sleep_until`. AppKit windows
+need the main thread, so:
+- the main thread runs `NSApplication`, with activation policy **Accessory**: no Dock icon, no menu
+  bar. Its only jobs are window lifecycle, display hotplug
+  (`NSApplicationDidChangeScreenParametersNotification`) and cursor hiding;
+- the render loop moves to a dedicated thread, which becomes the only GPU thread. The invariant above
+  holds, because the main thread never touches the backend. It only hands the render thread a
+  `CAMetalLayer*`;
+- **headless stays possible.** Don't touch `NSApp` until the first window output is enabled, so tests
+  and remote deployments without displays behave exactly as today.
+
+**Pacing:**
+- With no display outputs, the steady clock stays as it is.
+- With display outputs, one of them is the **master**. Its display link wakes the render thread
+  (`CADisplayLink` from `NSScreen.displayLinkWithTarget:` on macOS 14+, otherwise `CVDisplayLink`).
+  The other outputs present the latest frame at their own rate.
+- dt comes from the link's timestamps (target presentation time deltas), not `now()`. The transport
+  still advances by `positionSec` deltas, so this only changes how smooth the clock is, not the
+  semantics.
+- **Precise vs Live:** Precise waits for decode, which on a projector means a missed vsync (a visible
+  hitch). Live keeps the last frame and never misses a present. Consider warning, or auto-switching to
+  Live, when any display output is enabled. A show should never run in Precise.
+
+#### Syphon
+
+- The Metal backend already renders into IOSurface-backed textures for the preview ring.
+  `SyphonMetalServer` (Syphon.framework, BSD) publishes a texture from our `MTLDevice`
+  (`nativeDevice()`).
+- Link the framework and stage it in the resource root's `bin/` with an rpath, the way the
+  compositor binary is staged.
+- One server per Syphon output, named from config.
+- Publish on the render thread right after the frame's submit.
+- Test: a ctest that runs a `SyphonMetalClient` in-process and reads a known colour.
+
+#### Art-Net / DMX output (pixel mapping)
+
+- **A separate transmitter.** `artnet/artnet_host.h` is a *receiver* with a hard rule: it never
+  transmits, because it co-binds Resolume's 6454. Output needs its own socket on an ephemeral port,
+  unicast to configured nodes, with ArtPoll discovery as an opt-in extra.
+- **The GPU half:** a compute pass samples the composition at the pixel map's points (LED positions,
+  normalized) into a small buffer, followed by an **async readback**. The existing
+  `readbackTextureScaledAsync` / preview-drain machinery is the model. This costs one frame of
+  latency, and the render thread never waits on it.
+- **The CPU half:** a transmitter thread sends the latest mapped buffer at a fixed rate (the spec
+  caps a universe at about 44 Hz), followed by an ArtSync. The DMX cadence then stays steady even
+  when the render thread hitches. That is the "low-jitter" goal.
+- Pixel maps (fixture layouts, RGB/RGBW order, universe split) are a real UI of their own; size it
+  separately. A first cut is a grid map: W×H pixels, serpentine or not, a start universe.
+- **Relationship to the lights bundle (extras):** it already lowers sketches to DMX on the web side
+  (`web/src/artnet/`). Before building a second pixel-map model, check whether that one can be the
+  source of truth.
+
+#### NDI
+
+The NDI SDK is proprietary, with redistribution terms. That is a licensing decision before it is an
+engineering one. Technically it's a CPU path (BGRA/UYVY frames into `NDIlib_send`) fed by the same
+async readback as Art-Net, at output resolution. It fits after Syphon and Art-Net.
+
+#### Testing M3
+
+- Present, Syphon and the transmitter are thin. What gets tested is the frame they're handed.
+- `present()`'s crop/scale blit is testable by presenting into an offscreen target and reading it
+  back.
+- Art-Net output: a ctest with a loopback UDP receiver that checks universe contents against a
+  known composition, plus a timing test (send cadence stays within ±2 ms while the render thread is
+  artificially stalled).
+- The dual-backend UI suites don't change. Outputs are native-only, like the video decode legs were.
+
+---
+
+### MIDI and Art-Net *into* the comp (the item deferred from M2)
+
+**Not parity work.** Neither engine does this today:
+- `CompExecutor` never forwards `setExternalScalars` (MIDI device wires, `midi:<uuid>` keys) or
+  `setInjectedScalars` (in-chain `control.artnet` cards) to its internal `SketchExecutor`s;
+- the arrangement has no UI for authoring a MIDI wire.
+
+**What it would take:**
+1. **Authoring.** Wires from MIDI device controls to clip/track params and rails. The Devices tab's
+   vocabulary (templates, aliases, `midi:` sources) exists for sketches. The arrangement needs a
+   place for it: a Devices section, and pips that accept a device control as a source. A
+   `control.artnet` card inside a clip's sketch needs no new authoring; it only needs the values
+   delivered.
+2. **The executor.** `CompExecutor` passes both tables through to its internal executors each
+   frame. Trap to check: injected-scalar keys are chain instance keys, and the comp's executors now
+   carry a namespace prefix. Decide whether the tables are keyed bare or prefixed, and pin it with a
+   test, or `control.artnet` in a clip goes silent the way follow actions did.
+3. **The hosts.**
+   - Native: feed from `MidiHost` / `ArtNetHost` with the same version gate the barrels use
+     (`lastMidiVersion` / `lastArtnetVersion` in `barrel_runtime.cpp`). It's cheap when static.
+   - Web: feed from the worker's existing Web MIDI / udp-bridge paths.
+
+   Both are lock-step through the shared executor, as the sketch editor already is.
+4. **Latency is the native engine's advantage here.** No postMessage hop, and the MIDI thread is in
+   the same process. Measure input→photon once present exists (M3). It is a selling point worth a
+   number.
+
+---
+
+### M4 — Windows
+
+The Windows environment is being set up now. `WINDOWS.md` and memory (`project_windows_d3d11_port`)
+record what already runs on D3D11:
+- the executor, comp render and FFGL plugin build;
+- the executor under WAMR, pixel-identical.
+
+The compositor itself doesn't build there yet, for one structural reason: **`nano_media` is
+Apple-only, and `comp_host` is gated on it** (`native/CMakeLists.txt`, the `if(TARGET nano_media)`
+around `comp_host`). Proposed order, each step shippable on its own:
+
+1. **Split `nano_media` into a portable core plus a platform layer.**
+   - Portable: `dxv_source`, `frame_blitter`, `frame_source` routing, `video_pump`, the DXV demux/LZ.
+   - Apple: `avf_source.mm`, `media_fetch.mm`, `video_encoder.mm`.
+   - Windows starts with **DXV and stills only**. `openFrameSource` already names each refusal, and a
+     refused clip reports ready and transparent, so H.264 clips simply don't show; nothing hangs.
+   - Stills via WIC (`IWICBitmapDecoder` → premultiplied → un-premultiply, matching
+     `openImageFrameSource`'s straight-alpha output).
+   - `media_fetch` via WinHTTP, or refuse URLs on Windows at first: it only matters for dev-server
+     test fixtures.
+   - This builds `comp_host` + `nano_compositor.exe`.
+2. **Run the native legs of the arrangement suites on Windows,** with previews on the **lanes**
+   (NBPC). The shared-surface path isn't there yet, and the web side already falls back.
+   - `compositor.cjs` already names `nano_compositor.exe`.
+   - `test/comp-backend.ts` must spawn the `.exe` from the Windows build dir.
+3. **Shared preview surfaces on D3D11.** This also lifts Remote Control off the lanes on Windows.
+   - `createSharedSurface`: a BGRA texture with `D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+     D3D11_RESOURCE_MISC_SHARED`, and `IDXGIResource1::CreateSharedHandle` with a **name**
+     (`Local\nano_surf_<pid>_<n>`). The token in the NBPS announce identifies the name.
+   - The addon's Windows half (`web/native/nano_shared_surface`) calls
+     `ID3D11Device1::OpenSharedResourceByName`, or opens it as an NT handle, and gives Electron
+     `handle: { ntHandle }`.
+   - **Completion:** macOS announces a slot only after the blit completes. On D3D11, issue a
+     `D3D11_QUERY_EVENT` after the blit and poll `GetData` before announcing. Never block the render
+     thread on it.
+   - **Adapter trap:** Electron's GPU process must open the handle on the *same adapter*. On
+     hybrid-GPU laptops it may not. Put the adapter LUID in the announce, and have the web side fall
+     back to lanes on a mismatch. This is the open "which GPU" question from the port notes.
+4. **Media Foundation decode** (`MfVideoSource : FrameSource`).
+   - Use `IMFSourceReader` with CPU output (`MFVideoFormat_RGB32` via
+     `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING`), matching AVF's CPU-buffer `prepare()` →
+     render-thread `upload()` split.
+   - Resist sharing our D3D11 device with MF's DXVA path at first. That needs
+     `ID3D10Multithread::SetMultithreadProtected` on a device the engine assumes is single-threaded.
+   - Exact-frame seeks use the same logic as AVF: `SetCurrentPosition` lands on a prior keyframe;
+     decode forward and drop samples until the timestamp covers the target. Pin it with the same
+     `test_h264_ramp.mp4` exactness test (grey `16+3N`).
+5. **Media Foundation encode** (`VideoEncoder`'s Windows twin).
+   - `IMFSinkWriter` → H.264 in MP4 with `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`.
+   - Tag `MF_MT_VIDEO_PRIMARIES` / `MF_MT_TRANSFER_FUNCTION` / `MF_MT_YUV_MATRIX` as BT.709. Untagged
+     output comes back dull, as it did on macOS.
+   - Rational frame rate via `MF_MT_FRAME_RATE`.
+   - `test_comp_export` is the contract: red, backdrop gap, green, decoded back.
+6. **Outputs on Windows.**
+   - A DXGI flip-model present into a borderless HWND per display, identified by the monitor's
+     device path, not its index.
+   - **Spout** via SpoutDX (BSD), on our D3D11 device.
+7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
+   steps 1–5 hold.
+
+---
+
+### M5 — remote deployments
+
+The same `nano_compositor` binary on another machine, driven by an editor elsewhere.
+
+- **Auth first.** `ws_server.cpp` binds 0.0.0.0 unauthenticated. Proposal: bind loopback by default,
+  with an explicit "allow remote" setting that requires a pairing token (shown on the compositor
+  machine, entered once in the editor, stored per host).
+- **Discovery:** Bonjour/mDNS `_nano-comp._tcp` with key, version and name TXT records.
+- **Version handshake:** the `ready` line and the first reply carry a protocol version, and the
+  editor refuses a mismatch with a readable message. Per the no-back-compat rule, no shims — just a
+  clear refusal.
+- **Document ownership.** Today `comp_reset` gives each editor session a fresh engine, and the
+  editor replays its state. A deployment must keep playing after the editor disconnects:
+  - the compositor persists the last document + transport;
+  - it keeps running;
+  - an editor that connects *attaches* (reads the document back) rather than resetting, unless it
+    explicitly takes over.
+
+  That flips the current assumption, so it's the biggest design piece of M5.
+- **Media and bundle sync, content-addressed.** The document references media by hash, and the
+  compositor fetches misses from the editor over HTTP. `media_fetch.mm` already downloads URLs into
+  a per-process cache; make that cache hash-keyed and persistent. Bundles work the same way,
+  verified before load.
+- **Remote previews** can't use shared surfaces. Use the lanes, compressed (JPEG to start; an H.264
+  stream later, which M2's encoder makes cheap on macOS), at a capped rate.
+
+---
+
+### Later — Linux / Raspberry Pi
+
+A Dawn (WebGPU-native) backend spike behind `GPUBackend`. Before committing to it, check on V3D:
+- adapter limits;
+- BCn support (DXV is BC1: without it, a CPU BC1 decode, or transcode to something else);
+- frame time at LED-wall sizes, which is the likely Pi use;
+- lavapipe as a CI fallback.
+
+Media would be FFmpeg or GStreamer behind the FrameSource seam, which is exactly what the seam is
+for.
+
+---
+
+## Open questions for the user
+
+1. **Output config: settings file (per machine) or document (per show)?** The proposal is a settings
+   file, with only artistic regions in the document.
+2. **Precise with a display output enabled:** warn, auto-switch to Live, or leave it alone?
+3. **NDI:** worth taking on the SDK's licence terms, or is Syphon/Spout enough?
+4. **Art-Net pixel maps:** reuse the lights bundle's model (extras) as the source of truth, or a new
+   compositor-owned one?
+5. **MIDI into the arrangement:** which surface authors it (a Devices section in the arrangement, or
+   device pips on fields)? And does it land before M3, where it would share the latency measurement?
+6. **M4 order:** is "DXV-only compositor on lanes" an acceptable first Windows milestone, with MF
+   decode/encode after?
