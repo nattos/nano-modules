@@ -27,7 +27,7 @@
  */
 
 import { CENTER, gridUVs, luma, sampleMonitor, waitForMonitor } from './arr-test-helpers';
-import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 
@@ -101,7 +101,6 @@ async function renderAndSample(url: string): Promise<number[]> {
 }
 
 forEachCompBackend((backend) => {
-const H264 = 'H.264 decode (M2)';
 describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
   // Resolved per test: the backend is only live once the suite runs.
   let URL = '';
@@ -390,7 +389,7 @@ describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
     expect(after!).toBeLessThan(40);       // structurally dropped past it (black bg)
   });
 
-  nativeGap(backend, H264)('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
+  it('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
     // Regression: loading an arrangement leaves DEAD blob URLs in the doc until
     // relinkMedia() re-mints them — an update that deliberately bypasses
     // mutate() (not undoable). The comp-mode pump is fed from the WORKER's
@@ -440,12 +439,18 @@ describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
       () => (window as any).__engineBridge.videoFramesInjected() > 0,
       { timeout: 15_000 },
     );
-    const hasPump = await page.evaluate((id) =>
-      !!(window as any).__engineBridge.video?.pumps?.has?.(id), clipId);
-    expect(hasPump).toBe(true);
+    if (backend === 'worker') {
+      const hasPump = await page.evaluate((id) =>
+        !!(window as any).__engineBridge.video?.pumps?.has?.(id), clipId);
+      expect(hasPump).toBe(true);
+    } else {
+      // The compositor's pump: no longer skipping the clip it gave up on.
+      const skipped = await page.evaluate(() => (window as any).__engineBridge.videoSkipped());
+      expect(skipped[clipId]).toBeUndefined();
+    }
   });
 
-  nativeGap(backend, H264)('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
+  it('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
     // Regression: readiness edges for the native gate must flow on an
     // UNCONDITIONAL cadence. They used to ride the monitor's reactive
     // showComposite — which never fires while a hold freezes the beat — so
@@ -482,6 +487,10 @@ describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
     const beat = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
     await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
     expect(beat).toBeGreaterThan(4);
+    // …and it moved because the video was READY, not because a clip nothing
+    // could decode was waved through transparent.
+    const injected = await page.evaluate(() => (window as any).__engineBridge.videoFramesInjected());
+    expect(injected).toBeGreaterThan(10);
   });
 });
 });

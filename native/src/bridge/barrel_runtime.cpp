@@ -311,6 +311,10 @@ struct BarrelRuntime::Impl {
     double compElapsed = 0;
     // The next report carries every change-gated field (a client asked).
     bool compResync = true;
+    // The decode pump's counters as last reported (change-gated like the rest).
+    int compVideoInjects = -1;
+    size_t compVideoSkipped = 0;
+    std::map<std::string, int> compVideoFrames;
     bool compRequestsRead = false;
 #endif
 
@@ -615,6 +619,9 @@ struct BarrelRuntime::Impl {
     pe.compRequired.clear();
     pe.compControlSeq = 0;
     pe.compResync = true;
+    pe.compVideoInjects = -1;
+    pe.compVideoSkipped = 0;
+    pe.compVideoFrames.clear();
     pe.haveLastPluginStates = false;
     pe.haveLastModulation = false;
   }
@@ -2106,6 +2113,8 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       pe.comp.reset();
       if (impl_->executors.size() == 1) impl_->rt->destroyInstancesWithKeyPrefix("");
       impl_->buildCompHost(pe, w, h);
+      // The editor's page url: what its dev-server media urls resolve against.
+      pe.comp->setMediaBase(m.value("mediaBase", std::string()));
     } else if (action == "comp_load_doc") {
       auto doc = nlohmann::json::parse(m.value("json", std::string("{}")), nullptr, false);
       if (!doc.is_discarded()) host.loadDocument(doc);
@@ -2195,6 +2204,22 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       if ((flags & comp::kCompScenesChanged) || pe.compResync) {
         rep["scenes"] = cx.sceneStatesJson();
         rep["scenesPending"] = cx.pendingScenesJson();
+      }
+      // The pump lives here, not in the editor (ownsVideoPump): what it has
+      // shown and what it can't open are only visible through the report.
+      const auto& pump = host.pump();
+      if (pump.totalInjects() != pe.compVideoInjects || pe.compResync) {
+        pe.compVideoInjects = pump.totalInjects();
+        rep["videoInjects"] = pe.compVideoInjects;
+      }
+      auto frames = pump.presentedFrames();
+      if (frames != pe.compVideoFrames || pe.compResync) {
+        rep["videoFrames"] = frames;
+        pe.compVideoFrames = std::move(frames);
+      }
+      if (pump.skipped().size() != pe.compVideoSkipped || pe.compResync) {
+        pe.compVideoSkipped = pump.skipped().size();
+        rep["videoSkipped"] = pump.skipped();
       }
       pe.compResync = false;
       sendCompJson(key, rep);

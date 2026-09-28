@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "frame_source.h"
+
 namespace gpu { class GPUBackend; }
 
 namespace nano_media {
@@ -48,9 +50,9 @@ struct DxvVideoInfo {
  * no seek cost and no play-forward-only constraint (the `streaming` flag on the
  * web FrameSource interface is false for exactly this reason).
  */
-class DxvSource {
+class DxvSource : public FrameSource {
  public:
-  ~DxvSource();
+  ~DxvSource() override;
   DxvSource(const DxvSource&) = delete;
   DxvSource& operator=(const DxvSource&) = delete;
   DxvSource() = default;
@@ -68,7 +70,16 @@ class DxvSource {
 
   bool isOpen() const { return file_ != nullptr; }
   const DxvVideoInfo& info() const { return info_; }
-  const std::string& error() const { return error_; }
+  const std::string& error() const override { return error_; }
+
+  // --- FrameSource ---
+  uint32_t width() const override { return info_.width; }
+  uint32_t height() const override { return info_.height; }
+  int frameCount() const override { return info_.frameCount; }
+  double fps() const override { return info_.fps; }
+  std::string codec() const override { return info_.fourccStr; }
+  int32_t formatCode() const override { return 1; }  // RGBA8: the BC1 blit's output
+  uint32_t payloadBytes(int idx) const override { return frameSize(idx); }
 
   /// Absolute file offset / compressed size of a frame. For diagnostics and
   /// the cost tracker's payload-size EWMA.
@@ -83,10 +94,10 @@ class DxvSource {
    * The BC1 staging texture and the blit pipeline are created lazily on the
    * first decode and reused.
    */
-  bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle);
+  bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle) override;
 
   /// Milliseconds spent inside the last decode() — the cost tracker's input.
-  double lastDecodeMs() const { return lastDecodeMs_; }
+  double lastDecodeMs() const override { return lastDecodeMs_; }
 
   void close();
 

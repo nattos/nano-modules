@@ -119,12 +119,30 @@ void CompHost::ensureTextures() {
   pc.renderH = cfg_.height;
   pc.readAheadDepth = cfg_.readAheadDepth;
   pump_ = std::make_unique<nano_media::VideoPump>(gpu_, pc);
+  pump_->setMediaBase(mediaBase_);
   comp::CompExecutor* cx = cx_.get();
   pump_->setInjectSink([cx](const std::string& instanceKey, int32_t tex) {
     if (auto* ex = cx->sketchExecutor()) ex->setInjectedTexture(instanceKey, tex);
   });
   pump_->setReadySink([cx](const std::string& clipId, bool ready) {
     cx->setVideoReady(clipId, ready);
+  });
+  // The rows of the LAST transportResolve: the pump runs first each frame, so
+  // it reads the previous frame's times — the same one-frame lag as web, whose
+  // pump reads the last report's transportTimes.
+  pump_->setTransportResolver([cx](const std::string& clipId) {
+    nano_media::VideoPump::TransportTime t;
+    const auto order = cx->transportOrder();
+    const auto& rows = cx->transportResolved();
+    for (size_t i = 0; i < order.size() && i < rows.size(); ++i) {
+      if (order[i] != clipId) continue;
+      const auto& r = rows[i];
+      t.valid = r.valid && std::isfinite(r.timeSec);
+      t.active = r.active >= 0.5;
+      t.timeSec = r.timeSec;
+      break;
+    }
+    return t;
   });
   // The Precise gate assumes nobody is waiting on decodes unless told a pump
   // exists — without this it never holds.

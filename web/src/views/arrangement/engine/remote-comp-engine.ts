@@ -98,10 +98,18 @@ export class RemoteCompEngine implements CompEngine {
 
     this.client = new WsBridgeClient(opts.url);
     // A fresh engine for this editor session, as a worker engine would be —
-    // the FIRST message queued, so it lands before any document.
-    this.action('comp_reset', {});
+    // the FIRST message queued, so it lands before any document. `mediaBase`
+    // is what a clip url that isn't a file path (a dev server's `/media/…`)
+    // resolves against; the compositor fetches it (media_fetch.h).
+    this.action('comp_reset', { mediaBase: location.href });
     this.client.onOpen = () => {
-      if (this.opened) this.replay();
+      // A reconnect: a restarted compositor never saw the first reset (so it
+      // has no media base), a surviving one holds a stale session. Either way
+      // start clean and replay.
+      if (this.opened) {
+        this.action('comp_reset', { mediaBase: location.href });
+        this.replay();
+      }
       this.opened = true;
       this.action('comp_resize', { width: this.width, height: this.height });
       // Everything change-gated (chain keys, scenes, pump set) again: this

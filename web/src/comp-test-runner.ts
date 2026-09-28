@@ -297,6 +297,12 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
     let stalledFrames = 0;
 
     let resolveFrame: ((info: CompFrameInfo | null) => void) | null = null;
+    // Rows stride 8 per clip (CompFrameInfo.transportTimes): [timeSec, active, …].
+    pump.transportRow = (clipId) => {
+      const i = liveTransportOrder.indexOf(clipId);
+      if (i < 0 || (i + 1) * 8 > liveTransportTimes.length) return undefined;
+      return { timeSec: liveTransportTimes[i * 8], active: liveTransportTimes[i * 8 + 1] };
+    };
     e.onCompInfo = (info) => { last.info = info; };
     e.onFrameSet = (bitmaps) => {
       // The bitmaps are checkerboarded and unusable for comparison — close them

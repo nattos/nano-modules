@@ -204,6 +204,10 @@ export class VideoCompositor {
 
   /** Open pumps, keyed by clipId. */
   private pumps = new Map<string, Pump>();
+  /** A clip pump's last presented frame key (null before the first). */
+  clipLastKey(clipId: string): string | null { return this.pumps.get(clipId)?.lastKey ?? null; }
+  /** A warm candidate's entry frame has been injected. */
+  clipPrimed(clipId: string): boolean { return this.pumps.get(clipId)?.primedFrame != null; }
   /** Clips currently being opened (async), to avoid double-open. */
   private opening = new Set<string>();
   /** Open failures per clip (timestamp of the last attempt + count). A SINGLE failure

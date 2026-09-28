@@ -75,6 +75,13 @@ class CompHost {
   /// need the ratio (host::pxScale).
   void loadDocument(const nlohmann::json& doc);
 
+  /// What clip urls that aren't file paths resolve against (media_fetch.h) —
+  /// the editor's page url. Survives resize (which rebuilds the pump).
+  void setMediaBase(const std::string& base) {
+    mediaBase_ = base;
+    if (pump_) pump_->setMediaBase(base);
+  }
+
   /// Change the render size. Recreates the output texture; the pump keeps its
   /// clips but presents at the new size from the next frame.
   void resize(int width, int height);
@@ -123,6 +130,7 @@ class CompHost {
   int32_t outTex_ = -1;
   int texW_ = 0, texH_ = 0;
 
+  std::string mediaBase_;
   int referenceH_ = 0;
   double hostTime_ = 0.0;
   /** Transport position at the end of the last frame (the effect clock's

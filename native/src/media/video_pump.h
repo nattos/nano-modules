@@ -8,7 +8,7 @@
 // Per active clip, per frame:
 //   desc + beat → source frame index   (comp/clip_time.h, shared with web)
 //   frame index → cached texture       (media/frame_cache_policy.h)
-//   miss        → DxvSource decode     (media/dxv_source.h)
+//   miss        → FrameSource decode   (media/frame_source.h: DXV, AVFoundation, stills)
 //   read-ahead  → precache targets     (media/read_ahead.h)
 //   present     → placement blit       (media/frame_blitter.h)
 //               → executor slot 0 + setVideoReady
@@ -19,12 +19,13 @@
 // determinism bug rather than a dropped frame. The policy headers are shared
 // with web regardless, so hit rate and precache depth stay comparable.
 //
-// SCOPE: DXV only, and only the built-in play modes. A non-DXV source or a
-// transport-DRIVEN clip is skipped — loudly, via `skipped()`, so a test can
-// say so by name instead of silently rendering a hole — and reported READY
-// with nothing bound, the web's "permanently broken" rule: Precise barrels
-// past it (transparent) rather than holding forever. (AVFoundation and the
-// transport channel are the follow-ups.)
+// SCOPE: every codec openFrameSource() takes (DXV, AVFoundation, stills);
+// built-in play modes via ClipLoopConfig, transport-DRIVEN clips via the times
+// channel (setTransportResolver). A source nothing can open is skipped —
+// loudly, via `skipped()`, so a test can say so by name instead of silently
+// rendering a hole — and reported READY with nothing bound, the web's
+// "permanently broken" rule: Precise barrels past it (transparent) rather than
+// holding forever.
 //
 // HOST ONLY. Never include from src/sketch/comp/.
 
@@ -41,9 +42,9 @@
 
 #include "access_classifier.h"
 #include "cost_tracker.h"
-#include "dxv_source.h"
 #include "frame_blitter.h"
 #include "frame_cache_policy.h"
+#include "frame_source.h"
 #include "read_ahead.h"
 
 namespace gpu { class GPUBackend; }
@@ -96,6 +97,22 @@ class VideoPump {
     ready_ = std::move(fn);
   }
 
+  /// A driven clip's row of the times channel (CompExecutor::transportResolved).
+  struct TransportTime {
+    bool valid = false;   ///< false: no live controller yet — use `loop`
+    bool active = true;   ///< false: transparent
+    double timeSec = 0;   ///< source time to show
+  };
+  /// Where transport-driven clips (`"transport": true` descs) read their time.
+  /// Without one they fall back to their ClipLoopConfig.
+  void setTransportResolver(std::function<TransportTime(const std::string& clipId)> fn) {
+    transport_ = std::move(fn);
+  }
+
+  /// What a clip url that isn't a file path resolves against — the editor's
+  /// page url (media_fetch.h). Takes effect for clips opened after the call.
+  void setMediaBase(std::string base) { mediaBase_ = std::move(base); }
+
   /**
    * Reconcile against comp's desc set. Clips that left it are torn down (and
    * unbound), new ones are opened. Call whenever `kCompVideoSetChanged` rides a
@@ -112,11 +129,18 @@ class VideoPump {
   /// Clip ids skipped because nothing here can decode them, with the reason.
   const std::map<std::string, std::string>& skipped() const { return skipped_; }
 
+  /// The source frame each clip has bound into its instance right now, for
+  /// clips that have one (primed candidates included; off-slice clips not).
+  std::map<std::string, int> presentedFrames() const;
+
   /// Per-clip telemetry, keyed by clip id.
   std::map<std::string, ClipTelemetry> telemetry() const;
 
   /// Frames whose decode this pump has performed, across all clips.
   int totalDecodes() const { return totalDecodes_; }
+  /// Distinct frames handed to the executor, across all clips (ever, not just
+  /// the live ones — the web pump's `framesInjected`).
+  int totalInjects() const { return totalInjects_; }
 
  private:
   struct Clip;
@@ -131,6 +155,8 @@ class VideoPump {
   Config cfg_;
   std::function<void(const std::string&, int32_t)> inject_;
   std::function<void(const std::string&, bool)> ready_;
+  std::string mediaBase_;
+  std::function<TransportTime(const std::string&)> transport_;
 
   std::map<std::string, std::unique_ptr<Clip>> clips_;
   std::map<std::string, std::string> skipped_;
@@ -140,6 +166,7 @@ class VideoPump {
   /// The url each skipped clip was skipped with.
   std::map<std::string, std::string> skippedUrl_;
   int totalDecodes_ = 0;
+  int totalInjects_ = 0;
 };
 
 }  // namespace nano_media

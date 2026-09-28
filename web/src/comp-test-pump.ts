@@ -102,6 +102,10 @@ export class CompTestPump {
     this.blitter = new FrameBlitter(device);
   }
 
+  /** A driven clip's row of the times channel (the last frame's), or
+   *  undefined when it has none. Set by the runner, which mirrors the reports. */
+  transportRow?: (clipId: string) => { timeSec: number; active: number } | undefined;
+
   /** Clip ids nothing here can decode, with the reason (native: `skipped()`). */
   get skipped(): Record<string, string> {
     return Object.fromEntries(this.skippedIds);
@@ -126,12 +130,6 @@ export class CompTestPump {
     }
 
     for (const d of descs) {
-      // Transport-DRIVEN clips follow a published per-frame times channel
-      // rather than their ClipLoopConfig; neither runner reads it.
-      if (d.transport) {
-        this.skippedIds.set(d.clipId, 'transport-driven clip (unsupported in the runner)');
-        continue;
-      }
       const existing = this.clips.get(d.clipId);
       if (existing) {
         existing.desc = d;   // startBeat/loop/placement can move under us
@@ -152,9 +150,9 @@ export class CompTestPump {
           width: info.width,
           height: info.height,
           frameCount: info.frameCount,
-          // The container's rate wins when it has one; else the document's,
-          // then 30 — the same fallback chain the native pump documents.
-          fps: info.fps > 0 ? info.fps : (d.fps && d.fps > 0 ? d.fps : 30),
+          // The document's rate wins, then the container's, then 30 — the
+          // app's VideoCompositor and the native pump both.
+          fps: d.fps && d.fps > 0 ? d.fps : (info.fps > 0 ? info.fps : 30),
           lastPresentedFrame: -1,
           injects: 0,
         });
@@ -183,7 +181,16 @@ export class CompTestPump {
         secondsAt: (b: number) => b * (60 / Math.max(1, bpm)),
         seed: clipNoiseSeed(d.clipId),
       };
-      const frame = clipSourceFrameAt(d.loop ?? DEFAULT_LOOP, ctx, at, c.fps, c.frameCount);
+      // Transport-DRIVEN: the pre-pass's published time IS the target (the
+      // compositor's targetSecFor). An invalid row (NaN — no live controller
+      // yet) falls back to the ClipLoopConfig; an inactive one is transparent.
+      const row = d.transport ? this.transportRow?.(d.clipId) : undefined;
+      const driven = !!row && Number.isFinite(row.timeSec);
+      const frame = driven
+        ? (row!.active >= 0.5
+            ? Math.max(0, Math.min(c.frameCount - 1, Math.floor(row!.timeSec * c.fps)))
+            : null)
+        : clipSourceFrameAt(d.loop ?? DEFAULT_LOOP, ctx, at, c.fps, c.frameCount);
       if (frame == null) {
         // Off the slice → transparent, and NOT ready: nothing should hold the
         // transport waiting for a frame that will never come.

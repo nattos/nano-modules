@@ -1,6 +1,6 @@
 /**
- * DUAL-BACKEND video e2e — a real DXV clip decoded and composited by BOTH
- * hosts, from one scenario.
+ * DUAL-BACKEND video e2e — real DXV (and H.264) clips decoded and composited by
+ * BOTH hosts, from one scenario.
  *
  * Web decodes through `VideoPlaybackService` (dxv-decoder.ts + WebGPU BC1);
  * native decodes through `nano_media::VideoPump` (the same dxv_demux/dxv_lz
@@ -118,21 +118,54 @@ forEachBackend((backend) => {
       expect(run.capture('past-end').meanLuma()).toBeLessThan(2);
     });
 
+    // Native only: the web RUNNER decodes H.264 through a <video>-backed
+    // source that holds one frame through playback in headless Chrome (the
+    // app's pump uses PlaybackCursor instead, and its suites cover it).
+    (backend === 'metal' ? it : it.skip)(
+        'decodes H.264 too (AVFoundation natively), exactly the requested frame', async () => {
+      // test_h264_ramp.mp4: frame N is a flat grey of 16 + 3N, 30 fps, sparse
+      // keyframes + B-frames (see native/tests/test_frame_sources.cpp). The
+      // grey on screen says which frame each host decoded.
+      const run = await runCompScenario({
+        doc: videoDoc('test_h264_ramp.mp4', {
+          source: {
+            label: 'ramp', mediaFile: 'test_h264_ramp.mp4', sourceKey: 'v1',
+            durationFrames: 60, fps: 30, scaleMode: 'fit',
+          },
+        }),
+        width: 64,
+        height: 64,
+        ops: [
+          { seek: 0 }, SETTLE, { capture: 'early' },
+          // 1 beat at 120 BPM = 0.5 s = 15 source frames on.
+          { play: { frames: 30, dtSec: 1 / 60 } }, { capture: 'later' },
+        ],
+      });
+
+      run.expectNothingSkipped();
+      const frameOf = (name: string) => Math.round((run.capture(name).centerLuma() - 16) / 3);
+      const early = frameOf('early');
+      const later = frameOf('later');
+      // Within the pump's one-frame lag of the start, then 15 on.
+      expect(early).toBeGreaterThanOrEqual(0);
+      expect(early).toBeLessThanOrEqual(2);
+      expect(later - early).toBeGreaterThanOrEqual(14);
+      expect(later - early).toBeLessThanOrEqual(16);
+    });
+
     it('names any clip it cannot decode instead of rendering a hole', async () => {
       const run = await runCompScenario({
-        doc: videoDoc('test_h264.mp4'),
+        // Exists, but no decoder takes it. Its own clip id: the web runner's
+        // playback service outlives a scenario.
+        doc: mkComposition([mkTrack('t-bad', [videoClip('bad', 0, 16, 'test_not_media.mov')])]),
         width: 64,
         height: 64,
         ops: [{ seek: 0 }, SETTLE, { capture: 'frame' }],
       });
 
-      // h264 is web-only today (native is DXV-first; AVFoundation is the
-      // follow-up). Whatever a backend can't handle must be REPORTED.
-      const skipped = run.videoSkipped;
-      if (backend === 'metal') {
-        expect(Object.keys(skipped)).toEqual(['v1']);
-        expect(skipped['v1']).toMatch(/not a DXV stream/);
-      }
+      // Whatever a backend can't open must be REPORTED, by clip.
+      expect(Object.keys(run.videoSkipped)).toEqual(['bad']);
+      expect(run.capture('frame').meanLuma()).toBeLessThan(2);
     });
   });
 });

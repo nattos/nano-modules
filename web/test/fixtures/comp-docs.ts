@@ -330,12 +330,20 @@ export function sequenceDoc(): Json {
 
 /** The same interior shape, but with two real VIDEO sub-clips — the pump has to
  *  play exactly the live one and PRIME its sibling, not run two decoders. */
-export function videoSequenceDoc(mediaFile = 'test_dxv.mov'): Json {
+export function videoSequenceDoc(mediaFile = 'test_dxv.mov', durationFrames = 57): Json {
+  // The probed duration matters here, unlike on a top-level clip: an interior's
+  // source time comes from the executor's synthetic transport row, which can
+  // only fold by the DOCUMENT's duration (0 pins every interior at 0 s).
+  const sub = (id: string, start: number) => {
+    const c = videoClip(id, start, 4, mediaFile);
+    c.source.durationFrames = durationFrames;
+    return c;
+  };
   return mkComposition([
     mkTrack('t-seq', [
       mkSequenceClip('c-seq', 0, 8, mkSequenceLane('lane-1', [
-        videoClip('sub-a', 0, 4, mediaFile),
-        videoClip('sub-b', 4, 4, mediaFile),
+        sub('sub-a', 0),
+        sub('sub-b', 4),
       ])),
     ]),
   ]);

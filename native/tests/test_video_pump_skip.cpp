@@ -1,12 +1,11 @@
 // test_video_pump_skip.cpp — a clip the native pump can't decode must not
 // stall the Precise gate.
 //
-// The pump decodes DXV only (AVFoundation is the follow-up). It names every
-// clip it skips (`skipped()`), and — the web's "permanently broken" rule —
-// reports it READY with nothing bound, so Precise barrels past it transparent.
-// Before, a skipped clip never reported ready: an H.264 or PNG clip in the
-// desktop app's native engine held the transport, forcing through one frame
-// per 2.5 s timeout.
+// The pump names every clip no decoder takes (`skipped()`), and — the web's
+// "permanently broken" rule — reports it READY with nothing bound, so Precise
+// barrels past it transparent. Before, a skipped clip never reported ready:
+// an H.264 or PNG clip (when the pump was DXV-only) held the desktop app's
+// native transport, forcing through one frame per 2.5 s timeout.
 //
 // No GPU needed: every path here stops before a texture is made.
 
@@ -23,7 +22,8 @@ using json = nlohmann::json;
 
 namespace {
 
-std::string mediaPath(const char* name) { return std::string(TEST_MEDIA_DIR) + "/" + name; }
+/// A file that exists but no decoder takes — this source file.
+const std::string kNotMedia = __FILE__;
 
 json desc(const std::string& clipId, const std::string& url) {
   return json{{"clipId", clipId}, {"instanceKey", clipId + "_v"}, {"url", url},
@@ -40,11 +40,11 @@ struct Pump {
 
 TEST_CASE("an undecodable clip is named AND reported ready", "[video_pump]") {
   Pump p;
-  p.pump.setActiveClips(json::array({desc("v1", mediaPath("test_h264.mp4"))}));
+  p.pump.setActiveClips(json::array({desc("v1", kNotMedia)}));
   p.pump.pump(1.0, 120);
 
   REQUIRE(p.pump.skipped().count("v1"));
-  CHECK(p.pump.skipped().at("v1").find("not a DXV stream") != std::string::npos);
+  CHECK(p.pump.skipped().at("v1").find("avfoundation:") != std::string::npos);
   CHECK(p.ready["v1"] == true);
 
   // Re-reported every pump: the executor prunes its ready set on a set change.
@@ -63,7 +63,7 @@ TEST_CASE("a clip with no locatable media is ready too", "[video_pump]") {
 
 TEST_CASE("a skipped clip that leaves the set stops being reported", "[video_pump]") {
   Pump p;
-  p.pump.setActiveClips(json::array({desc("v1", mediaPath("test_h264.mp4"))}));
+  p.pump.setActiveClips(json::array({desc("v1", kNotMedia)}));
   p.pump.setActiveClips(json::array());
   p.ready.clear();
   p.pump.pump(1.0, 120);
@@ -77,6 +77,6 @@ TEST_CASE("a skipped clip whose source changes gets a fresh attempt", "[video_pu
   p.pump.setActiveClips(json::array({desc("v1", "")}));
   REQUIRE(p.pump.skipped().at("v1").find("no locatable media") != std::string::npos);
   // Relinked: the same clip id, a new source — tried again, not remembered.
-  p.pump.setActiveClips(json::array({desc("v1", mediaPath("test_h264.mp4"))}));
-  CHECK(p.pump.skipped().at("v1").find("not a DXV stream") != std::string::npos);
+  p.pump.setActiveClips(json::array({desc("v1", kNotMedia)}));
+  CHECK(p.pump.skipped().at("v1").find("avfoundation:") != std::string::npos);
 }

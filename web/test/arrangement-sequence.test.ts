@@ -22,7 +22,7 @@
 
 import { interiorGridUVs, lumaSpread, sampleMonitor, waitForMonitor } from './arr-test-helpers';
 
-import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -53,8 +53,6 @@ const chainKeys = () =>
 const hasClip = (keys: string[], clipId: string) => keys.some((k) => k.includes(clipId));
 
 forEachCompBackend((backend) => {
-const H264 = 'H.264 decode (M2)';
-const MEDIA_URL = 'media referenced by dev-server URL (M2)';
 beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement sequence clips render (GPU)', () => {
@@ -209,7 +207,7 @@ describe('Sequence interior: follow autopilot on real media (GPU)', () => {
     throw new Error(`timeout waiting for ${label}; still=${from}`);
   }
 
-  nativeGap(backend, H264)('hops A→B→A inside the interior, priming the incoming sub-clip each time', async () => {
+  it('hops A→B→A inside the interior, priming the incoming sub-clip each time', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.on('pageerror', (err) => errors.push(String(err)));
@@ -279,7 +277,7 @@ describe('Sequence interior: follow autopilot on real media (GPU)', () => {
     await page.waitForFunction((x: any) => {
       const bridge = (window as any).__engineBridge;
       const primed = bridge?.compPumpDescs?.some((d: any) => d.clipId === x.b && d.prime);
-      return !!primed && bridge?.video?.pumps?.get(x.b)?.primedFrame != null;
+      return !!primed && !!bridge?.videoClipPrimed(x.b);
     }, { timeout: 30_000 }, ids);
 
     // Two hops of the ping-pong, entirely inside the sequence clip.
@@ -323,7 +321,7 @@ describe('Sequence interior: two real DXV sub-clips share one decoder (GPU)', ()
     (id) => ((window as any).__engineBridge?.compPumpDescs ?? [])
       .find((d: any) => d.clipId === id) ?? null, clipId);
 
-  nativeGap(backend, MEDIA_URL)('plays only the LIVE sub-clip and primes its sibling, both sides of the switch', async () => {
+  it('plays only the LIVE sub-clip and primes its sibling, both sides of the switch', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.on('pageerror', (err) => errors.push(String(err)));

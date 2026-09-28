@@ -318,6 +318,14 @@ export interface CompFrameInfo {
    *  transportOrder order; NaN timeSec = invalid row (pump falls back to
    *  ClipLoopConfig). A TRANSFERABLE — absent when nothing is driven. */
   transportTimes?: Float64Array;
+  /** An engine that decodes for itself (the native compositor): distinct frames
+   *  its pump has injected so far — present when it changed. */
+  videoInjects?: number;
+  /** …and the clips it can't open, clipId → reason — present when it changed. */
+  videoSkipped?: Record<string, string>;
+  /** …and the source frame each clip has bound now (clips with one), present
+   *  when it changed. */
+  videoFrames?: Record<string, number>;
 }
 
 // --- Worker events (worker → main) ---

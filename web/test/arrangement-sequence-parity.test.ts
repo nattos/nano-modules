@@ -97,8 +97,8 @@ describe(`Sequence clips, dual-backend (${backend})`, () => {
     // actively playing, ran full-rate decoders against one service, and
     // whichever lost the race blanked.
     //
-    // This asserts the DESC SET, which the comp executor publishes — see the
-    // case below for why the decode itself can't be asserted here yet.
+    // This asserts the DESC SET, which the comp executor publishes; the case
+    // below asserts the decode.
     const run = await runCompScenario({
       doc: videoSequenceDoc(),
       ops: [{ seek: 1 }, SETTLE, { capture: 'live-a' },
@@ -121,27 +121,34 @@ describe(`Sequence clips, dual-backend (${backend})`, () => {
     expect(b.descFor('sub-a')).toBeNull();
   });
 
-  it('interior video is skipped BY NAME — the pump has no transport-driven path', async () => {
-    // A RECORDED GAP, not an oversight, and the reason the case above stops at
-    // the desc set. An interior sub-clip is resolved through a SYNTHETIC
-    // transport row (arrangement beat → sequence content sec → interior beat →
-    // source sec), and "transport-driven clips in the pump" is the piece of the
-    // native video milestone that was deliberately left for later. Neither host
-    // decodes them.
-    //
-    // What matters is that the refusal is EXPLICIT and SYMMETRIC: both hosts
-    // name every clip they dropped and give the same reason, so this shows up
-    // as a listed gap rather than a silently black frame. Flip this to
-    // `expectNothingSkipped()` when the pump learns the transport path.
+  it('decodes interior video through the times channel, each sub-clip in turn', async () => {
+    // An interior sub-clip is TRANSPORT-DRIVEN: its source time comes from a
+    // synthetic transport row (arrangement beat → sequence content sec →
+    // interior beat → source sec) that the pre-pass publishes, not from its
+    // ClipLoopConfig. Both pumps read the last frame's rows — the app's own
+    // one-frame lag. Until M2 both runners skipped these by name, which left
+    // every sequence interior transparent in the native engine.
     const run = await runCompScenario({
       doc: videoSequenceDoc(),
-      ops: [{ seek: 1 }, SETTLE, { capture: 'live-a' }],
+      width: 64,
+      height: 64,
+      ops: [{ seek: 1 }, SETTLE, { capture: 'live-a' },
+            { play: { frames: 30, dtSec: 1 / 60 } }, { capture: 'a-later' },
+            { seek: 5 }, SETTLE, { capture: 'live-b' }],
     });
 
-    expect(Object.keys(run.videoSkipped).sort()).toEqual(['sub-a', 'sub-b']);
-    for (const why of Object.values(run.videoSkipped)) {
-      expect(why).toMatch(/transport-driven/);
-    }
+    run.expectNothingSkipped();
+    const a = run.capture('live-a');
+    expect(a.hasContent).toBe(true);
+    expect(a.meanLuma()).toBeGreaterThan(4);
+    expect(a.lumaSpread()).toBeGreaterThan(8);
+    // Playing, not pinned on an entry frame: half a second later a different
+    // source frame is on screen.
+    expect(run.capture('a-later').diffBytes(a)).toBeGreaterThan(a.pixels.length / 50);
+
+    const b = run.capture('live-b');
+    expect(b.lumaSpread()).toBeGreaterThan(8);
+    expect(run.videoClips['sub-b']?.injects ?? 0).toBeGreaterThan(0);
   });
 });
 });

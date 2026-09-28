@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 #include "gpu/gpu_backend.h"
+#include "media_fetch.h"
 #include "read_ahead.h"
 #include "sketch/comp/clip_time.h"
 #include "sketch/comp/comp_model.h"
@@ -51,6 +53,7 @@ struct VideoPump::Clip {
   bool hasHoldBeat = false;
   double holdBeat = 0;
   bool prime = false;
+  bool transport = false;  ///< driven by the times channel, not `loop`
   double fps = 30;
   int durationFrames = 0;
   BlitFit fit = BlitFit::Fit;
@@ -58,7 +61,7 @@ struct VideoPump::Clip {
   comp::ClipLoopConfig loop;
 
   // --- decode state ---
-  DxvSource source;
+  std::unique_ptr<FrameSource> source;
   BackendPool pool;
   std::unique_ptr<FrameCachePolicy> cache;
   CostTracker cost;
@@ -117,14 +120,6 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
     if (!d.is_object() || !d.contains("clipId")) continue;
     const std::string clipId = d["clipId"].get<std::string>();
 
-    // Transport-DRIVEN clips follow a per-frame published times channel rather
-    // than their ClipLoopConfig. Nothing here reads that channel yet, so say so
-    // instead of pumping the wrong frame.
-    if (d.value("transport", false)) {
-      if (!skipped_.count(clipId)) skipped_[clipId] = "transport-driven clip (unsupported natively)";
-      continue;
-    }
-
     auto it = clips_.find(clipId);
     if (it == clips_.end()) {
       const std::string url = d.value("url", std::string());
@@ -142,8 +137,11 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
         skipped_[clipId] = "no locatable media (see comp_media_resolver.h)";
         continue;
       }
-      if (!c->source.open(c->url)) {
-        skipped_[clipId] = c->source.error();
+      std::string why;
+      const std::string path = localMediaPath(c->url, mediaBase_, &why);
+      if (!path.empty()) c->source = openFrameSource(path, &why);
+      if (!c->source) {
+        skipped_[clipId] = why;
         fprintf(stderr, "[video_pump] can't decode clip %s (%s): %s\n", clipId.c_str(),
                 c->url.c_str(), skipped_[clipId].c_str());
         continue;
@@ -165,18 +163,19 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
     c.hasHoldBeat = d.contains("holdBeat") && d["holdBeat"].is_number();
     c.holdBeat = c.hasHoldBeat ? d["holdBeat"].get<double>() : 0.0;
     c.prime = d.value("prime", false);
+    c.transport = d.value("transport", false);
     c.fit = blitFitFromString(d.value("scaleMode", std::string("fit")));
     c.transform = transformFrom(d.contains("transform") ? d["transform"] : nlohmann::json());
     c.loop = comp::ClipLoopConfig::fromJson(d.contains("loop") ? d["loop"] : nlohmann::json());
-    // The container's own rate isn't parsed natively (see DxvVideoInfo::fps);
-    // the document's probed rate is the source of truth, then 30.
+    // The document's probed rate wins (as on web), then the container's — DXV
+    // doesn't parse its own (see DxvVideoInfo::fps) — then 30.
     const double descFps = d.contains("fps") && d["fps"].is_number() ? d["fps"].get<double>() : 0;
-    c.fps = descFps > 0 ? descFps : 30.0;
+    c.fps = descFps > 0 ? descFps : c.source->fps() > 0 ? c.source->fps() : 30.0;
     const int descFrames = d.contains("durationFrames") && d["durationFrames"].is_number()
                                ? d["durationFrames"].get<int>() : 0;
     // Trust the FILE's frame count over the document's — a stale durationFrames
     // would index past the end of the frame table.
-    c.durationFrames = c.source.info().frameCount > 0 ? c.source.info().frameCount : descFrames;
+    c.durationFrames = c.source->frameCount() > 0 ? c.source->frameCount() : descFrames;
   }
 
   skippedActive_.clear();
@@ -217,11 +216,10 @@ int32_t VideoPump::fetch(Clip& c, int frame, bool pull) {
     return -1;  // already resident; nothing to precache
   }
 
-  const uint32_t w = c.source.info().width;
-  const uint32_t h = c.source.info().height;
-  const int32_t tex = c.cache->reserve(frame, (int)w, (int)h, kFmtRGBA8);
+  const int32_t tex = c.cache->reserve(frame, (int)c.source->width(), (int)c.source->height(),
+                                       c.source->formatCode());
   if (tex < 0) return -1;
-  if (!c.source.decode(backend_, frame, tex)) return -1;
+  if (!c.source->decode(backend_, frame, tex)) return -1;
   c.cache->markReady(frame);
 
   CostPullOpts opts;
@@ -229,9 +227,10 @@ int32_t VideoPump::fetch(Clip& c, int frame, bool pull) {
   // we don't want them dominating the contiguous-decode bucket (the web
   // service passes stride 0 for exactly this reason).
   opts.stride = pull ? stride : 0;
-  opts.decodeMs = c.source.lastDecodeMs();
-  opts.hasPayloadBytes = true;
-  opts.payloadBytes = c.source.frameSize(frame);
+  opts.decodeMs = c.source->lastDecodeMs();
+  const uint32_t payload = c.source->payloadBytes(frame);
+  opts.hasPayloadBytes = payload > 0;
+  opts.payloadBytes = payload;
   c.cost.recordPull(opts);
 
   c.tel.decodes++;
@@ -248,13 +247,14 @@ void VideoPump::present(Clip& c, int frame, int32_t srcTex) {
   // re-blitting it would burn a dispatch and a fresh telemetry sample for
   // pixels the executor already has.
   if (frame == c.lastPresentedFrame) return;
-  if (!c.blitter.blit(backend_, srcTex, (int)c.source.info().width, (int)c.source.info().height,
+  if (!c.blitter.blit(backend_, srcTex, (int)c.source->width(), (int)c.source->height(),
                       c.presentTex, cfg_.renderW, cfg_.renderH, c.fit, c.transform,
                       cfg_.logicalW, cfg_.logicalH)) {
     return;
   }
   c.lastPresentedFrame = frame;
   c.tel.injects++;
+  totalInjects_++;
   if (inject_) inject_(c.instanceKey, c.presentTex);
   if (ready_) ready_(c.clipId, true);
 }
@@ -286,7 +286,23 @@ int VideoPump::pump(double beat, double bpm) {
     ctx.clock = &clock;
     ctx.seed = comp::clipNoiseSeed(c.clipId);
 
-    const auto frame = comp::clipSourceFrameAt(c.loop, ctx, at, c.fps, c.durationFrames);
+    std::optional<int32_t> frame;
+    bool driven = false;
+    if (c.transport && transport_) {
+      // Transport-DRIVEN: the pre-pass's published time IS the target
+      // (video-compositor.ts targetSecFor). An invalid row — the controller
+      // instance isn't live yet — falls back to the ClipLoopConfig below for
+      // this frame; an inactive one is transparent.
+      const TransportTime t = transport_(c.clipId);
+      if (t.valid) {
+        driven = true;
+        if (t.active && c.durationFrames > 0) {
+          const double f = std::floor(t.timeSec * c.fps);
+          frame = (int32_t)std::clamp(f, 0.0, (double)(c.durationFrames - 1));
+        }
+      }
+    }
+    if (!driven) frame = comp::clipSourceFrameAt(c.loop, ctx, at, c.fps, c.durationFrames);
     if (!frame) {
       // Off the slice (a one-shot before or after its span) → transparent, and
       // NOT ready: nothing should hold the transport waiting for it.
@@ -319,6 +335,14 @@ int VideoPump::pump(double beat, double bpm) {
     }
   }
   return presented;
+}
+
+std::map<std::string, int> VideoPump::presentedFrames() const {
+  std::map<std::string, int> out;
+  for (const auto& [id, cp] : clips_) {
+    if (cp->lastPresentedFrame >= 0) out[id] = cp->lastPresentedFrame;
+  }
+  return out;
 }
 
 std::map<std::string, ClipTelemetry> VideoPump::telemetry() const {

@@ -85,6 +85,10 @@ export class EngineBridge {
   private compPumpDescs: VideoClipDesc[] | null = null;
   /** Latest comp-executor frame report (comp mode; diagnostic/tests). */
   lastCompInfo: CompFrameInfo | null = null;
+  /** The decode counters of an engine that owns its pump (see CompFrameInfo). */
+  private engineVideoInjects = 0;
+  private engineVideoSkipped: Record<string, string> = {};
+  private engineVideoFrames: Record<string, number> = {};
   /** The last warm (active + lookahead) desc set — the readiness scan's clip
    *  list, retained so pushes can run OUTSIDE the reactive showComposite path. */
   private lastWarmDescs: VideoClipDesc[] = [];
@@ -249,10 +253,29 @@ export class EngineBridge {
 
   /** Count of active video decode pumps (diagnostic / tests). */
   videoPumpCount(): number { return this.video?.pumpCount ?? 0; }
-  /** Decoded frames pushed to the executor so far (diagnostic). */
-  videoFramesInjected(): number { return this.video?.framesInjected ?? 0; }
+  /** Decoded frames pushed to the executor so far (diagnostic) — by whichever
+   *  pump decodes: this page's, or the engine's own. */
+  videoFramesInjected(): number {
+    return this.engine?.ownsVideoPump ? this.engineVideoInjects : this.video?.framesInjected ?? 0;
+  }
   /** Last video decode/inject error, if any (diagnostic). */
   videoLastError(): string | null { return this.video?.lastError ?? null; }
+  /** Clips the engine's own pump can't open, clipId → reason (diagnostic). */
+  videoSkipped(): Record<string, string> { return this.engineVideoSkipped; }
+  /** What a clip's pump last presented, as a key that changes with the frame;
+   *  null before it has presented anything (diagnostic / tests, either pump). */
+  videoClipKey(clipId: string): string | null {
+    if (this.engine?.ownsVideoPump) {
+      const f = this.engineVideoFrames[clipId];
+      return f === undefined ? null : String(f);
+    }
+    return this.video?.clipLastKey(clipId) ?? null;
+  }
+  /** A warm candidate's entry frame is bound, ahead of its launch (either pump). */
+  videoClipPrimed(clipId: string): boolean {
+    if (this.engine?.ownsVideoPump) return this.engineVideoFrames[clipId] !== undefined;
+    return this.video?.clipPrimed(clipId) ?? false;
+  }
   /** Last pulled frame per clip {frame,handle,w,h} (diagnostic). */
   videoLastPulled(): unknown { return this.video?.lastPulled ?? null; }
 
@@ -337,6 +360,9 @@ export class EngineBridge {
   private handleCompInfo(info: CompFrameInfo) {
     this.lastCompInfo = info;
     this.hasContent = info.hasContent;
+    if (info.videoInjects !== undefined) this.engineVideoInjects = info.videoInjects;
+    if (info.videoSkipped !== undefined) this.engineVideoSkipped = info.videoSkipped;
+    if (info.videoFrames !== undefined) this.engineVideoFrames = info.videoFrames;
     // Times channel: retain this frame's rows (a transferred Float64Array) +
     // the row order when the driven set changed. Absent times with an order
     // means "nothing driven" — clear so resolvers fall back.

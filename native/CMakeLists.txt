@@ -343,8 +343,11 @@ if(APPLE)
   # executor.wasm. The DXV demuxer/LZ sources are the SAME portable C++ the
   # dxv_decoder wasm module compiles — reused, not ported.
   add_library(nano_media STATIC
+    src/media/avf_source.mm
     src/media/dxv_source.cpp
     src/media/frame_blitter.cpp
+    src/media/frame_source.cpp
+    src/media/media_fetch.mm
     src/media/video_pump.cpp
     wasm_modules/dxv_decoder/dxv_demux.cpp
     wasm_modules/dxv_decoder/dxv_lz.cpp
@@ -352,7 +355,15 @@ if(APPLE)
   target_include_directories(nano_media PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/wasm_modules/dxv_decoder)
-  target_link_libraries(nano_media PUBLIC gpu_backend nlohmann_json::nlohmann_json)
+  target_link_libraries(nano_media PUBLIC gpu_backend nlohmann_json::nlohmann_json
+    "-framework AVFoundation"
+    "-framework CoreMedia"
+    "-framework CoreVideo"
+    "-framework CoreGraphics"
+    "-framework Foundation"
+    "-framework ImageIO")
+  set_source_files_properties(src/media/avf_source.mm src/media/media_fetch.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
 # --- WASM Host library ---
@@ -1572,6 +1583,15 @@ if(NANO_HAS_GPU_BACKEND)
     target_compile_definitions(test_dxv_source PRIVATE
       TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
     catch_discover_tests(test_dxv_source)
+
+    # The FrameSource decoders: routing, exact AVFoundation random access, stills.
+    add_executable(test_frame_sources tests/test_frame_sources.cpp)
+    target_link_libraries(test_frame_sources PRIVATE
+      nano_media gpu_backend Catch2::Catch2WithMain
+)
+    target_compile_definitions(test_frame_sources PRIVATE
+      TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
+    catch_discover_tests(test_frame_sources)
 
     # The pump's skip contract: named, and ready (Precise never holds on it).
     add_executable(test_video_pump_skip tests/test_video_pump_skip.cpp)

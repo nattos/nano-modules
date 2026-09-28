@@ -10,7 +10,7 @@
 
 import { gridUVs, sampleMonitor } from './arr-test-helpers';
 
-import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -87,7 +87,6 @@ async function boot() {
 }
 
 forEachCompBackend((backend) => {
-const H264 = 'H.264 decode (M2)';
 beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Arrangement scene tracks (GPU)', () => {
@@ -183,7 +182,7 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  nativeGap(backend, H264)('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
+  it('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
     const { ids, errors } = await boot();
     await page.waitForFunction(
       () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
@@ -220,14 +219,13 @@ describe('Arrangement scene tracks (GPU)', () => {
     // decode hold is fine; require sustained progress.
     await new Promise((r) => setTimeout(r, 3500));
     const frameMid = await page.evaluate((a) => {
-      const p = (window as any).__engineBridge?.video?.pumps?.get(a.scene);
-      return (p?.lastKey ?? null) as string | null;
+      return (window as any).__engineBridge?.videoClipKey(a.scene) as string | null;
     }, { scene: videoScene });
     await new Promise((r) => setTimeout(r, 1500));
     const after = await page.evaluate((a) => {
       const store = (window as any).arrangementStore;
-      const p = (window as any).__engineBridge?.video?.pumps?.get(a.scene);
-      return { beat: store.positionBeat as number, frame: (p?.lastKey ?? null) as string | null };
+      const frame = (window as any).__engineBridge?.videoClipKey(a.scene) as string | null;
+      return { beat: store.positionBeat as number, frame };
     }, { scene: videoScene });
     await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
     expect(after.beat - beatAtLaunch).toBeGreaterThan(8);
@@ -239,7 +237,7 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  nativeGap(backend, H264)('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
+  it('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
     const { ids, errors } = await boot();
     await page.waitForFunction(
       () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
@@ -279,7 +277,7 @@ describe('Arrangement scene tracks (GPU)', () => {
       const s = (window as any).arrangementStore.sceneLaunchState[x.st];
       const pend = (globalThis as any).__arrScenesPending ?? {};
       return !!s && s.sceneId === x.A && !pend[x.st] &&
-          bridge?.video?.pumps?.get(x.A)?.lastKey != null;
+          bridge?.videoClipKey(x.A) != null;
     }, { timeout: 20_000 }, scenes);
     await new Promise((r) => setTimeout(r, 250));  // settle mid-pass
 

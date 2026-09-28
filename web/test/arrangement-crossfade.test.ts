@@ -9,7 +9,7 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-crossfade
  */
 
-import { arrangementUrl, forEachCompBackend, nativeGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -28,13 +28,12 @@ async function waitForSceneChange(st: string, from: string | null, label: string
 }
 
 forEachCompBackend((backend) => {
-const H264 = 'H.264 decode + the browser pump (M2)';
 beforeAll(() => { URL = arrangementUrl(BASE); });
 
 describe('Crossfade transition (GPU)', () => {
   jest.setTimeout(180_000);
 
-  nativeGap(backend, H264)('an announced follow launch crossfades: both pumps overlap, then the fork releases', async () => {
+  it('an announced follow launch crossfades: both pumps overlap, then the fork releases', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.on('pageerror', (err) => errors.push(String(err)));
@@ -85,7 +84,7 @@ describe('Crossfade transition (GPU)', () => {
       const bridge = (window as any).__engineBridge;
       const pend = (globalThis as any).__arrScenesPending ?? {};
       return !!s && s.sceneId === x.a && !pend[x.st] &&
-             bridge?.video?.pumps?.get(x.a)?.lastKey != null;
+             bridge?.videoClipKey(x.a) != null;
     }, { timeout: 20_000 }, ids);
     const basePending = await page.evaluate(
       () => ((globalThis as any).__arrPendingReports ?? 0) as number);
@@ -100,9 +99,8 @@ describe('Crossfade transition (GPU)', () => {
         const bridge = (window as any).__engineBridge;
         const s = store.sceneLaunchState[x.st];
         if (!s || s.sceneId !== x.b) return;
-        const pumps = bridge?.video?.pumps;
-        const aLive = pumps?.get(x.a)?.lastKey != null;
-        const bLive = pumps?.get(x.b)?.lastKey != null;
+        const aLive = bridge?.videoClipKey(x.a) != null;
+        const bLive = bridge?.videoClipKey(x.b) != null;
         if (aLive && bLive) seen.overlap++;
         const pend = (globalThis as any).__arrScenesPending ?? {};
         if (pend[x.st]) seen.pendingDuring++;
