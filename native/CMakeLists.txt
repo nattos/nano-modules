@@ -1573,6 +1573,15 @@ if(NANO_HAS_GPU_BACKEND)
       TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
     catch_discover_tests(test_dxv_source)
 
+    # The pump's skip contract: named, and ready (Precise never holds on it).
+    add_executable(test_video_pump_skip tests/test_video_pump_skip.cpp)
+    target_link_libraries(test_video_pump_skip PRIVATE
+      nano_media gpu_backend Catch2::Catch2WithMain
+)
+    target_compile_definitions(test_video_pump_skip PRIVATE
+      TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
+    catch_discover_tests(test_video_pump_skip)
+
     add_executable(test_effect_render tests/test_effect_render.cpp)
     target_link_libraries(test_effect_render PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend

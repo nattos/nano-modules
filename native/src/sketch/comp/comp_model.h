@@ -549,12 +549,16 @@ inline ClipM parseClip(const nlohmann::json& j, int depth = 0) {
   if (j.contains("source") && j["source"].is_object()) {
     const auto& src = j["source"];
     c.sourceJson = src;
-    if (src.contains("url") && src["url"].is_string()) c.sourceUrl = src["url"].get<std::string>();
-    // No runtime url (a document read from disk — it is stripped at save):
-    // ask the host to locate the persistent `file` / `ref` bindings instead.
-    if (c.sourceUrl.empty() && (src.contains("file") || src.contains("ref"))) {
+    // A host that installed a resolver (native) locates the persistent `file`
+    // / `ref` bindings FIRST. `url` is the editor's runtime handle — a blob: or
+    // nano://app/__media/ url a live editor sends along with a document it
+    // drives remotely — which only the editor's own process can open. It
+    // stays the fallback: fixtures name their media by url alone.
+    if (src.contains("file") || src.contains("ref")) {
       if (const auto& resolve = mediaRefResolver()) c.sourceUrl = resolve(src);
     }
+    if (c.sourceUrl.empty() && src.contains("url") && src["url"].is_string())
+      c.sourceUrl = src["url"].get<std::string>();
     c.hasLocatableSource = !c.sourceUrl.empty();
   }
   if (j.contains("loop") && j["loop"].is_object()) c.loopJson = j["loop"];

@@ -157,19 +157,42 @@ TEST_CASE("a ref pointing at missing media stays effect-only", "[comp_media_ref]
   CHECK(h.descs(mkDoc(mkVideoClip("v1", refSource(gone)))).empty());
 }
 
-TEST_CASE("a runtime url still wins over the ref", "[comp_media_ref]") {
+TEST_CASE("the persistent bindings win over an editor's runtime url", "[comp_media_ref]") {
   TempLibrary lib;
   ResolverGuard guard;
   Harness h;
 
-  // The web path: the store relinked the media this session and handed the
-  // engine a live object url. The portable ref rides along but must not
-  // displace it.
+  // A live editor driving a native compositor sends its document with the
+  // runtime url still on each clip — a blob: or nano://app/__media/ url only
+  // the editor's own process can open. With the url first, every clip in the
+  // desktop app's native engine was unopenable: no video at all, and Precise
+  // held on it forever. (The web never installs a resolver, so its engine
+  // still reads `url`.)
   json src = refSource(libRef());
-  src["url"] = "blob:media/v1";
+  src["url"] = "nano://app/__media/elsewhere/a.mov";
+  json descs = h.descs(mkDoc(mkVideoClip("v1", src)));
+  REQUIRE(descs.size() == 1);
+  CHECK(descs[0]["url"] == lib.media());
+
+  src.erase("ref");
+  src["file"] = json{{"abs", lib.media()}};
+  descs = h.descs(mkDoc(mkVideoClip("v2", std::move(src))));
+  REQUIRE(descs.size() == 1);
+  CHECK(descs[0]["url"] == lib.media());
+}
+
+TEST_CASE("a url is the fallback when the bindings resolve nowhere", "[comp_media_ref]") {
+  TempLibrary lib;
+  ResolverGuard guard;
+  Harness h;
+
+  // Fixtures name their media by url (a plain path) alongside a ref that
+  // means nothing on this machine.
+  json src = refSource(json{{"libraryId", "nope"}, {"path", json::array({"a.mov"})}});
+  src["url"] = lib.media();
   const json descs = h.descs(mkDoc(mkVideoClip("v1", std::move(src))));
   REQUIRE(descs.size() == 1);
-  CHECK(descs[0]["url"] == "blob:media/v1");
+  CHECK(descs[0]["url"] == lib.media());
 }
 
 TEST_CASE("an unknown library id resolves to nothing", "[comp_media_ref]") {

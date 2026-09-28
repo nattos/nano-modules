@@ -20,9 +20,11 @@
 // with web regardless, so hit rate and precache depth stay comparable.
 //
 // SCOPE: DXV only, and only the built-in play modes. A non-DXV source or a
-// transport-DRIVEN clip is skipped and never reports ready — loudly, via
-// `skipped()`, so a test can say so by name instead of silently rendering a
-// hole. (AVFoundation and the transport channel are the follow-ups.)
+// transport-DRIVEN clip is skipped — loudly, via `skipped()`, so a test can
+// say so by name instead of silently rendering a hole — and reported READY
+// with nothing bound, the web's "permanently broken" rule: Precise barrels
+// past it (transparent) rather than holding forever. (AVFoundation and the
+// transport channel are the follow-ups.)
 //
 // HOST ONLY. Never include from src/sketch/comp/.
 
@@ -132,6 +134,11 @@ class VideoPump {
 
   std::map<std::string, std::unique_ptr<Clip>> clips_;
   std::map<std::string, std::string> skipped_;
+  /// Skipped clips in the CURRENT desc set — re-reported ready every pump(),
+  /// since the executor prunes its ready set whenever the video set changes.
+  std::vector<std::string> skippedActive_;
+  /// The url each skipped clip was skipped with.
+  std::map<std::string, std::string> skippedUrl_;
   int totalDecodes_ = 0;
 };
 

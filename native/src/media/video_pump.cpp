@@ -1,5 +1,7 @@
 #include "video_pump.h"
 
+#include <cstdio>
+
 #include <algorithm>
 #include <cmath>
 
@@ -125,16 +127,25 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
 
     auto it = clips_.find(clipId);
     if (it == clips_.end()) {
-      if (skipped_.count(clipId)) continue;  // already known-unsupported
+      const std::string url = d.value("url", std::string());
+      // Known-unsupported — unless its source changed (a relink), which gets a
+      // fresh attempt, as the web's failedAt does.
+      if (skipped_.count(clipId)) {
+        if (skippedUrl_[clipId] == url) continue;
+        skipped_.erase(clipId);
+      }
+      skippedUrl_[clipId] = url;
       auto c = std::make_unique<Clip>();
       c->clipId = clipId;
-      c->url = d.value("url", std::string());
+      c->url = url;
       if (c->url.empty()) {
         skipped_[clipId] = "no locatable media (see comp_media_resolver.h)";
         continue;
       }
       if (!c->source.open(c->url)) {
         skipped_[clipId] = c->source.error();
+        fprintf(stderr, "[video_pump] can't decode clip %s (%s): %s\n", clipId.c_str(),
+                c->url.c_str(), skipped_[clipId].c_str());
         continue;
       }
       c->pool.backend = backend_;
@@ -166,6 +177,11 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
     // Trust the FILE's frame count over the document's — a stale durationFrames
     // would index past the end of the frame table.
     c.durationFrames = c.source.info().frameCount > 0 ? c.source.info().frameCount : descFrames;
+  }
+
+  skippedActive_.clear();
+  for (const auto& id : live) {
+    if (skipped_.count(id)) skippedActive_.push_back(id);
   }
 }
 
@@ -245,6 +261,9 @@ void VideoPump::present(Clip& c, int frame, int32_t srcTex) {
 
 int VideoPump::pump(double beat, double bpm) {
   int presented = 0;
+  // Nothing here can decode these: ready with nothing bound (transparent), so
+  // the Precise gate doesn't wait on a frame that will never come.
+  if (ready_) for (const auto& id : skippedActive_) ready_(id, true);
   const comp::WarpClock clock(comp::WarpCurve(), bpm > 1 ? bpm : 120.0);
 
   for (auto& [id, cp] : clips_) {
