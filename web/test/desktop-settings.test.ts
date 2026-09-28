@@ -11,9 +11,9 @@
  */
 
 import { spawn } from 'child_process';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 
 const REPO = resolve(__dirname, '..', '..');
 const ROOT = resolve(REPO, 'build');
@@ -24,7 +24,7 @@ const PROBE = resolve(__dirname, 'fixtures', 'desktop-settings-probe.cjs');
 let work = '';
 
 function runPhase(
-  phase: 'arrangement' | 'relaunch' | 'remote', product: 'arrangement' | 'remote',
+  phase: 'arrangement' | 'relaunch' | 'engine' | 'remote', product: 'arrangement' | 'remote',
 ): Promise<any> {
   const profile = mkdtempSync(join(work, 'profile-'));
   return new Promise((res, rej) => {
@@ -53,7 +53,9 @@ function runPhase(
       clearTimeout(timer);
       const marker = out.lastIndexOf('PROBE ');
       if (marker < 0) return rej(new Error('probe produced no result:\n' + out));
-      try { res(JSON.parse(out.slice(marker + 6))); }
+      // The line alone: a child (the compositor) may log after it.
+      const line = out.slice(marker + 6).split('\n')[0];
+      try { res(JSON.parse(line)); }
       catch (e) { rej(new Error(`unparseable probe output: ${e}\n${out}`)); }
     });
   });
@@ -78,6 +80,22 @@ function runPhase(
     const r = await runPhase('relaunch', 'arrangement');
     expect(r.error).toBeUndefined();
     expect(r.width).toBe(250);
+  }, 120000);
+
+  it('Settings → Engine picks the engine at boot; the button saves it, a reload applies it', async () => {
+    // Saved as native before launch, the way the Settings tab (or an agent) would.
+    const file = join(work, 'data', 'Settings', 'arrangement.json');
+    mkdirSync(dirname(file), { recursive: true });
+    const doc = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+    writeFileSync(file, JSON.stringify({ ...doc, engine: 'native' }, null, 2));
+
+    const r = await runPhase('engine', 'arrangement');
+    expect(r.error).toBeUndefined();
+    expect(r.booted).toBe('native');
+    expect(r.clicked).toBe(true);
+    expect(r.written).toBe('browser');
+    expect(r.offersReload).toBe(true);   // saved ≠ running
+    expect(r.reloaded).toBe('browser');
   }, 120000);
 
   it('Remote Control applies outside edits to its settings and the MIDI library', async () => {

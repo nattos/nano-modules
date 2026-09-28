@@ -252,12 +252,24 @@ ipcMain.handle('nano.resourceRoot', () => resourceRoot);
 
 // -- The arrangement's native engine (compositor.cjs) --------------------------
 // `nano.compositorEngine`: which engine the arrangement should boot with when
-// the page doesn't say — NANO_ARRANGEMENT_ENGINE=native|browser, else browser.
+// the page doesn't say — NANO_ARRANGEMENT_ENGINE=native|browser, else the
+// `engine` key of Settings/arrangement.json (Settings → Engine), else browser.
+// Read per ask: the renderer re-asks on every (re)load, so a changed setting
+// applies on the next reload with nothing cached here.
 // `nano.compositor`: start the process (once) and answer {url, key}, or
 // {error} when it can't run here.
 let compositor = null;
+function arrangementEngine() {
+  const env = process.env.NANO_ARRANGEMENT_ENGINE;
+  if (env === 'native' || env === 'browser') return env;
+  try {
+    const doc = JSON.parse(fs.readFileSync(path.join(dataRootMod.settingsDir(), 'arrangement.json'), 'utf8'));
+    if (doc?.engine === 'native' || doc?.engine === 'browser') return doc.engine;
+  } catch { /* no file yet, or mid-edit: the default */ }
+  return 'browser';
+}
 ipcMain.handle('nano.compositorEngine', () =>
-  PRODUCT === 'arrangement' && process.env.NANO_ARRANGEMENT_ENGINE === 'native' ? 'native' : 'browser');
+  PRODUCT === 'arrangement' ? arrangementEngine() : 'browser');
 ipcMain.handle('nano.compositor', async () => {
   if (PRODUCT !== 'arrangement') return { error: 'only the arrangement app runs a compositor' };
   compositor ??= new Compositor(resourceRoot);

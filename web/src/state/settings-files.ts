@@ -5,7 +5,7 @@
  * `<appData>/Nano Modules/Settings/` (electron/data-root.cjs), and data that
  * several surfaces share gets its own file beside them:
  *
- *   arrangement.json      the NanoModules app      {layout, workspace}
+ *   arrangement.json      the NanoModules app      {layout, workspace, engine}
  *   remote-control.json   Remote Control app       {settings, selectedInstance, inputVideo}
  *   plugin.json           the FFGL plugin          (native only — barrel_runtime.cpp)
  *   midi-devices.json     Remote Control + plugin  the MIDI device library, as an array

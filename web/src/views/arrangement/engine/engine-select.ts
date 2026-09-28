@@ -7,9 +7,12 @@
  *   ?engine=native | ?engine=browser              in the desktop app: start /
  *                                                 don't start the shell's own
  *                                                 compositor (electron/compositor.cjs)
- *   neither                                       the shell's default
- *                                                 (NANO_ARRANGEMENT_ENGINE),
- *                                                 else the browser worker
+ *   neither                                       the shell's default:
+ *                                                 NANO_ARRANGEMENT_ENGINE, else
+ *                                                 Settings → Engine (the
+ *                                                 `engine` key of
+ *                                                 arrangement.json), else the
+ *                                                 browser worker
  *
  * A native engine that can't start falls back to the browser worker, loudly.
  */
@@ -17,8 +20,20 @@
 import { engineBridge } from './engine-bridge';
 import { RemoteCompEngine } from './remote-comp-engine';
 import { electronIpc } from '../../../state/paths';
+import { snackbars } from '../../../widgets/snackbars';
 
 export type CompEngineKind = 'browser' | 'native';
+
+/** The engine this page booted with (the Settings tab shows it). */
+export let activeCompEngine: CompEngineKind = 'browser';
+
+/** A dropped compositor socket is a crash (the shell restarts the process) or
+ *  a remote that went away; either way the engine replays on reconnect. */
+function onConnectionChange(up: boolean) {
+  snackbars.show(up
+    ? { message: 'Native engine reconnected', dedupeKey: 'native-engine' }
+    : { message: 'Native engine stopped — reconnecting…', dedupeKey: 'native-engine', timeoutMs: 0 });
+}
 
 export async function selectCompEngine(search = location.search): Promise<CompEngineKind> {
   const params = new URLSearchParams(search);
@@ -38,9 +53,9 @@ export async function selectCompEngine(search = location.search): Promise<CompEn
       }
     }
   }
-  if (!url) return 'browser';
+  if (!url) return (activeCompEngine = 'browser');
   const target = url;
-  engineBridge.setEngineFactory((w, h) => new RemoteCompEngine(w, h, { url: target, key }));
+  engineBridge.setEngineFactory((w, h) => new RemoteCompEngine(w, h, { url: target, key, onConnectionChange }));
   console.log(`[arrangement] engine: native compositor at ${target}`);
-  return 'native';
+  return (activeCompEngine = 'native');
 }

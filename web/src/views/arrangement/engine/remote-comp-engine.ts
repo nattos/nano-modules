@@ -33,6 +33,11 @@ export interface RemoteCompOptions {
   url: string;
   /** Its plugin key (nano_compositor --key; default "compositor"). */
   key?: string;
+  /** The socket dropped (`up` false) or came back after a drop (`up` true) —
+   *  the compositor crashed and restarted, or the remote went away. The
+   *  engine replays its state on reconnect by itself; this is for telling the
+   *  user. Not called for the first connect. */
+  onConnectionChange?: (up: boolean) => void;
 }
 
 /** The two telemetry channels mirrored from the state document. */
@@ -109,6 +114,7 @@ export class RemoteCompEngine implements CompEngine {
       if (this.opened) {
         this.action('comp_reset', { mediaBase: location.href });
         this.replay();
+        opts.onConnectionChange?.(true);
       }
       this.opened = true;
       this.action('comp_resize', { width: this.width, height: this.height });
@@ -119,6 +125,7 @@ export class RemoteCompEngine implements CompEngine {
       this.pushRequests();
       this.client.get(this.base);
     };
+    this.client.onClose = () => { if (this.opened) opts.onConnectionChange?.(false); };
     this.client.onSnapshot(this.base, (state) => this.applyState(state));
     this.client.onSnapshot('/global/preview_transport', (doc) => this.reconcileLanes(doc));
     this.client.onPatch((ops) => this.applyPatches(ops));

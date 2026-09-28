@@ -29,7 +29,8 @@ Rules for editing:
     "wiresMode": false, "automationMode": false, "helpMode": false,
     "lastFile": "show.nano-arr"
   },
-  "workspace": { "path": "/Users/me/Shows/tour", "label": "tour" }
+  "workspace": { "path": "/Users/me/Shows/tour", "label": "tour" },
+  "engine": "native"
 }
 ```
 
@@ -38,6 +39,9 @@ Rules for editing:
   next launch.
 - `workspace` is the open project folder; pointing it at another folder opens
   that folder.
+- `engine` is `browser` (the default) or `native` (the compositor process).
+  It applies the next time the window loads (Settings → Engine offers the
+  reload); the `NANO_ARRANGEMENT_ENGINE` environment variable overrides it.
 
 ### `remote-control.json` — the Remote Control app (Live + Playground)
 

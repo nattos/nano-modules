@@ -72,6 +72,42 @@ const PHASES = {
     return { width: await page('window.arrangementStore.sidePanelWidth') };
   },
 
+  // Settings → Engine: the file's `engine` picks the engine at boot (the test
+  // wrote 'native' before launch), the Settings tab's button writes it, and a
+  // reload applies it.
+  async engine() {
+    await until('!!window.arrangementStore');
+    // By capability, not class name (the packaged build is minified): only
+    // the native engine decodes video for itself.
+    const engineName = () => until(
+      `window.__engineBridge && window.__engineBridge.engine &&
+       (window.__engineBridge.engine.ownsVideoPump ? 'native' : 'browser')`,
+      30000);
+    const out = { booted: await engineName() };
+    await page('window.arrangementStore.setRightTab("settings"), 1');
+    await sleep(500);
+    out.clicked = await page(`(() => {
+      const app = document.querySelector('arrangement-app');
+      const insp = app && app.shadowRoot && app.shadowRoot.querySelector('arr-inspector');
+      const btn = insp && [...insp.shadowRoot.querySelectorAll('button.segbtn')]
+        .find((b) => b.textContent.trim() === 'browser');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    await sleep(300);
+    out.written = readJson('arrangement.json')?.engine ?? null;
+    out.offersReload = await page(`(() => {
+      const insp = document.querySelector('arrangement-app').shadowRoot.querySelector('arr-inspector');
+      return [...insp.shadowRoot.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Reload now');
+    })()`);
+    await page('location.reload(), 1');
+    await sleep(1000);
+    await until('!!window.arrangementStore');
+    out.reloaded = await engineName();
+    return out;
+  },
+
   // Remote Control: user settings and the MIDI device library, both live.
   async remote() {
     await win.loadURL('nano://app/index.html?playground');

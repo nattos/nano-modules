@@ -26,6 +26,8 @@ import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, trackTransp
 import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
+import { activeCompEngine, type CompEngineKind } from '../engine/engine-select';
+import { readSection, writeSection, SETTINGS_FILES } from '../../../state/settings-files';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
@@ -587,6 +589,8 @@ export class ArrInspector extends MobxLitElement {
   @state() private rememberedLabel: string | null = null;
   /** True while a folder is dragged over the Library paths drop zone. */
   @state() private libDragOver = false;
+  /** Settings → Engine as saved (arrangement.json `engine`); read on first render. */
+  @state() private engineChoice: CompEngineKind | null = null;
   /** Generic confirmation popover, anchored near the click. */
   @state() private confirm:
     | { message: string; confirmLabel: string; danger: boolean; x: number; y: number; onYes: () => void | Promise<void> }
@@ -1623,12 +1627,52 @@ export class ArrInspector extends MobxLitElement {
         </div>
 
         <div class="group-title">Application</div>
+        ${isElectron() ? this.renderEngineSetting() : nothing}
         <div class="row"><label>Theme</label><span class="val"><span class="tag">Dark (Pro)</span></span></div>
         <div class="row"><label>Snap to grid</label><span class="val"><span class="tag">¼ beat</span></span></div>
         <div class="row"><label>Default play mode</label><span class="val">${store.composition.playMode.defaultMode}</span></div>
 
         ${isElectron() ? this.renderWebAppCompatibility() : this.renderWebLibraries()}
       </div>
+    `;
+  }
+
+  /**
+   * Which engine composites: the browser worker, or the native compositor
+   * process. Picked at page boot (engine-select.ts), so a change is saved and
+   * applies on the next reload — offered right here, after flushing the
+   * document (it autosaves to its workspace; a scratch document has none).
+   */
+  private renderEngineSetting(): TemplateResult {
+    const saved = this.engineChoice
+        ?? readSection<CompEngineKind>(SETTINGS_FILES.arrangement, 'engine') ?? 'browser';
+    const pick = (k: CompEngineKind) => {
+      this.engineChoice = k;
+      writeSection(SETTINGS_FILES.arrangement, 'engine', k);
+    };
+    const reload = async () => {
+      await store.saveNow();
+      location.reload();
+    };
+    return html`
+      <div class="row">
+        <label title="Where the composition renders: the app's browser engine, or a native compositor process (faster, and the path to fullscreen outputs).">Engine</label>
+        <span class="val seg">
+          ${(['browser', 'native'] as const).map((k) => html`<button
+            class="segbtn ${saved === k ? 'on' : ''}"
+            @click=${() => pick(k)}
+          >${k}</button>`)}
+        </span>
+      </div>
+      ${saved !== activeCompEngine
+        ? html`<div class="row">
+            <label></label>
+            <span class="val">Running the ${activeCompEngine} engine.
+              <button class="btn" style="margin-left:6px"
+                title=${store.hasWorkspace ? 'Saves the document, then reloads with the new engine' : 'Reloads with the new engine. This document has no workspace, so unsaved changes are lost.'}
+                @click=${reload}>Reload now</button></span>
+          </div>`
+        : nothing}
     `;
   }
 
