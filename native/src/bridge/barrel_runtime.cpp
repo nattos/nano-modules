@@ -39,6 +39,7 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 #if NANO_COMP_HOST
+#include "bridge/comp_export.h"
 #include "bridge/comp_host.h"
 #endif
 
@@ -232,6 +233,8 @@ int bridgePortFromEnv() {
   const int port = p ? atoi(p) : 0;
   return port > 0 ? port : 8081;
 }
+// An NBCJ message to the clients observing a comp (defined below).
+void sendCompJson(const std::string& key, const nlohmann::json& j);
 }  // namespace
 
 struct BarrelRuntime::Impl {
@@ -317,6 +320,12 @@ struct BarrelRuntime::Impl {
     int compVideoInjects = -1;
     size_t compVideoSkipped = 0;
     std::map<std::string, int> compVideoFrames;
+    // An offline export beside the live comp (comp_export.h), stepped a slice
+    // per rendered frame. One at a time.
+    std::unique_ptr<CompExportJob> compExport;
+    double compExportId = 0;
+    std::string compMediaBase;
+    std::chrono::steady_clock::time_point compExportLastReport{};
     bool compRequestsRead = false;
 #endif
 
@@ -553,7 +562,7 @@ struct BarrelRuntime::Impl {
     comp_handlers_installed = true;
     for (const char* action : {"comp_reset", "comp_load_doc", "comp_control", "comp_op",
                                "comp_resize", "comp_clock", "comp_step", "comp_readback",
-                               "comp_visibility"}) {
+                               "comp_visibility", "comp_export_start", "comp_export_cancel"}) {
       BridgeServer::instance().set_action_handler(action,
           [this](int, const std::string& msg) {
             auto j = nlohmann::json::parse(msg, nullptr, false);
@@ -636,6 +645,75 @@ struct BarrelRuntime::Impl {
     pe.haveLastPluginStates = false;
     pe.haveLastModulation = false;
   }
+
+  /// comp_export_start: {jobId, json (the document), path, width, height, fps,
+  /// startBeat, endBeat, bitrate, ignoreSolo, background: [r,g,b]}.
+  void startCompExport(const std::string& key, PerExecutor& pe, const nlohmann::json& m) {
+    const double jobId = m.value("jobId", 0.0);
+    const auto fail = [&](const std::string& why) {
+      sendCompJson(key, {{"type", "export_error"}, {"jobId", jobId}, {"message", why}});
+    };
+    if (pe.compExport) return fail("an export is already running");
+    auto doc = nlohmann::json::parse(m.value("json", std::string("{}")), nullptr, false);
+    if (doc.is_discarded()) return fail("the document didn't parse");
+    CompExportJob::Settings st;
+    st.path = m.value("path", std::string());
+    st.width = m.value("width", 0);
+    st.height = m.value("height", 0);
+    st.fps = m.value("fps", 30.0);
+    st.startBeat = m.value("startBeat", 0.0);
+    st.endBeat = m.value("endBeat", 0.0);
+    st.bitrate = m.value("bitrate", (int64_t)0);
+    st.ignoreSolo = m.value("ignoreSolo", false);
+    st.mediaBase = pe.compMediaBase;
+    if (m.contains("background") && m["background"].is_array() && m["background"].size() == 3) {
+      for (int c = 0; c < 3; c++) st.bg[c] = (uint8_t)std::clamp(m["background"][c].get<int>(), 0, 255);
+    }
+    if (st.path.empty()) return fail("no output path");
+    // A SIBLING namespace: under the live comp's own ("<key>/") its prune
+    // would destroy the export's instances.
+    auto job = std::make_unique<CompExportJob>(gpu.get(), rt.get(), registry.get(), bundles.get(),
+                                               pe.compKey + ".export/");
+    if (!job->start(doc, st)) return fail(job->error());
+    pe.compExport = std::move(job);
+    pe.compExportId = jobId;
+    pe.compExportLastReport = {};
+    BRT_LOG("export %s: %d frames at %dx%d", st.path.c_str(), pe.compExport->framesTotal(),
+            st.width, st.height);
+  }
+
+  /// A slice of the running export: frames until ~8 ms have gone (at least
+  /// one), so the live comp keeps its frame rate while an export runs.
+  void stepCompExport(const std::string& key, PerExecutor& pe) {
+    auto& job = *pe.compExport;
+    const auto t0 = std::chrono::steady_clock::now();
+    bool running = true;
+    do {
+      running = job.step(1);
+    } while (running && std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(8));
+    const auto now = std::chrono::steady_clock::now();
+    if (running) {
+      if (now - pe.compExportLastReport >= std::chrono::milliseconds(100)) {
+        pe.compExportLastReport = now;
+        sendCompJson(key, {{"type", "export_progress"}, {"jobId", pe.compExportId},
+                           {"done", job.framesDone()}, {"total", job.framesTotal()}});
+      }
+      return;
+    }
+    if (job.finished()) {
+      sendCompJson(key, {{"type", "export_done"}, {"jobId", pe.compExportId},
+                         {"frames", job.framesTotal()}, {"engineFrames", job.engineFrames()},
+                         {"durationSec", job.framesTotal() / job.settings().fps},
+                         {"width", job.settings().width}, {"height", job.settings().height},
+                         {"fps", job.settings().fps}});
+    } else {
+      sendCompJson(key, {{"type", "export_error"}, {"jobId", pe.compExportId},
+                         {"message", job.error()}});
+    }
+    BRT_LOG("export ended: %s", job.finished() ? "done" : job.error().c_str());
+    pe.compExport.reset();
+  }
+
 #endif
 
   std::vector<nlohmann::json> takeCompInbox(const std::string& key) {
@@ -2126,7 +2204,8 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       impl_->rt->destroyInstancesWithKeyPrefix(impl_->compNamespace(pe));
       impl_->buildCompHost(pe, w, h);
       // The editor's page url: what its dev-server media urls resolve against.
-      pe.comp->setMediaBase(m.value("mediaBase", std::string()));
+      pe.compMediaBase = m.value("mediaBase", std::string());
+      pe.comp->setMediaBase(pe.compMediaBase);
     } else if (action == "comp_load_doc") {
       auto doc = nlohmann::json::parse(m.value("json", std::string("{}")), nullptr, false);
       if (!doc.is_discarded()) host.loadDocument(doc);
@@ -2146,6 +2225,15 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       for (int i = 0; i < n; ++i) frameDts.push_back(sdt);
     } else if (action == "comp_readback") {
       readbacks.push_back(std::move(m));
+    } else if (action == "comp_export_start") {
+      impl_->startCompExport(key, pe, m);
+    } else if (action == "comp_export_cancel") {
+      if (pe.compExport && m.value("jobId", 0.0) == pe.compExportId) {
+        pe.compExport->cancel();
+        sendCompJson(key, {{"type", "export_done"}, {"jobId", pe.compExportId},
+                           {"canceled", true}});
+        pe.compExport.reset();
+      }
     } else if (action == "comp_visibility") {
       // The effect's static evaluator over a candidate state — no instance.
       nlohmann::json reply = {{"type", "visibility"}, {"reqId", m.value("reqId", 0)},
@@ -2240,6 +2328,7 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       sendCompJson(key, rep);
     }
   }
+  if (pe.compExport) impl_->stepCompExport(key, pe);
   impl_->rt->drainConsoleLog();
 
   if (rendered && watched) {

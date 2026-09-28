@@ -23,6 +23,7 @@
  */
 
 import { ArrEngine } from './arr-engine';
+import type { RemoteCompEngine } from './remote-comp-engine';
 import { releaseFrame, type CompEngine } from './comp-engine';
 import type { PreviewFrame } from '../../../preview-gpu';
 import type { CompFrameInfo } from '../../../engine-types';
@@ -260,6 +261,13 @@ export class EngineBridge {
   }
   /** Last video decode/inject error, if any (diagnostic). */
   videoLastError(): string | null { return this.video?.lastError ?? null; }
+  /** The engine's own exporter when it has one — the native compositor renders
+   *  and encodes in its process (remote-comp-engine.ts exportFile). */
+  nativeExporter(): Pick<RemoteCompEngine, 'exportFile'> | null {
+    const e = this.engine as Partial<RemoteCompEngine> | null;
+    return e && typeof e.exportFile === 'function' ? (e as RemoteCompEngine) : null;
+  }
+
   /** Clips the engine's own pump can't open, clipId → reason (diagnostic). */
   videoSkipped(): Record<string, string> { return this.engineVideoSkipped; }
   /** What a clip's pump last presented, as a key that changes with the frame;

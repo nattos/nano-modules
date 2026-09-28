@@ -247,6 +247,17 @@ ipcMain.handle('paths.showDirectoryPicker', async (event) => {
 
 ipcMain.handle('paths.showItemInFolder', (_e, absPath) => shell.showItemInFolder(absPath));
 
+/** The native save dialog: an ABSOLUTE path (the native exporter writes the
+ *  file itself), or undefined when dismissed. */
+ipcMain.handle('paths.showSaveDialog', async (event, opts = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    defaultPath: opts.defaultPath,
+    filters: opts.filters,
+  });
+  return canceled ? undefined : filePath;
+});
+
 /** Let the renderer find the bundles/fonts without guessing at layout. */
 ipcMain.handle('nano.resourceRoot', () => resourceRoot);
 
@@ -274,7 +285,8 @@ ipcMain.handle('nano.compositorEngine', () =>
   PRODUCT === 'arrangement' ? arrangementEngine() : 'browser');
 ipcMain.handle('nano.compositor', async () => {
   if (PRODUCT !== 'arrangement') return { error: 'only the arrangement app runs a compositor' };
-  compositor ??= new Compositor(resourceRoot);
+  compositor ??= new Compositor(resourceRoot,
+      app.isPackaged || process.env.NANO_FORCE_PACKAGED === '1');
   try {
     return await compositor.ensure();
   } catch (err) {

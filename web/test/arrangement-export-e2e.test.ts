@@ -8,11 +8,15 @@
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-export-e2e
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
+
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
-async function runExport(url: string): Promise<{ frames: number; engineFrames: number; blobSize: number; durationSec: number }> {
-  const errors: string[] = [];
+async function setUp(url: string, errors: string[]): Promise<void> {
   page.removeAllListeners('pageerror');
   page.removeAllListeners('console');
   page.on('pageerror', (err) => errors.push(String(err)));
@@ -52,7 +56,11 @@ async function runExport(url: string): Promise<{ frames: number; engineFrames: n
     store.setPosition(1);
   });
   await new Promise((r) => setTimeout(r, 1500)); // let the live engine settle
+}
 
+async function runExport(url: string): Promise<{ frames: number; engineFrames: number; blobSize: number; durationSec: number }> {
+  const errors: string[] = [];
+  await setUp(url, errors);
   const res = await page.evaluate(async () => {
     // eval-wrapped so jest's babel transform can't rewrite the dynamic import.
     const mod = await (0, eval)('import("/src/views/arrangement/engine/export-renderer.ts")');
@@ -83,5 +91,38 @@ describe('Arrangement offline export (GPU, real media)', () => {
     // discovery/schema failure that would export pure background).
     expect(r.engineFrames).toBe(r.frames);
     expect(r.blobSize).toBeGreaterThan(1000);
+  });
+});
+
+// The native engine exports IN the compositor process (bridge/comp_export.h):
+// its own comp host beside the live one, AVFoundation decode, a hardware
+// H.264 encode, straight to a path. The same composition as above.
+forEachCompBackend((backend) => {
+  describe('Arrangement offline export, native engine (real media)', () => {
+    jest.setTimeout(180_000);
+
+    // (The worker engine exports through export-renderer.ts — the case above.)
+    (backend === 'native' ? it : it.skip)('renders and encodes an MP4 to a path, beside the live comp', async () => {
+      const errors: string[] = [];
+      await setUp(arrangementUrl(BASE), errors);
+      const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'nano-export-')), 'native.mp4');
+      const res = await page.evaluate(async (out) => {
+        const store = (window as any).arrangementStore;
+        const exporter = (window as any).__engineBridge.nativeExporter();
+        if (!exporter) return { error: 'no native exporter' };
+        let progress = 0;
+        const r = await exporter.exportFile({
+          json: JSON.stringify(store.composition), path: out,
+          width: 160, height: 90, fps: 12, startBeat: 0, endBeat: 2,
+          bitrate: 500_000, ignoreSolo: false, background: [0, 0, 0],
+        }, () => { progress++; });
+        return { ...r, progress };
+      }, out);
+      expect((res as any).error).toBeUndefined();
+      expect(res.frames).toBe(12);                // 1 s at 12 fps
+      expect(res.engineFrames).toBe(res.frames);  // every frame had content
+      expect(fs.statSync(out).size).toBeGreaterThan(1000);
+      expect(errors).toEqual([]);
+    });
   });
 });

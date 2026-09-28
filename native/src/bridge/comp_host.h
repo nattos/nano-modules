@@ -105,8 +105,10 @@ class CompHost {
 
   /// One offline-export frame at a PLANNED beat/time: decode + inject the
   /// exact frame first, then seek + step with dt 0 and the effect clock at
-  /// `tSec`. Call primeExport(startBeat) once first.
-  int32_t stepExport(double beat, double tSec, double fps);
+  /// `tSec`. Call primeExport(startBeat) once first. `warm`: a build-only pass
+  /// that advances no effect (dt 0) — the exporter settles the chain with it
+  /// before recording frame 0, as export-renderer.ts does.
+  int32_t stepExport(double beat, double tSec, double fps, bool warm = false);
   /// Publish the desc set for `beat` without rendering, so an export's frame
   /// 0 has something to decode. One thrown-away update.
   void primeExport(double beat);

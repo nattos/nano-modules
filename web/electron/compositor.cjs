@@ -13,8 +13,8 @@
  * If it dies while the shell runs, it is restarted on the SAME port: the
  * renderer's socket reconnects and replays the document.
  *
- * Where the binary is: `<root>/bin/nano_compositor` (packaged), else the dev
- * tree's `native/build/nano_compositor`.
+ * Where the binary is: `<root>/bin/nano_compositor` when packaged; from the
+ * tree, `native/build/nano_compositor` first (the staged copy may be stale).
  */
 
 const { spawn } = require('child_process');
@@ -28,13 +28,15 @@ const FIRST_PORT = 8091;
 const PORT_STRIDE = 10;
 const PORT_TRIES = 20;
 
-function binaryPath(resourceRoot) {
-  const candidates = [
-    process.env.NANO_COMPOSITOR_BIN,
-    resourceRoot ? path.join(resourceRoot, 'bin', EXE) : null,
-    // Unpackaged: web/electron -> web -> repo -> native/build
-    path.resolve(__dirname, '..', '..', 'native', 'build', EXE),
-  ];
+function binaryPath(resourceRoot, packaged) {
+  // Unpackaged: web/electron -> web -> repo -> native/build. Preferred over the
+  // staged <root>/bin copy when running from the tree, which is only as fresh
+  // as the last `npm run stage` — a stale one silently lacks new actions.
+  const devBuild = path.resolve(__dirname, '..', '..', 'native', 'build', EXE);
+  const staged = resourceRoot ? path.join(resourceRoot, 'bin', EXE) : null;
+  const candidates = packaged
+    ? [process.env.NANO_COMPOSITOR_BIN, staged, devBuild]
+    : [process.env.NANO_COMPOSITOR_BIN, devBuild, staged];
   return candidates.find((c) => c && fs.existsSync(c)) ?? null;
 }
 
@@ -59,8 +61,11 @@ async function pickPort() {
 }
 
 class Compositor {
-  constructor(resourceRoot) {
+  /** `packaged`: the app bundle (or NANO_FORCE_PACKAGED) — its staged binary
+   *  wins; from the tree, native/build's does. */
+  constructor(resourceRoot, packaged = true) {
     this.resourceRoot = resourceRoot;
+    this.packaged = packaged;
     this.child = null;
     this.port = 0;
     this.starting = null;
@@ -78,7 +83,7 @@ class Compositor {
   }
 
   async start() {
-    const bin = binaryPath(this.resourceRoot);
+    const bin = binaryPath(this.resourceRoot, this.packaged);
     if (!bin) throw new Error('nano_compositor not found (build native/build or package bin/)');
     if (!this.port) this.port = await pickPort();
     await this.spawnOnce(bin);

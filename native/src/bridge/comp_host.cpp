@@ -186,7 +186,13 @@ void CompHost::publishClock(double dt) {
   if (bundles_) {
     bundles_->setHostClock(hostTime_, dt, barPhase, cx_->bpm(), cfg_.width, cfg_.height,
                            referenceH_);
+    // The bundles are shared, so is their streams binding: a second host (an
+    // export beside the live comp) renders in the same process. Whoever renders
+    // this frame binds its own table.
+    bundles_->setStreamsTable(&cx_->streamsTableMutable(), &cx_->warpClock());
   }
+  // Likewise the backend's surface (what effects read as the viewport target).
+  if (gpu_) gpu_->setSurface(outTex_, (uint32_t)cfg_.width, (uint32_t)cfg_.height);
 }
 
 int32_t CompHost::renderFrame(double execDt) {
@@ -226,14 +232,14 @@ void CompHost::primeExport(double beat) {
   lastFlags_ = cx_->update(0.0);
 }
 
-int32_t CompHost::stepExport(double beat, double tSec, double fps) {
+int32_t CompHost::stepExport(double beat, double tSec, double fps, bool warm) {
   if (lastFlags_ & comp::kCompVideoSetChanged) {
     pump_->setActiveClips(json::parse(cx_->videoDescsJson(), nullptr, false));
   }
   pump_->pump(beat, cx_->bpm());
   cx_->seekBeat(beat);
   hostTime_ = tSec;
-  const double dt = 1.0 / fps;
+  const double dt = warm ? 0.0 : 1.0 / fps;
   lastFlags_ = cx_->update(0.0);
   publishClock(dt);
   cx_->transportResolve(0.0);

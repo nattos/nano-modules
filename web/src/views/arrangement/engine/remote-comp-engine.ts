@@ -28,6 +28,32 @@ import { WsBridgeClient } from '../../../ws-bridge-client';
 import { catalogEntries, pluginInfosFromCatalog } from '../../../state/plugin-catalog';
 import type { CompControlMsg, CompEngine, CompOpMsg } from './comp-engine';
 
+/** comp_export_start's payload (bridge/barrel_runtime.cpp startCompExport). */
+export interface NativeExportRequest {
+  /** The composition document, as JSON. */
+  json: string;
+  /** Absolute output path (.mp4). */
+  path: string;
+  width: number;
+  height: number;
+  fps: number;
+  startBeat: number;
+  endBeat: number;
+  bitrate: number;
+  ignoreSolo: boolean;
+  /** Backdrop RGB 0..255 (MP4 has no alpha). */
+  background: [number, number, number];
+}
+
+export interface NativeExportResult {
+  frames: number;
+  engineFrames: number;
+  durationSec: number;
+  width: number;
+  height: number;
+  fps: number;
+}
+
 export interface RemoteCompOptions {
   /** The compositor's bridge URL, e.g. ws://127.0.0.1:8091. */
   url: string;
@@ -282,7 +308,9 @@ export class RemoteCompEngine implements CompEngine {
     if (dec.decode(b.subarray(7, 7 + keyLen)) !== this.key) return true;
     let msg: any;
     try { msg = JSON.parse(dec.decode(b.subarray(7 + keyLen))); } catch { return true; }
-    if (msg?.type === 'comp_report') {
+    if (typeof msg?.type === 'string' && msg.type.startsWith('export_')) {
+      this.onExportMessage(msg);
+    } else if (msg?.type === 'comp_report') {
       this.resolveReady();
       if (typeof msg.positionBeat === 'number') this.lastPositionBeat = msg.positionBeat;
       this.countFps();
@@ -294,6 +322,46 @@ export class RemoteCompEngine implements CompEngine {
       reply?.(msg);
     }
     return true;
+  }
+
+  // ── Offline export (bridge/comp_export.h) ─────────────────────────────────
+  private exportSeq = 0;
+  private exportJob: {
+    id: number;
+    onProgress?: (done: number, total: number) => void;
+    resolve: (r: NativeExportResult) => void;
+    reject: (e: Error) => void;
+  } | null = null;
+
+  /**
+   * Render + encode an MP4 IN the compositor process — its own engine beside
+   * the live one, AVFoundation decode (exact H.264 frames) and a hardware H.264
+   * encode — straight to `path`. Resolves when the file is on disk; rejects
+   * with an AbortError on `signal`.
+   */
+  exportFile(req: NativeExportRequest, onProgress?: (done: number, total: number) => void,
+             signal?: AbortSignal): Promise<NativeExportResult> {
+    if (this.exportJob) return Promise.reject(new Error('an export is already running'));
+    const id = ++this.exportSeq;
+    return new Promise<NativeExportResult>((resolve, reject) => {
+      this.exportJob = { id, onProgress, resolve, reject };
+      signal?.addEventListener('abort', () => this.action('comp_export_cancel', { jobId: id }), { once: true });
+      this.action('comp_export_start', { jobId: id, ...req });
+    });
+  }
+
+  private onExportMessage(msg: any) {
+    const job = this.exportJob;
+    if (!job || msg.jobId !== job.id) return;
+    if (msg.type === 'export_progress') {
+      job.onProgress?.(msg.done, msg.total);
+      return;
+    }
+    this.exportJob = null;
+    if (msg.type === 'export_error') job.reject(new Error(msg.message || 'export failed'));
+    else if (msg.canceled) job.reject(new DOMException('Export canceled', 'AbortError'));
+    else job.resolve({ frames: msg.frames, engineFrames: msg.engineFrames,
+                       durationSec: msg.durationSec, width: msg.width, height: msg.height, fps: msg.fps });
   }
 
   private countFps() {

@@ -14,10 +14,12 @@
  * back to an in-memory render + download when it isn't.
  */
 
-import { makeAutoObservable, runInAction } from 'mobx';
+import { makeAutoObservable, runInAction, toJS } from 'mobx';
 import { exportComposition, canExport, defaultBitrate, evenDim, planExportFrames } from './export-renderer';
 import { makeWarpClock } from './warp-clock';
+import { engineBridge } from './engine-bridge';
 import { store } from '../state/store';
+import { electronIpc } from '../../../state/paths';
 import { compositionLengthBeats, type ExportQuality } from '../model/composition';
 
 export type ExportPhase = 'idle' | 'rendering' | 'done' | 'error' | 'canceled';
@@ -74,6 +76,58 @@ class ExportController {
 
   cancel(): void { this.abortCtl?.abort(); }
 
+  private async runNative(
+    native: NonNullable<ReturnType<typeof engineBridge.nativeExporter>>,
+    ipc: { invoke(ch: string, ...args: unknown[]): Promise<any> },
+  ): Promise<void> {
+    const fps = store.exportFps;
+    const eff = store.exportResolution;
+    const w = evenDim(eff.width);
+    const h = evenDim(eff.height);
+    const { startBeat, endBeat } = this.range;
+    const bitrate = defaultBitrate(w, h, fps, QUALITY_BPP[store.exportSettings.quality]);
+    const baseName = (store.currentName ?? 'arrangement').replace(/\.[^/.]+$/, '').split('/').pop() || 'arrangement';
+    const path: string | undefined = await ipc.invoke('paths.showSaveDialog', {
+      defaultPath: `${baseName}.mp4`,
+      filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+    });
+    if (!path) return;
+
+    this.abortCtl = new AbortController();
+    runInAction(() => {
+      this.phase = 'rendering';
+      this.framesDone = 0;
+      this.framesTotal = this.estimateFrames;
+      this.message = '';
+    });
+    const t0 = performance.now();
+    try {
+      const res = await native.exportFile({
+        json: JSON.stringify(toJS(store.composition)),
+        path, width: w, height: h, fps, startBeat, endBeat, bitrate,
+        ignoreSolo: store.exportSettings.ignoreSolo,
+        background: backdropRgb(),
+      }, (done, total) => runInAction(() => { this.framesDone = done; this.framesTotal = total; }),
+      this.abortCtl.signal);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      runInAction(() => {
+        this.phase = 'done';
+        this.framesDone = res.frames;
+        this.framesTotal = res.frames;
+        this.message = `${res.frames} frames · ${res.durationSec.toFixed(1)}s · rendered in ${secs}s · saved`;
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        runInAction(() => { this.phase = 'canceled'; this.message = 'Export canceled.'; });
+      } else {
+        runInAction(() => { this.phase = 'error'; this.message = err instanceof Error ? err.message : String(err); });
+        console.error('[export] native export failed', err);
+      }
+    } finally {
+      this.abortCtl = null;
+    }
+  }
+
   /**
    * Run an export with the composition's persisted settings. Prompts for a save
    * location and streams to disk when the File System Access API is available;
@@ -82,6 +136,12 @@ class ExportController {
    */
   async run(): Promise<void> {
     if (this.phase === 'rendering') return;
+    // The native engine exports in its own process (AVFoundation decode, a
+    // hardware encode, straight to a path) — the desktop app's route whenever
+    // it's the engine running.
+    const native = engineBridge.nativeExporter();
+    const ipc = electronIpc();
+    if (native && ipc) return this.runNative(native, ipc);
     if (!canExport()) {
       runInAction(() => { this.phase = 'error'; this.message = 'This browser does not support video export (WebCodecs).'; });
       return;
@@ -153,6 +213,15 @@ class ExportController {
       this.abortCtl = null;
     }
   }
+}
+
+/** The export's backdrop: MP4 has no alpha, so transparent and the default
+ *  are black; a custom colour is itself (export-renderer.ts backgroundBitmap). */
+function backdropRgb(): [number, number, number] {
+  const bg = store.composition.meta.background;
+  const m = bg?.mode === 'custom' && bg.color ? /^#?([0-9a-f]{6})$/i.exec(bg.color.trim()) : null;
+  if (!m) return [0, 0, 0];
+  return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)) as [number, number, number];
 }
 
 /** App-wide singleton (mirrors `store` / `engineBridge`). */
