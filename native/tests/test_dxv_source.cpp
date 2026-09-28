@@ -147,3 +147,33 @@ TEST_CASE("an out-of-range frame index fails without touching the GPU", "[dxv][g
   CHECK_FALSE(src.decode(hx.backend.get(), -1, out));
   CHECK_FALSE(src.decode(hx.backend.get(), src.info().frameCount, out));
 }
+
+TEST_CASE("several DXV decodes before one submit each keep their own frame", "[dxv][gpu]") {
+  // The pump decodes a pull AND its read-ahead in one call, before anything
+  // submits. Each decode must land its own frame even though they share the
+  // BC1 staging upload.
+  GpuHarness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+  DxvSource src;
+  REQUIRE(src.open(mediaPath("test_dxv.mov")));
+  const uint32_t w = src.info().width, h = src.info().height;
+  const int frames[] = {0, 20, 40};
+
+  std::vector<std::vector<uint8_t>> solo;
+  for (int f : frames) {
+    const int32_t t = hx.backend->createTexture(w, h, 1);
+    REQUIRE(src.decode(hx.backend.get(), f, t));
+    hx.backend->submit();
+    solo.push_back(hx.backend->readbackTexture(t, w, h));
+  }
+  std::vector<int32_t> texs;
+  for (int f : frames) {
+    texs.push_back(hx.backend->createTexture(w, h, 1));
+    REQUIRE(src.decode(hx.backend.get(), f, texs.back()));
+  }
+  hx.backend->submit();
+  for (size_t i = 0; i < texs.size(); i++) {
+    INFO("frame " << frames[i]);
+    CHECK(hx.backend->readbackTexture(texs[i], w, h) == solo[i]);
+  }
+}

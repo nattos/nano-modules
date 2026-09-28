@@ -613,6 +613,9 @@ struct BarrelRuntime::Impl {
     CompHost::Config cfg;
     cfg.width = w;
     cfg.height = h;
+    // Realtime: a seek or an open must never stall the frame (and every
+    // output with it). A late frame holds Precise or shows the last one in Live.
+    cfg.asyncDecode = true;
     pe.comp = std::make_unique<CompHost>(gpu.get(), rt.get(), registry.get(), bundles.get(), cfg);
     const auto hooks = captureHooksFor(&pe);
     pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);

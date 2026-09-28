@@ -50,6 +50,9 @@ class CompHost {
     int height = 64;
     /// Frames the decode pump precaches per pull (0 disables read-ahead).
     int readAheadDepth = nano_media::kReadAheadDepth;
+    /// Decode on threads (VideoPump::Config::async) — the realtime compositor.
+    /// The fixed-step runner and export keep the synchronous pump.
+    bool asyncDecode = false;
   };
 
   /// Seeds the catalog from `registry`, binds the streams table into

@@ -145,14 +145,12 @@ DxvSource::~DxvSource() { close(); }
 
 void DxvSource::close() {
   if (backend_) {
-    if (bc1Tex_ >= 0) backend_->release(bc1Tex_);
     // The shader/PSO handles are cheap and shared-lifetime with the backend;
     // release them too so a re-open doesn't leak one per file.
     if (blitPso_ >= 0) backend_->release(blitPso_);
     if (blitShader_ >= 0) backend_->release(blitShader_);
   }
-  bc1Tex_ = blitPso_ = blitShader_ = -1;
-  bc1TexW_ = bc1TexH_ = 0;
+  blitPso_ = blitShader_ = -1;
   backend_ = nullptr;
   if (file_) { std::fclose(file_); file_ = nullptr; }
   frameOffsets_.clear();
@@ -220,19 +218,12 @@ uint32_t DxvSource::frameSize(int idx) const {
   return (idx >= 0 && idx < (int)frameSizes_.size()) ? frameSizes_[idx] : 0;
 }
 
-bool DxvSource::ensureStaging(gpu::GPUBackend* backend) {
+bool DxvSource::ensurePipeline(gpu::GPUBackend* backend) {
   if (backend_ && backend_ != backend) {
     error_ = "DxvSource reused across backends";
     return false;
   }
   backend_ = backend;
-  if (bc1Tex_ < 0 || bc1TexW_ != info_.width || bc1TexH_ != info_.height) {
-    if (bc1Tex_ >= 0) backend->release(bc1Tex_);
-    bc1Tex_ = backend->createTexture(info_.width, info_.height, kFmtBC1);
-    if (bc1Tex_ < 0) { error_ = "BC1 staging texture allocation failed"; return false; }
-    bc1TexW_ = info_.width;
-    bc1TexH_ = info_.height;
-  }
   if (blitPso_ < 0) {
     blitShader_ = backend->createShaderModule(kBlitMSL);
     if (blitShader_ < 0) { error_ = "BC1 blit shader failed to compile"; return false; }
@@ -242,35 +233,54 @@ bool DxvSource::ensureStaging(gpu::GPUBackend* backend) {
   return true;
 }
 
-bool DxvSource::decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle) {
-  if (!file_) { error_ = "decode before open"; return false; }
+namespace {
+struct DxvFrame : DecodedFrame {
+  std::vector<uint8_t> bc1;
+};
+}  // namespace
+
+std::unique_ptr<DecodedFrame> DxvSource::prepare(int idx) {
+  if (!file_) { error_ = "decode before open"; return nullptr; }
   if (idx < 0 || idx >= info_.frameCount) {
     error_ = "frame index out of range";
-    return false;
+    return nullptr;
   }
   const double t0 = nowMs();
-
   const uint32_t size = frameSizes_[idx];
   payload_.resize(size);
   if (!readAt(file_, frameOffsets_[idx], payload_.data(), size)) {
     error_ = "short read of frame payload";
-    return false;
+    return nullptr;
   }
-  if (!decompressFrame(payload_.data(), size, info_.width, info_.height, &bc1_, &error_)) {
-    return false;
+  auto f = std::make_unique<DxvFrame>();
+  if (!decompressFrame(payload_.data(), size, info_.width, info_.height, &f->bc1, &error_)) {
+    return nullptr;
   }
-  if (!ensureStaging(backend)) return false;
+  f->index = idx;
+  f->payloadBytes = size;
+  f->prepareMs = nowMs() - t0;
+  return f;
+}
 
-  backend->writeTexture(bc1Tex_, info_.width, info_.height, bc1_.data(), (uint32_t)bc1_.size());
+bool DxvSource::upload(gpu::GPUBackend* backend, const DecodedFrame& frame, int32_t outTexHandle) {
+  const auto& bc1 = static_cast<const DxvFrame&>(frame).bc1;
+  if (!ensurePipeline(backend)) return false;
+
+  // A FRESH staging texture per decode. The upload lands on the CPU at once,
+  // while the blit only runs when the command buffer does — so decodes batched
+  // before one submit (a pull plus its read-ahead) sharing a staging texture
+  // would all blit the LAST upload. The encoder retains it past release().
+  const int32_t staging = backend->createTexture(info_.width, info_.height, kFmtBC1);
+  if (staging < 0) { error_ = "BC1 staging texture allocation failed"; return false; }
+  backend->writeTexture(staging, info_.width, info_.height, bc1.data(), (uint32_t)bc1.size());
 
   const int32_t pass = backend->beginComputePass();
   backend->computeSetPSO(pass, blitPso_);
-  backend->computeSetTexture(pass, bc1Tex_, 0, /*access=*/0);   // read
+  backend->computeSetTexture(pass, staging, 0, /*access=*/0);   // read
   backend->computeSetTexture(pass, outTexHandle, 1, /*access=*/1);  // write
   backend->computeDispatch(pass, (info_.width + 7) / 8, (info_.height + 7) / 8, 1);
   backend->endComputePass(pass);
-
-  lastDecodeMs_ = nowMs() - t0;
+  backend->release(staging);
   return true;
 }
 

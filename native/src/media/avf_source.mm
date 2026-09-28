@@ -86,14 +86,18 @@ class ImageFrameSource : public FrameSource {
   double fps() const override { return 0; }
   std::string codec() const override { return codec_; }
   int32_t formatCode() const override { return kFmtRGBA8; }
-  double lastDecodeMs() const override { return lastDecodeMs_; }
   const std::string& error() const override { return error_; }
 
-  bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle) override {
-    if (idx != 0) { error_ = "frame index out of range"; return false; }
-    const double t0 = nowMs();
+  /// Decoded once at open; the pixels are immutable after, so upload() reads
+  /// them from any thread.
+  std::unique_ptr<DecodedFrame> prepare(int idx) override {
+    if (idx != 0) { error_ = "frame index out of range"; return nullptr; }
+    auto f = std::make_unique<DecodedFrame>();
+    f->index = 0;
+    return f;
+  }
+  bool upload(gpu::GPUBackend* backend, const DecodedFrame&, int32_t outTexHandle) override {
     backend->writeTexture(outTexHandle, w_, h_, pixels_.data(), (uint32_t)pixels_.size());
-    lastDecodeMs_ = nowMs() - t0;
     return true;
   }
 
@@ -102,7 +106,12 @@ class ImageFrameSource : public FrameSource {
   std::string codec_;
   std::vector<uint8_t> pixels_;
   std::string error_;
-  double lastDecodeMs_ = 0;
+};
+
+/// A decoded video frame: the pixel buffer, retained until uploaded.
+struct AvfFrame : DecodedFrame {
+  CVImageBufferRef image = nullptr;
+  ~AvfFrame() override { if (image) CVBufferRelease(image); }
 };
 
 // ---------------------------------------------------------------------------
@@ -165,19 +174,46 @@ class AvfVideoSource : public FrameSource {
   double fps() const override { return fps_; }
   std::string codec() const override { return codec_; }
   int32_t formatCode() const override { return kFmtBGRA8; }
-  double lastDecodeMs() const override { return lastDecodeMs_; }
   const std::string& error() const override { return error_; }
 
-  bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle) override {
-    if (idx < 0 || idx >= frameCount_) { error_ = "frame index out of range"; return false; }
+  std::unique_ptr<DecodedFrame> prepare(int idx) override {
+    if (idx < 0 || idx >= frameCount_) { error_ = "frame index out of range"; return nullptr; }
     @autoreleasepool {
       const double t0 = nowMs();
       CMSampleBufferRef s = frameAt(idx);
-      if (!s) { if (error_.empty()) error_ = "decode failed"; return false; }
-      const bool ok = upload(backend, CMSampleBufferGetImageBuffer(s), outTexHandle);
-      lastDecodeMs_ = nowMs() - t0;
-      return ok;
+      if (!s) { if (error_.empty()) error_ = "decode failed"; return nullptr; }
+      CVImageBufferRef img = CMSampleBufferGetImageBuffer(s);
+      if (!img) { error_ = "sample has no image"; return nullptr; }
+      auto f = std::make_unique<AvfFrame>();
+      f->image = CVBufferRetain(img);
+      f->index = idx;
+      f->payloadBytes = (uint32_t)CMSampleBufferGetTotalSampleSize(s);
+      f->prepareMs = nowMs() - t0;
+      return f;
     }
+  }
+
+  bool upload(gpu::GPUBackend* backend, const DecodedFrame& frame, int32_t tex) override {
+    CVImageBufferRef img = static_cast<const AvfFrame&>(frame).image;
+    CVPixelBufferLockBaseAddress(img, kCVPixelBufferLock_ReadOnly);
+    const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(img);
+    const size_t stride = CVPixelBufferGetBytesPerRow(img);
+    const uint32_t w = std::min<uint32_t>(w_, (uint32_t)CVPixelBufferGetWidth(img));
+    const uint32_t h = std::min<uint32_t>(h_, (uint32_t)CVPixelBufferGetHeight(img));
+    const bool ok = base != nullptr;
+    if (ok) {
+      const size_t row = (size_t)w_ * 4;
+      if (stride == row && w == w_ && h == h_) {
+        backend->writeTexture(tex, w_, h_, base, (uint32_t)(row * h_));
+      } else {
+        // Row padding (or a frame smaller than the first): repack tightly.
+        std::vector<uint8_t> packed(row * h_, 0);
+        for (uint32_t y = 0; y < h; y++) std::memcpy(&packed[y * row], base + y * stride, (size_t)w * 4);
+        backend->writeTexture(tex, w_, h_, packed.data(), (uint32_t)packed.size());
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(img, kCVPixelBufferLock_ReadOnly);
+    return ok;
   }
 
  private:
@@ -279,31 +315,6 @@ class AvfVideoSource : public FrameSource {
     return (int)std::lround(CMTimeGetSeconds(pts) * fps_);
   }
 
-  bool upload(gpu::GPUBackend* backend, CVImageBufferRef img, int32_t tex) {
-    if (!img) { error_ = "sample has no image"; return false; }
-    CVPixelBufferLockBaseAddress(img, kCVPixelBufferLock_ReadOnly);
-    const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(img);
-    const size_t stride = CVPixelBufferGetBytesPerRow(img);
-    const uint32_t w = std::min<uint32_t>(w_, (uint32_t)CVPixelBufferGetWidth(img));
-    const uint32_t h = std::min<uint32_t>(h_, (uint32_t)CVPixelBufferGetHeight(img));
-    bool ok = base != nullptr;
-    if (ok) {
-      const size_t row = (size_t)w_ * 4;
-      if (stride == row && w == w_ && h == h_) {
-        backend->writeTexture(tex, w_, h_, base, (uint32_t)(row * h_));
-      } else {
-        // Row padding (or a frame smaller than the first): repack tightly.
-        packed_.assign(row * h_, 0);
-        for (uint32_t y = 0; y < h; y++) std::memcpy(&packed_[y * row], base + y * stride, (size_t)w * 4);
-        backend->writeTexture(tex, w_, h_, packed_.data(), (uint32_t)packed_.size());
-      }
-    } else {
-      error_ = "pixel buffer has no base address";
-    }
-    CVPixelBufferUnlockBaseAddress(img, kCVPixelBufferLock_ReadOnly);
-    return ok;
-  }
-
   AVURLAsset* asset_ = nil;
   AVAssetTrack* track_ = nil;
   AVAssetReader* reader_ = nil;
@@ -319,9 +330,7 @@ class AvfVideoSource : public FrameSource {
   double fps_ = 0;
   int frameCount_ = 0;
   std::string codec_;
-  std::vector<uint8_t> packed_;
   std::string error_;
-  double lastDecodeMs_ = 0;
 };
 
 }  // namespace

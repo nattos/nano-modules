@@ -79,30 +79,26 @@ class DxvSource : public FrameSource {
   double fps() const override { return info_.fps; }
   std::string codec() const override { return info_.fourccStr; }
   int32_t formatCode() const override { return 1; }  // RGBA8: the BC1 blit's output
-  uint32_t payloadBytes(int idx) const override { return frameSize(idx); }
 
   /// Absolute file offset / compressed size of a frame. For diagnostics and
   /// the cost tracker's payload-size EWMA.
   uint64_t frameOffset(int idx) const;
   uint32_t frameSize(int idx) const;
 
+  /// Read + LZ-decompress frame `idx` to BC1 bytes (CPU; see FrameSource).
+  std::unique_ptr<DecodedFrame> prepare(int idx) override;
   /**
-   * Decode frame `idx` into the RGBA8 texture `outTexHandle` (a handle from the
-   * same backend). Returns false on a bad index, a short read, or a decompress
-   * failure; `error()` says which.
-   *
-   * The BC1 staging texture and the blit pipeline are created lazily on the
-   * first decode and reused.
+   * Upload a prepared frame into the RGBA8 texture `outTexHandle`: BC1 staging,
+   * then the compute blit. The pipeline is created lazily on the first upload;
+   * the staging texture is fresh per upload, so uploads batched before one
+   * submit each keep their own frame.
    */
-  bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle) override;
-
-  /// Milliseconds spent inside the last decode() — the cost tracker's input.
-  double lastDecodeMs() const override { return lastDecodeMs_; }
+  bool upload(gpu::GPUBackend* backend, const DecodedFrame& frame, int32_t outTexHandle) override;
 
   void close();
 
  private:
-  bool ensureStaging(gpu::GPUBackend* backend);
+  bool ensurePipeline(gpu::GPUBackend* backend);
 
   std::FILE* file_ = nullptr;
   uint64_t fileSize_ = 0;
@@ -112,17 +108,11 @@ class DxvSource : public FrameSource {
   std::vector<uint64_t> frameOffsets_;
   std::vector<uint32_t> frameSizes_;
 
-  std::vector<uint8_t> payload_;   // compressed scratch, grown on demand
-  std::vector<uint8_t> bc1_;       // decompressed BC1 bytes
+  std::vector<uint8_t> payload_;   // compressed scratch (prepare's thread only)
 
   gpu::GPUBackend* backend_ = nullptr;
-  int32_t bc1Tex_ = -1;
-  uint32_t bc1TexW_ = 0;
-  uint32_t bc1TexH_ = 0;
   int32_t blitShader_ = -1;
   int32_t blitPso_ = -1;
-
-  double lastDecodeMs_ = 0;
 };
 
 }  // namespace nano_media

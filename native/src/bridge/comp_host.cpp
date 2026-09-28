@@ -118,6 +118,7 @@ void CompHost::ensureTextures() {
   pc.renderW = cfg_.width;
   pc.renderH = cfg_.height;
   pc.readAheadDepth = cfg_.readAheadDepth;
+  pc.async = cfg_.asyncDecode;
   pump_ = std::make_unique<nano_media::VideoPump>(gpu_, pc);
   pump_->setMediaBase(mediaBase_);
   comp::CompExecutor* cx = cx_.get();

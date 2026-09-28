@@ -1593,6 +1593,15 @@ if(NANO_HAS_GPU_BACKEND)
       TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
     catch_discover_tests(test_frame_sources)
 
+    # The pump's realtime mode: decode threads, per-frame readiness.
+    add_executable(test_video_pump_async tests/test_video_pump_async.cpp)
+    target_link_libraries(test_video_pump_async PRIVATE
+      nano_media gpu_backend Catch2::Catch2WithMain
+)
+    target_compile_definitions(test_video_pump_async PRIVATE
+      TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
+    catch_discover_tests(test_video_pump_async)
+
     # The pump's skip contract: named, and ready (Precise never holds on it).
     add_executable(test_video_pump_skip tests/test_video_pump_skip.cpp)
     target_link_libraries(test_video_pump_skip PRIVATE

@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -125,4 +126,41 @@ TEST_CASE("a still decodes as one straight-alpha RGBA frame", "[frame_source][gp
   CHECK(std::abs(at(3, 0) - 200) <= 1);
   CHECK(std::abs(at(3, 1) - 100) <= 1);
   CHECK(std::abs(at(3, 2) - 50) <= 1);
+}
+
+// Timing, not a gate: `NANO_BENCH_MEDIA=/path/to/clip ./test_frame_sources "[.bench]"`.
+// Sequential playback, then scattered seeks — what a threaded pump has to hide.
+TEST_CASE("decode timing on a real clip", "[.bench]") {
+  const char* path = std::getenv("NANO_BENCH_MEDIA");
+  if (!path) SKIP("set NANO_BENCH_MEDIA");
+  Gpu g;
+  if (!g.ok()) SKIP("No GPU device available");
+  std::string why;
+  auto s = openFrameSource(path, &why);
+  INFO(why);
+  REQUIRE(s);
+  const int32_t tex = g.backend->createTexture(s->width(), s->height(), s->formatCode());
+  const auto time = [&](int idx) {
+    REQUIRE(s->decode(g.backend.get(), idx, tex));
+    g.backend->submit();
+    return s->lastDecodeMs();
+  };
+  double seqMax = 0, seqSum = 0;
+  const int n = std::min(120, s->frameCount());
+  for (int i = 0; i < n; i++) {
+    const double ms = time(i);
+    seqSum += ms;
+    seqMax = std::max(seqMax, ms);
+  }
+  double seekMax = 0, seekSum = 0;
+  const int seeks = 20;
+  for (int k = 0; k < seeks; k++) {
+    const int idx = (int)((k * 7919L) % s->frameCount());
+    const double ms = time(idx);
+    seekSum += ms;
+    seekMax = std::max(seekMax, ms);
+  }
+  WARN(s->codec() << " " << s->width() << "x" << s->height() << ": sequential mean "
+                  << seqSum / n << " ms (max " << seqMax << "), seek mean " << seekSum / seeks
+                  << " ms (max " << seekMax << ")");
 }

@@ -83,6 +83,12 @@ class VideoPump {
     /// Frames to precache per pull. 0 disables read-ahead — which is how the
     /// perf suite proves the hit-rate gate actually bites.
     int readAheadDepth = kReadAheadDepth;
+    /// Decode on a thread per clip instead of inside pump(): a realtime host
+    /// must never stall its frame on a seek or an open. A frame that isn't
+    /// decoded yet leaves the previous one bound and reports the clip NOT
+    /// ready (Precise holds; Live shows what it has). Runners and export stay
+    /// synchronous — there a late frame is a determinism bug.
+    bool async = false;
   };
 
   VideoPump(gpu::GPUBackend* backend, const Config& cfg);
@@ -151,6 +157,18 @@ class VideoPump {
   int32_t fetch(Clip& c, int frame, bool pull);
   void present(Clip& c, int frame, int32_t srcTex);
 
+  struct Worker;
+  void retire(std::unique_ptr<Worker> w);
+  void reapRetired();
+  void applySourceShape(Clip& c);
+  void markSkipped(const std::string& clipId, const std::string& why);
+  /// Upload a prepared frame into a fresh cache entry; its handle, or -1.
+  int32_t uploadPrepared(Clip& c, const DecodedFrame& df, bool precache);
+  /// Async: take the decode thread's finished frames. False while it's still
+  /// opening, or when its open failed (appended to `failed`).
+  bool syncWorker(Clip& c, std::vector<std::string>* failed);
+  void postWanted(Clip& c, const std::vector<int>& frames);
+
   gpu::GPUBackend* backend_ = nullptr;
   Config cfg_;
   std::function<void(const std::string&, int32_t)> inject_;
@@ -167,6 +185,8 @@ class VideoPump {
   std::map<std::string, std::string> skippedUrl_;
   int totalDecodes_ = 0;
   int totalInjects_ = 0;
+  /// Decode threads of clips that left the set, joined once they finish.
+  std::vector<std::unique_ptr<Worker>> retiring_;
 };
 
 }  // namespace nano_media

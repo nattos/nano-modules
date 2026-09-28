@@ -3,8 +3,13 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
+#include <set>
+#include <thread>
 
 #include "gpu/gpu_backend.h"
 #include "media_fetch.h"
@@ -43,6 +48,89 @@ BlitTransform transformFrom(const nlohmann::json& j) {
 
 }  // namespace
 
+/**
+ * Async mode's decode thread, one per clip. It opens the source (a media fetch
+ * and an AVFoundation open can take a while) and then prepares whichever frames
+ * the render thread last asked for, in its priority order — the pull first,
+ * then read-ahead. The render thread uploads what it finds in `done`.
+ *
+ * The source is the worker's until `opened` is seen under the lock; from then
+ * on the render thread may read its (immutable) shape and call upload(), while
+ * only this thread calls prepare().
+ */
+struct VideoPump::Worker {
+  std::string url;
+  std::string mediaBase;
+
+  std::mutex mu;
+  std::condition_variable cv;
+  // render → worker
+  std::vector<int> wanted;
+  bool stop = false;
+  // worker → render
+  bool opened = false;
+  bool failed = false;
+  bool finished = false;
+  std::string error;
+  std::unique_ptr<FrameSource> source;
+  std::vector<std::unique_ptr<DecodedFrame>> done;
+  std::set<int> doneIdx;     ///< frames in `done`, not yet taken
+  std::set<int> badFrames;   ///< prepare() failed: never retried (no spin)
+  std::thread th;
+
+  /// First wanted frame not already prepared. Caller holds `mu`.
+  int next() const {
+    for (int f : wanted) {
+      if (!doneIdx.count(f) && !badFrames.count(f)) return f;
+    }
+    return -1;
+  }
+
+  void run() {
+    std::string why;
+    const std::string path = localMediaPath(url, mediaBase, &why);
+    std::unique_ptr<FrameSource> src = path.empty() ? nullptr : openFrameSource(path, &why);
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      if (!src) {
+        failed = true;
+        error = why;
+        finished = true;
+        return;
+      }
+      source = std::move(src);
+      opened = true;
+    }
+    for (;;) {
+      int f;
+      {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return stop || next() >= 0; });
+        if (stop) break;
+        f = next();
+      }
+      auto df = source->prepare(f);
+      std::lock_guard<std::mutex> lk(mu);
+      if (df) {
+        doneIdx.insert(f);
+        done.push_back(std::move(df));
+      } else {
+        badFrames.insert(f);
+      }
+    }
+    std::lock_guard<std::mutex> lk(mu);
+    finished = true;
+  }
+
+  void requestStop() {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      stop = true;
+    }
+    cv.notify_all();
+  }
+};
+
 struct VideoPump::Clip {
   // --- desc (refreshed every reconcile; the pump keys off clipId) ---
   std::string clipId;
@@ -56,12 +144,17 @@ struct VideoPump::Clip {
   bool transport = false;  ///< driven by the times channel, not `loop`
   double fps = 30;
   int durationFrames = 0;
+  double descFps = 0;
+  int descFrames = 0;
   BlitFit fit = BlitFit::Fit;
   BlitTransform transform;
   comp::ClipLoopConfig loop;
 
   // --- decode state ---
-  std::unique_ptr<FrameSource> source;
+  /// Sync mode: owned here. Async mode: owned by `worker`, null until it opens.
+  std::unique_ptr<FrameSource> ownSource;
+  FrameSource* source = nullptr;
+  std::unique_ptr<Worker> worker;
   BackendPool pool;
   std::unique_ptr<FrameCachePolicy> cache;
   CostTracker cost;
@@ -73,6 +166,7 @@ struct VideoPump::Clip {
   int32_t presentTex = -1;
   int lastPresentedFrame = -1;
   int lastPulledFrame = -1;
+  int lastStride = 0;  ///< the last pull's stride (the cost tracker's input)
   /// Sign of the most recent non-zero motion. Read-ahead follows THIS, not the
   /// classified mode, so an oscillating pattern stays ahead of the playhead
   /// through every reversal (see read-ahead.ts).
@@ -95,6 +189,31 @@ VideoPump::~VideoPump() {
   for (auto& [id, c] : clips_) {
     if (c->presentTex >= 0 && backend_) backend_->release(c->presentTex);
     if (c->cache) c->cache->clear();
+    if (c->worker) retire(std::move(c->worker));
+  }
+  for (auto& w : retiring_) {
+    if (w->th.joinable()) w->th.join();
+  }
+}
+
+void VideoPump::retire(std::unique_ptr<Worker> w) {
+  w->requestStop();
+  retiring_.push_back(std::move(w));
+}
+
+void VideoPump::reapRetired() {
+  // Join only the ones already done: an in-flight seek or media fetch must not
+  // stall the render thread. The source is destroyed HERE, on the render
+  // thread, since a DXV source releases GPU objects.
+  for (auto it = retiring_.begin(); it != retiring_.end();) {
+    bool finished;
+    {
+      std::lock_guard<std::mutex> lk((*it)->mu);
+      finished = (*it)->finished;
+    }
+    if (!finished) { ++it; continue; }
+    if ((*it)->th.joinable()) (*it)->th.join();
+    it = retiring_.erase(it);
   }
 }
 
@@ -113,6 +232,7 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
     if (ready_) ready_(it->first, false);
     if (it->second->presentTex >= 0 && backend_) backend_->release(it->second->presentTex);
     it->second->cache->clear();
+    if (it->second->worker) retire(std::move(it->second->worker));
     it = clips_.erase(it);
   }
 
@@ -137,14 +257,22 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
         skipped_[clipId] = "no locatable media (see comp_media_resolver.h)";
         continue;
       }
-      std::string why;
-      const std::string path = localMediaPath(c->url, mediaBase_, &why);
-      if (!path.empty()) c->source = openFrameSource(path, &why);
-      if (!c->source) {
-        skipped_[clipId] = why;
-        fprintf(stderr, "[video_pump] can't decode clip %s (%s): %s\n", clipId.c_str(),
-                c->url.c_str(), skipped_[clipId].c_str());
-        continue;
+      if (cfg_.async) {
+        // Opened on the clip's decode thread; until then it isn't ready.
+        c->worker = std::make_unique<Worker>();
+        c->worker->url = c->url;
+        c->worker->mediaBase = mediaBase_;
+        Worker* w = c->worker.get();
+        w->th = std::thread([w] { w->run(); });
+      } else {
+        std::string why;
+        const std::string path = localMediaPath(c->url, mediaBase_, &why);
+        if (!path.empty()) c->ownSource = openFrameSource(path, &why);
+        if (!c->ownSource) {
+          markSkipped(clipId, why);
+          continue;
+        }
+        c->source = c->ownSource.get();
       }
       c->pool.backend = backend_;
       c->cache = std::make_unique<FrameCachePolicy>(
@@ -170,18 +298,100 @@ void VideoPump::setActiveClips(const nlohmann::json& descs) {
     // The document's probed rate wins (as on web), then the container's — DXV
     // doesn't parse its own (see DxvVideoInfo::fps) — then 30.
     const double descFps = d.contains("fps") && d["fps"].is_number() ? d["fps"].get<double>() : 0;
-    c.fps = descFps > 0 ? descFps : c.source->fps() > 0 ? c.source->fps() : 30.0;
-    const int descFrames = d.contains("durationFrames") && d["durationFrames"].is_number()
-                               ? d["durationFrames"].get<int>() : 0;
-    // Trust the FILE's frame count over the document's — a stale durationFrames
-    // would index past the end of the frame table.
-    c.durationFrames = c.source->frameCount() > 0 ? c.source->frameCount() : descFrames;
+    c.descFps = d.contains("fps") && d["fps"].is_number() ? d["fps"].get<double>() : 0;
+    c.descFrames = d.contains("durationFrames") && d["durationFrames"].is_number()
+                       ? d["durationFrames"].get<int>() : 0;
+    applySourceShape(c);
   }
 
   skippedActive_.clear();
   for (const auto& id : live) {
     if (skipped_.count(id)) skippedActive_.push_back(id);
   }
+}
+
+void VideoPump::applySourceShape(Clip& c) {
+  // The document's probed rate wins (as on web), then the container's — DXV
+  // doesn't parse its own (see DxvVideoInfo::fps) — then 30.
+  const double srcFps = c.source ? c.source->fps() : 0;
+  c.fps = c.descFps > 0 ? c.descFps : srcFps > 0 ? srcFps : 30.0;
+  // Trust the FILE's frame count over the document's — a stale durationFrames
+  // would index past the end of the frame table.
+  const int srcFrames = c.source ? c.source->frameCount() : 0;
+  c.durationFrames = srcFrames > 0 ? srcFrames : c.descFrames;
+}
+
+void VideoPump::markSkipped(const std::string& clipId, const std::string& why) {
+  skipped_[clipId] = why;
+  fprintf(stderr, "[video_pump] can't decode clip %s (%s): %s\n", clipId.c_str(),
+          skippedUrl_[clipId].c_str(), why.c_str());
+}
+
+int32_t VideoPump::uploadPrepared(Clip& c, const DecodedFrame& df, bool precache) {
+  if (c.cache->has(df.index)) return -1;  // a pull decoded it meanwhile
+  const auto t0 = std::chrono::steady_clock::now();
+  const int32_t tex = c.cache->reserve(df.index, (int)c.source->width(),
+                                       (int)c.source->height(), c.source->formatCode());
+  if (tex < 0) return -1;
+  // A failed upload leaves the entry reserved but never ready: never served.
+  if (!c.source->upload(backend_, df, tex)) return -1;
+  c.cache->markReady(df.index);
+  const double uploadMs =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+
+  CostPullOpts opts;
+  // Prefetches contribute at "seek" rate: their stride isn't the live one and
+  // we don't want them dominating the contiguous-decode bucket (the web
+  // service passes stride 0 for exactly this reason).
+  opts.stride = precache ? 0 : c.lastStride;
+  opts.decodeMs = df.prepareMs + uploadMs;
+  opts.hasPayloadBytes = df.payloadBytes > 0;
+  opts.payloadBytes = df.payloadBytes;
+  c.cost.recordPull(opts);
+
+  c.tel.decodes++;
+  totalDecodes_++;
+  if (precache) {
+    c.tel.precacheDecodes++;
+    c.precached.push_back(df.index);
+  }
+  return tex;
+}
+
+bool VideoPump::syncWorker(Clip& c, std::vector<std::string>* failed) {
+  Worker& w = *c.worker;
+  std::vector<std::unique_ptr<DecodedFrame>> done;
+  {
+    std::lock_guard<std::mutex> lk(w.mu);
+    if (w.failed) {
+      failed->push_back(c.clipId);
+      markSkipped(c.clipId, w.error);
+      return false;
+    }
+    if (!w.opened) return false;
+    if (!c.source) {
+      c.source = w.source.get();
+      applySourceShape(c);
+    }
+    done.swap(w.done);
+    w.doneIdx.clear();
+  }
+  for (const auto& df : done) uploadPrepared(c, *df, df->index != c.lastPulledFrame);
+  return true;
+}
+
+void VideoPump::postWanted(Clip& c, const std::vector<int>& frames) {
+  std::vector<int> wanted;
+  for (int f : frames) {
+    if (f >= 0 && f < c.durationFrames && !c.cache->has(f)) wanted.push_back(f);
+  }
+  Worker& w = *c.worker;
+  {
+    std::lock_guard<std::mutex> lk(w.mu);
+    if (w.wanted == wanted) return;
+    w.wanted = std::move(wanted);
+  }
+  w.cv.notify_one();
 }
 
 int32_t VideoPump::fetch(Clip& c, int frame, bool pull) {
@@ -195,6 +405,7 @@ int32_t VideoPump::fetch(Clip& c, int frame, bool pull) {
     // prefetch peek would inject stride noise the access stream doesn't have.
     c.classifier.recordPull(frame, c.pullClockMs);
     stride = c.lastPulledFrame < 0 ? 0 : frame - c.lastPulledFrame;
+    c.lastStride = stride;
     if (stride != 1) c.tel.seeks++;
     if (stride != 0) c.lastMotionDir = stride < 0 ? -1 : 1;
     c.lastPulledFrame = frame;
@@ -215,31 +426,12 @@ int32_t VideoPump::fetch(Clip& c, int frame, bool pull) {
   } else if (c.cache->has(frame)) {
     return -1;  // already resident; nothing to precache
   }
+  // Async: the decode thread has been asked (postWanted); it lands later.
+  if (c.worker) return -1;
 
-  const int32_t tex = c.cache->reserve(frame, (int)c.source->width(), (int)c.source->height(),
-                                       c.source->formatCode());
-  if (tex < 0) return -1;
-  if (!c.source->decode(backend_, frame, tex)) return -1;
-  c.cache->markReady(frame);
-
-  CostPullOpts opts;
-  // Prefetches contribute at "seek" rate: their stride isn't the live one and
-  // we don't want them dominating the contiguous-decode bucket (the web
-  // service passes stride 0 for exactly this reason).
-  opts.stride = pull ? stride : 0;
-  opts.decodeMs = c.source->lastDecodeMs();
-  const uint32_t payload = c.source->payloadBytes(frame);
-  opts.hasPayloadBytes = payload > 0;
-  opts.payloadBytes = payload;
-  c.cost.recordPull(opts);
-
-  c.tel.decodes++;
-  totalDecodes_++;
-  if (!pull) {
-    c.tel.precacheDecodes++;
-    c.precached.push_back(frame);
-  }
-  return tex;
+  const auto df = c.source->prepare(frame);
+  if (!df) return -1;
+  return uploadPrepared(c, *df, /*precache=*/!pull);
 }
 
 void VideoPump::present(Clip& c, int frame, int32_t srcTex) {
@@ -266,9 +458,18 @@ int VideoPump::pump(double beat, double bpm) {
   if (ready_) for (const auto& id : skippedActive_) ready_(id, true);
   const comp::WarpClock clock(comp::WarpCurve(), bpm > 1 ? bpm : 120.0);
 
+  reapRetired();
+  std::vector<std::string> failed;
+
   for (auto& [id, cp] : clips_) {
     Clip& c = *cp;
     c.pullClockMs += 1000.0 / 60.0;  // a fixed-step pseudo-clock: see the header
+    // Async: take what the decode thread finished. Still opening → not ready
+    // (the web's "opening" pump), so Precise waits for the first frame.
+    if (c.worker && !syncWorker(c, &failed)) {
+      if (ready_ && std::find(failed.begin(), failed.end(), id) == failed.end()) ready_(id, false);
+      continue;
+    }
 
     // Linger clamp: freeze the clock at the pass-end beat while this clip's
     // track has a pending handover (VideoClipDesc.holdBeat).
@@ -314,9 +515,19 @@ int VideoPump::pump(double beat, double bpm) {
     }
 
     const int32_t tex = fetch(c, *frame, /*pull=*/true);
-    if (tex < 0) continue;
-    present(c, *frame, tex);
-    presented++;
+    if (tex >= 0) {
+      present(c, *frame, tex);
+      presented++;
+    }
+    std::vector<int> wanted;
+    if (c.worker) {
+      // Ready = this frame is the one bound (clipReady on web). A miss keeps the
+      // previous frame on screen and asks the decode thread, pull first.
+      if (ready_) ready_(id, c.lastPresentedFrame == *frame);
+      if (tex < 0) wanted.push_back(*frame);
+    } else if (tex < 0) {
+      continue;
+    }
 
     // Read-ahead for the NEXT pulls, sized by the shared policy so the
     // precache depth is the same number web reports.
@@ -331,8 +542,24 @@ int VideoPump::pump(double beat, double bpm) {
       inp.depth = cfg_.readAheadDepth;
       inp.hasStride = snap.hasStride;
       inp.stride = snap.stride;
-      for (int t : computeReadAheadTargets(inp)) fetch(c, t, /*pull=*/false);
+      for (int t : computeReadAheadTargets(inp)) {
+        if (c.worker) wanted.push_back(t);
+        else fetch(c, t, /*pull=*/false);
+      }
     }
+    if (c.worker) postWanted(c, wanted);
+  }
+
+  // Opens that failed: skipped from here on, exactly like a sync open failure.
+  for (const auto& id : failed) {
+    auto it = clips_.find(id);
+    if (it == clips_.end()) continue;
+    if (it->second->presentTex >= 0 && backend_) backend_->release(it->second->presentTex);
+    it->second->cache->clear();
+    retire(std::move(it->second->worker));
+    clips_.erase(it);
+    skippedActive_.push_back(id);
+    if (ready_) ready_(id, true);
   }
   return presented;
 }

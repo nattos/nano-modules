@@ -27,6 +27,18 @@ namespace gpu { class GPUBackend; }
 
 namespace nano_media {
 
+/// One frame's CPU-side decode result (FrameSource::prepare), waiting for its
+/// GPU upload. Each source subclasses it with whatever it holds (BC1 bytes, a
+/// retained pixel buffer).
+struct DecodedFrame {
+  virtual ~DecodedFrame() = default;
+  int index = -1;
+  /// Milliseconds the CPU half took.
+  double prepareMs = 0;
+  /// Compressed payload, for the cost tracker's size EWMA; 0 = not exposed.
+  uint32_t payloadBytes = 0;
+};
+
 class FrameSource {
  public:
   virtual ~FrameSource() = default;
@@ -43,17 +55,27 @@ class FrameSource {
   /// allocates. The pump's blit samples it, so BGRA and RGBA both work.
   virtual int32_t formatCode() const = 0;
 
-  /// Decode frame `idx` into `outTexHandle` (from the same backend, sized
-  /// width() × height(), formatCode()). False on failure; error() says why.
-  virtual bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle) = 0;
-
-  /// Milliseconds the last decode() took — the cost tracker's input.
-  virtual double lastDecodeMs() const = 0;
-  /// Compressed payload of a frame, for the cost tracker's size EWMA; 0 when
-  /// the codec doesn't expose it.
-  virtual uint32_t payloadBytes(int idx) const { (void)idx; return 0; }
+  /**
+   * The CPU half of a decode: read and decompress frame `idx`. Touches no GPU,
+   * so it may run on a decode thread — one call at a time per source, but
+   * concurrently with upload(). Null on failure; error() says why (read it on
+   * the same thread).
+   */
+  virtual std::unique_ptr<DecodedFrame> prepare(int idx) = 0;
+  /// The GPU half: write a prepared frame into `outTexHandle` (from the same
+  /// backend, sized width() × height(), formatCode()). The backend's thread.
+  virtual bool upload(gpu::GPUBackend* backend, const DecodedFrame& frame,
+                      int32_t outTexHandle) = 0;
 
   virtual const std::string& error() const = 0;
+
+  /// prepare + upload, synchronously.
+  bool decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle);
+  /// Milliseconds the last decode() took, both halves — the cost tracker's input.
+  double lastDecodeMs() const { return lastDecodeMs_; }
+
+ private:
+  double lastDecodeMs_ = 0;
 };
 
 /**
