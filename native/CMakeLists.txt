@@ -1457,6 +1457,18 @@ if(NANO_HAS_GPU_BACKEND)
     add_executable(nano_compositor tools/nano_compositor.cpp)
     target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(nano_compositor PRIVATE bridge_server)
+
+    # The process, driven over its WebSocket as the editor drives it.
+    if(TARGET Catch2::Catch2WithMain)
+      add_executable(test_compositor_protocol tests/test_compositor_protocol.cpp)
+      target_link_libraries(test_compositor_protocol PRIVATE
+        ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+      add_dependencies(test_compositor_protocol nano_compositor)
+      target_compile_definitions(test_compositor_protocol PRIVATE
+        NANO_COMPOSITOR_PATH="$<TARGET_FILE:nano_compositor>"
+        NANO_TEST_DATA_ROOT="${NANO_TEST_DATA_ROOT}")
+      catch_discover_tests(test_compositor_protocol PROPERTIES LABELS "integration")
+    endif()
   endif()
 
   # Structured published-state store + numeric readers (publishedScalar /
