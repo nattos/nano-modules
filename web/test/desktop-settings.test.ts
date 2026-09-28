@@ -36,6 +36,8 @@ function runPhase(
           ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '', NANO_PRODUCT: product,
           NANO_DATA_DIR: join(work, 'data'), PHASE: phase, PROFILE: profile,
           MAIN_CJS: resolve(__dirname, '..', 'electron', 'main.cjs'),
+          // Never shown, never focused (NANO_WINDOW= to watch it run).
+          NANO_WINDOW: process.env.NANO_WINDOW ?? 'hidden',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },

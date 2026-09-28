@@ -45,6 +45,8 @@ function runPhase(phase: 'save' | 'reopen' | 'adopt', proj: string): Promise<any
           // Settings files too: a fresh folder per launch, like the profile.
           NANO_DATA_DIR: join(profile, 'data'),
           MAIN_CJS: resolve(__dirname, '..', 'electron', 'main.cjs'),
+          // Never shown, never focused (NANO_WINDOW= to watch it run).
+          NANO_WINDOW: process.env.NANO_WINDOW ?? 'hidden',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },

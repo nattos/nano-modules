@@ -48,7 +48,9 @@ function runElectronProbe(
         cwd: resolve(__dirname, '..'),
         // A private settings folder: never the developer's own.
         env: { ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '', NANO_PRODUCT: product,
-               NANO_DATA_DIR: join(dir, 'data') },
+               NANO_DATA_DIR: join(dir, 'data'),
+               // Never shown, never focused (NANO_WINDOW= to watch it run).
+               NANO_WINDOW: process.env.NANO_WINDOW ?? 'hidden' },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );

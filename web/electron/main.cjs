@@ -78,6 +78,20 @@ const PRODUCT = resolveProduct();
 /** The one window; re-focus rather than open a second. */
 let mainWindow = null;
 
+/**
+ * NANO_WINDOW=hidden — for test and automation launches: the window is never
+ * shown and the app never activates (no dock icon, no focus steal), yet the
+ * page renders exactly as when visible: full-rate rAF, WebGPU, shared-texture
+ * previews, page screenshots (measured on macOS; see the commit). An
+ * off-screen, inactively-shown window was tried too — macOS clamps it back
+ * on screen.
+ */
+const HIDDEN = process.env.NANO_WINDOW === 'hidden';
+if (HIDDEN && process.platform === 'darwin') {
+  // An accessory app never becomes the active app.
+  app.setActivationPolicy('accessory');
+}
+
 function urlFor(search = '') {
   const { file } = PRODUCTS[PRODUCT];
   const base = loadMode === 'dev'
@@ -102,13 +116,14 @@ async function devServerReachable(origin) {
 
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.focus();
+    if (!HIDDEN) mainWindow.focus();
     return mainWindow;
   }
   const spec = PRODUCTS[PRODUCT];
   const win = new BrowserWindow({
     width: spec.width,
     height: spec.height,
+    ...(HIDDEN ? { show: false } : {}),
     title: spec.title,
     backgroundColor: '#111111',
     // The page owns the frame; <app-titlebar> draws the strip and marks it
@@ -152,6 +167,8 @@ function createWindow() {
       // Only needed against a dev server on a different origin. Under
       // nano://app/ everything is same-origin and the default applies.
       webSecurity: loadMode !== 'dev',
+      // A never-shown window must not be throttled as a background one.
+      ...(HIDDEN ? { backgroundThrottling: false } : {}),
     },
   });
 
