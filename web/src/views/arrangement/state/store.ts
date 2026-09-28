@@ -677,6 +677,9 @@ export class ArrangementStore {
   ioMode = false;
   /** The open port popup (rename / output routing / its routes), or null. */
   portPopup: { trackId: string; portId: string; x: number; y: number } | null = null;
+  /** The open route popup (a clicked route wire: its ends, status, disconnect),
+   *  or null. Its route draws selected while open. */
+  routePopup: { routeId: string; x: number; y: number } | null = null;
   /** Global wires mode: reveals the rail modulation wires. */
   wiresMode = true;
   /** Global "?" help mode: reveals inline effect help text + section help. */
@@ -2604,14 +2607,26 @@ export class ArrangementStore {
 
   toggleIoMode() {
     this.ioMode = !this.ioMode;
-    if (!this.ioMode) this.portPopup = null;
+    if (!this.ioMode) { this.portPopup = null; this.routePopup = null; }
     this.requestLayoutSave();
   }
 
+  /** Opening a port's popup also SELECTS the port: clicking it again picks it
+   *  up for click-to-connect (see arr-io-strip). */
   openPortPopup(trackId: string, portId: string, x: number, y: number) {
+    this.routePopup = null;
     this.portPopup = { trackId, portId, x, y };
   }
   closePortPopup() { this.portPopup = null; }
+  isPortSelected(trackId: string, portId: string): boolean {
+    return this.portPopup?.trackId === trackId && this.portPopup.portId === portId;
+  }
+
+  openRoutePopup(routeId: string, x: number, y: number) {
+    this.portPopup = null;
+    this.routePopup = { routeId, x, y };
+  }
+  closeRoutePopup() { this.routePopup = null; }
 
   toggleWiresMode() {
     this.wiresMode = !this.wiresMode;
@@ -4960,6 +4975,7 @@ export class ArrangementStore {
   }
 
   removeRoute(routeId: string) {
+    if (this.routePopup?.routeId === routeId) this.routePopup = null;
     this.mutate('disconnect route', (d) => {
       d.routes = (d.routes ?? []).filter((r) => r.id !== routeId);
       if (d.routes.length === 0) delete d.routes;

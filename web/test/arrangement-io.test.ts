@@ -252,6 +252,137 @@ describe('Arrangement clipless layers + I/O routes (GPU)', () => {
     expect(r3[2].dest).toEqual({ kind: 'port', trackId: ids.mix, portId: port });
   });
 
+  it('I/O mode: port rubber band, click-select-click connect, the route popup', async () => {
+    await resetTracks(2);
+    const ids = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const [src, mix] = store.composition.tracks.filter((x: any) => x.kind === 'track');
+      store.insertTrackDeviceAt(src.id, 0, 'source.noise');
+      store.insertTrackDeviceAt(mix.id, 0, 'composite.blend');
+      if (!store.ioMode) store.toggleIoMode();
+      if (!store.wiresMode) store.toggleWiresMode();
+      store.setSelection([`track/${mix.id}`]);
+      return { src: src.id, mix: mix.id };
+    });
+    await page.waitForFunction(() => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        if (root.querySelector('.tap-overlay-hit[data-field-path="tex_a"]')) return true;
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+      return false;
+    }, { timeout: 10_000 });
+    await new Promise((r) => setTimeout(r, 300));
+    const frame = () => new Promise((r) => setTimeout(r, 80));
+    /** The overlay's port rubber band: its path, or null while hidden. */
+    const band = () => page.evaluate(() => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        const ov = root.querySelector('arr-overlay');
+        if (ov) {
+          const p = ov.shadowRoot!.querySelector('path.connect') as SVGPathElement | null;
+          return p && p.style.display !== 'none' ? p.getAttribute('d') : null;
+        }
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+      return null;
+    });
+    const routes = () => page.evaluate(() => JSON.parse(JSON.stringify(
+      (window as any).arrangementStore.composition.routes ?? [])));
+    const srcOut = (await deepCentre(`.port[data-port-track="${ids.src}"][data-port-id="__out__"]`))!;
+    const texA = (await deepCentre('.tap-overlay-hit[data-field-path="tex_a"]'))!;
+    const texB = (await deepCentre('.tap-overlay-hit[data-field-path="tex_b"]'))!;
+
+    // DRAG: the band runs from the pip to the cursor mid-gesture.
+    await page.mouse.move(srcOut.x, srcOut.y);
+    await page.mouse.down();
+    const mid = { x: (srcOut.x + texB.x) / 2, y: (srcOut.y + texB.y) / 2 };
+    for (let i = 1; i <= 6; i++) {
+      await page.mouse.move(srcOut.x + ((mid.x - srcOut.x) * i) / 6, srcOut.y + ((mid.y - srcOut.y) * i) / 6);
+    }
+    await frame();
+    const d = await band();
+    expect(d).not.toBeNull();
+    const nums = d!.match(/-?[\d.]+/g)!.map(Number);
+    expect(Math.abs(nums[2] - mid.x)).toBeLessThan(2);
+    expect(Math.abs(nums[3] - mid.y)).toBeLessThan(2);
+    await page.mouse.move(texB.x, texB.y);
+    await frame();
+    await page.mouse.up();
+    await frame();
+    expect(await band()).toBeNull();
+    expect(await routes()).toHaveLength(1);
+
+    // CLICK: the first click selects the port (its popup opens), the second
+    // picks it up — the band follows the cursor — and a field click lands it.
+    await page.mouse.click(srcOut.x, srcOut.y);
+    await frame();
+    expect(await page.evaluate(() => (window as any).arrangementStore.portPopup?.portId)).toBe('__out__');
+    await page.mouse.click(srcOut.x, srcOut.y);
+    await frame();
+    expect(await page.evaluate(() => (window as any).arrangementStore.portPopup)).toBeNull();
+    await page.mouse.move(texA.x, texA.y, { steps: 6 });
+    await frame();
+    expect(await band()).not.toBeNull();
+    await page.mouse.click(texA.x, texA.y);
+    await frame();
+    expect(await band()).toBeNull();
+    const r2 = await routes();
+    expect(r2).toHaveLength(2);
+    expect(r2[1].dest).toMatchObject({ kind: 'field', trackId: ids.mix, field: 'tex_a' });
+
+    // Clicking a route wire opens its popup (and marks it selected); its
+    // Disconnect removes it.
+    await frame();
+    const pip = await page.evaluate(() => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        const ov = root.querySelector('arr-overlay');
+        if (ov) {
+          const c = ov.shadowRoot!.querySelector('circle.pip')!;
+          return { x: +c.getAttribute('cx')!, y: +c.getAttribute('cy')! };
+        }
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+      return null;
+    });
+    expect(pip).not.toBeNull();
+    await page.mouse.click(pip!.x, pip!.y);
+    await frame();
+    const popRoute = await page.evaluate(() => (window as any).arrangementStore.routePopup?.routeId);
+    expect(r2.map((r: any) => r.id)).toContain(popRoute);
+    const card = await deepCentre('.route-card');
+    expect(card).not.toBeNull();
+    expect(await page.evaluate(() => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        const ov = root.querySelector('arr-overlay');
+        if (ov) return ov.shadowRoot!.querySelectorAll('path.arc.route.sel').length;
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+      return -1;
+    })).toBe(1);
+    await page.evaluate(() => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        const btn = [...root.querySelectorAll('.route-card button')]
+          .find((b) => b.textContent === 'Disconnect') as HTMLElement | undefined;
+        if (btn) { btn.click(); return; }
+        for (const el of root.querySelectorAll('*')) if ((el as HTMLElement).shadowRoot) stack.push((el as HTMLElement).shadowRoot!);
+      }
+    });
+    await frame();
+    const r3 = await routes();
+    expect(r3).toHaveLength(1);
+    expect(r3.map((r: any) => r.id)).not.toContain(popRoute);
+    expect(await page.evaluate(() => (window as any).arrangementStore.routePopup)).toBeNull();
+  });
+
   it('a named out port follows whichever clip plays', async () => {
     await resetTracks(2);
     await page.evaluate(() => {

@@ -16,13 +16,13 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { defaultInsertIndex } from '../state/insert-position';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, FieldConnectInfo, SketchOutputFormat, SketchResolutionOverride } from '../sketch-types';
 import { sketchChain, chainEntryAt, isCanvasEntry, linearChainLength, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat, isDeviceOff } from '../sketch-types';
-import type { ColumnAdapter, ColumnController, PluginInfo, EditHandle } from './column-adapter';
+import type { ColumnAdapter, ColumnController, PluginInfo, EditHandle, ColumnTaps } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { beginDragGesture } from '../utils/drag-gesture';
 import { FieldLayoutManager, type FieldRect } from './field-layout-manager';
 import { splitLane } from './field-anchor-lookup';
-import { connectGestureActive } from './taps-connect';
+import { connectGestureActive, WireConnect } from './taps-connect';
 import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
 import type { TracePoint } from '../engine-types';
@@ -2293,7 +2293,7 @@ export class ColumnGroup extends MobxLitElement {
     // gesture) NOR the arrangement clip's pointerdown (which would deselect + re-render,
     // destroying this hit before its click fires) — that's why click-to-connect was
     // broken within a clip's sketch in the arrangement.
-    if (this.taps.state) { e.stopPropagation(); return; }
+    if (this.liveTaps) { e.stopPropagation(); return; }
     const sourceEl = e.currentTarget as HTMLElement;
     const rect = sourceEl.getBoundingClientRect();
     // The wire addresses the FIELD plus a lane; the anchor path carries both.
@@ -2315,6 +2315,14 @@ export class ColumnGroup extends MobxLitElement {
     this.taps.beginFromFieldDrag(e, sourceEl, this.sketchId, key, sourceInfo);
   }
 
+  /** The connect gesture a press/click here should land: this column's own, or
+   *  a CLICK-mode gesture another surface picked up (e.g. an arrangement I/O
+   *  port pip — its own WireConnect, which this column never sees otherwise). */
+  private get liveTaps(): ColumnTaps | null {
+    if (this.taps.state) return this.taps;
+    return WireConnect.active?.state ? WireConnect.active : null;
+  }
+
   private onTapOverlayClick(
     key: string,
     fieldPath: string,
@@ -2332,10 +2340,11 @@ export class ColumnGroup extends MobxLitElement {
     // The anchor path may name one lane of a vector field; the wire endpoint is
     // the field plus that lane (see splitLane).
     const { field: baseField, lane } = splitLane(fieldPath);
-    if (this.taps.state) {
+    const live = this.liveTaps;
+    if (live) {
       e?.stopPropagation();
       const rect = (e?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
-      this.taps.completeOnField(key, {
+      live.completeOnField(key, {
         sketchId: this.sketchId, colIdx: this.colIdx, chainIdx,
         fieldPath: baseField, lane, isOutput,
         viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef,
@@ -2837,7 +2846,8 @@ export class ColumnGroup extends MobxLitElement {
    *  its own floating field card. Smoothing-only / unwired fields select the field. */
   private onPipClick(e: PointerEvent, fieldKey: string, chainIdx: number, fieldPath: string, instanceKey: string) {
     e.stopPropagation();
-    if (this.taps.state) {
+    const live = this.liveTaps;
+    if (live) {
       const rect = (e.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
       const ent = chainEntryAt(this.ds.getSketch(this.sketchId), chainIdx);
       const isOutput = ent?.type === 'module' ? this.getOutputFieldNames(ent).has(fieldPath) : false;
@@ -2846,7 +2856,7 @@ export class ColumnGroup extends MobxLitElement {
       const schemaDef = ent?.type === 'module'
         ? (this.ds.getPlugin(ent.module_type, ent.instance_key)?.schema as any)?.[fieldPath] ?? null
         : null;
-      this.taps.completeOnField(fieldKey, {
+      live.completeOnField(fieldKey, {
         sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath, isOutput,
         viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef,
       });

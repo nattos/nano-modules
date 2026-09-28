@@ -17,6 +17,7 @@ import { WireConnect } from '../../../widgets/taps-connect';
 import { store } from '../state/store';
 import { PORT_IN, PORT_OUT, type RouteEnd, type Track } from '../model/composition';
 import { catalogEffect } from '../engine/effect-catalog';
+import { anchorRect, AnchorKeys } from './anchor-registry';
 
 /** The gesture machine for drags that START on a port pip. */
 export const portConnect = new WireConnect({
@@ -37,6 +38,24 @@ export const portConnect = new WireConnect({
   getPlugin: (mt: string) => store.enginePlugin(mt) as unknown as PluginInfo | undefined,
   connectWire: (a, b) => store.connectSketchWire(a, b),
 });
+
+/** Pick a port up for CLICK-to-connect: the rubber band follows the cursor
+ *  from the pip until the next click lands on a field or port (Esc / a
+ *  background click cancels). */
+export function beginPortClickConnect(trackId: string, portId: string, dir: 'in' | 'out') {
+  store.closePortPopup();
+  const r = anchorRect(AnchorKeys.port(trackId, portId));
+  const cx = r ? (r.left + r.right) / 2 : 0;
+  const cy = r ? (r.top + r.bottom) / 2 : 0;
+  portConnect.beginFromFieldClick('', `port/${trackId}/${portId}`, {
+    sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: dir === 'out',
+    viewportY: cy, schemaDef: null,
+    trackPort: { trackId, portId, dir },
+  });
+  // Start the band AT the pip (beginFromFieldClick seeds the pointer from
+  // viewportY alone) — it follows the cursor from the first move.
+  if (portConnect.state) { portConnect.state.pointerX = cx; portConnect.state.pointerY = cy; }
+}
 
 /** A port's display name. */
 export function portName(track: Track, portId: string): string {

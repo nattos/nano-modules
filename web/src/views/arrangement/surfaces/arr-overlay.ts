@@ -16,7 +16,7 @@ import { store } from '../state/store';
 import { anchorRect, AnchorKeys } from './anchor-registry';
 import { createGenericInspector, type InspectorFieldDef } from '../../../widgets/generic-inspector';
 import { PORT_OUT, type Route, type RouteEnd } from '../model/composition';
-import { portConnect, portDir, portName, revealRouteField, routeEndLabel, routeFieldRect } from './arr-io';
+import { beginPortClickConnect, portConnect, portDir, portName, revealRouteField, routeEndLabel, routeFieldRect } from './arr-io';
 import type { FieldBinding, ContinuousEditHandle } from '../../../widgets/field-editor';
 
 // Wire (tap) options, rendered through the SAME generic field editors the effect IDE
@@ -39,7 +39,8 @@ interface Pt {
 }
 interface WireDesc {
   id: string;
-  /** A Composition I/O route (drawn in ROUTE colour; popup-less, dbl-click deletes). */
+  /** A Composition I/O route (drawn in ROUTE colour; click opens the route
+   *  popup, dbl-click deletes). */
   route?: { id: string; delayed: boolean; live: boolean };
   color: string;
   a: Pt; // source (data-out)
@@ -133,6 +134,10 @@ export class ArrOverlay extends MobxLitElement {
     svg path.arc.route { stroke-dasharray: none; animation: none; stroke-width: 2; }
     svg path.arc.route.delayed { stroke-dasharray: 2 3; }
     svg path.arc.route.inert { opacity: 0.35; }
+    svg path.arc.route.sel { stroke: #46d18c !important; stroke-width: 3; }
+    svg path.connect {
+      fill: none; stroke: #46d18c; stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none;
+    }
     .chip {
       position: fixed; pointer-events: auto; z-index: 61; cursor: pointer;
       max-width: 180px; padding: 1px 6px; border-radius: 8px; white-space: nowrap;
@@ -233,9 +238,14 @@ export class ArrOverlay extends MobxLitElement {
     document.removeEventListener('pointerdown', this.onDocDown);
     document.removeEventListener('keydown', this.onDocKey);
   }
-  private onDocDown = () => { if (store.portPopup) store.closePortPopup(); };
+  private onDocDown = () => {
+    if (store.portPopup) store.closePortPopup();
+    if (store.routePopup) store.closeRoutePopup();
+  };
   private onDocKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && store.portPopup) store.closePortPopup();
+    if (e.key !== 'Escape') return;
+    if (store.portPopup) store.closePortPopup();
+    if (store.routePopup) store.closeRoutePopup();
   };
   private tick = () => {
     this.sync();
@@ -243,7 +253,7 @@ export class ArrOverlay extends MobxLitElement {
   };
 
   render() {
-    return html`<svg></svg><div class="chips"></div>${this.renderPopup()}${this.renderPortPopup()}`;
+    return html`<svg></svg><div class="chips"></div>${this.renderPopup()}${this.renderPortPopup()}${this.renderRoutePopup()}`;
   }
 
   // ── Wire geometry ───────────────────────────────────────────────────────
@@ -402,7 +412,7 @@ export class ArrOverlay extends MobxLitElement {
         const routeId = w.route?.id;
         const onClick = (e: PointerEvent) => {
           e.stopPropagation();
-          if (routeId) return; // routes: dbl-click deletes; the port popup lists them
+          if (routeId) { store.openRoutePopup(routeId, e.clientX + 8, e.clientY + 8); return; }
           store.selectWire(w.id, w.clipPath, w.target);
         };
         // Double-click a modulation wire (export/read, not the warp link) to
@@ -418,13 +428,7 @@ export class ArrOverlay extends MobxLitElement {
         pip.addEventListener('dblclick', onDblClick);
         pip.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
-          if (routeId) {
-            // A route's pip opens its SOURCE port's popup (it lists the route).
-            const r = (store.composition.routes ?? []).find((x) => x.id === routeId);
-            const port = r ? (r.src.kind === 'port' ? r.src : r.dest.kind === 'port' ? r.dest : null) : null;
-            if (port && port.kind === 'port') store.openPortPopup(port.trackId, port.portId, e.clientX + 8, e.clientY + 8);
-            return;
-          }
+          if (routeId) { store.openRoutePopup(routeId, e.clientX + 8, e.clientY + 8); return; }
           store.selectWire(w.id, w.clipPath, w.target);
           if (w.popup !== false) {
             store.openTapPopup({ wireId: w.id, x: e.clientX + 8, y: e.clientY + 8, label: w.label });
@@ -441,7 +445,7 @@ export class ArrOverlay extends MobxLitElement {
       g.arc.setAttribute('d', d);
       g.arc.setAttribute('class', 'arc'
         + (w.route ? ' route' + (w.route.delayed ? ' delayed' : '') + (w.route.live ? '' : ' inert') : '')
-        + (store.selectedWireId === w.id ? ' sel' : ''));
+        + ((w.route ? store.routePopup?.routeId === w.route.id : store.selectedWireId === w.id) ? ' sel' : ''));
       if (w.route) {
         g.pip.innerHTML = '';
         const t = document.createElementNS(NS, 'title');
@@ -454,6 +458,28 @@ export class ArrOverlay extends MobxLitElement {
       g.pip.setAttribute('cy', String((w.a.y + w.b.y) / 2));
       g.pip.style.fill = w.color;
     }
+    this.syncConnectBand(svg);
+  }
+
+  // ── Port rubber band ──────────────────────────────────────────────────
+  private band: SVGPathElement | null = null;
+
+  /** The live line from a port pip to the cursor while a gesture that STARTED
+   *  on a port is in flight (field-started gestures draw their own, in their
+   *  column-group). */
+  private syncConnectBand(svg: SVGSVGElement) {
+    const c = portConnect.state;
+    const port = c?.info.trackPort;
+    const r = port ? anchorRect(AnchorKeys.port(port.trackId, port.portId)) : null;
+    if (!c || !r) { if (this.band) this.band.style.display = 'none'; return; }
+    if (!this.band) {
+      this.band = document.createElementNS(NS, 'path');
+      this.band.setAttribute('class', 'connect');
+      svg.appendChild(this.band);
+    }
+    const a = { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+    this.band.style.display = '';
+    this.band.setAttribute('d', `M ${a.x} ${a.y} L ${c.pointerX} ${c.pointerY}`);
   }
 
   // ── Route chips (a route whose far end isn't on screen) ─────────────────
@@ -561,13 +587,38 @@ export class ArrOverlay extends MobxLitElement {
   }
 
   private connectFrom(trackId: string, portId: string, dir: 'in' | 'out') {
-    store.closePortPopup();
-    const r = anchorRect(AnchorKeys.port(trackId, portId));
-    portConnect.beginFromFieldClick('', `port/${trackId}/${portId}`, {
-      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: dir === 'out',
-      viewportY: r ? (r.top + r.bottom) / 2 : 0, schemaDef: null,
-      trackPort: { trackId, portId, dir },
-    });
+    beginPortClickConnect(trackId, portId, dir);
+  }
+
+  // ── Route popup (a clicked route wire) ──────────────────────────────────
+  private renderRoutePopup() {
+    const pop = store.routePopup;
+    if (!pop) return '';
+    const r = (store.composition.routes ?? []).find((x) => x.id === pop.routeId);
+    if (!r) return '';
+    const st = store.routeStatus[r.id];
+    const x = Math.min(pop.x, window.innerWidth - 240);
+    const y = Math.min(pop.y, window.innerHeight - 160);
+    const end = (e: RouteEnd) => html`<span class="lbl"
+      title=${e.kind === 'field' ? 'Show it' : ''}
+      @click=${() => { if (e.kind === 'field') revealRouteField(e); }}>${routeEndLabel(e)}</span>`;
+    return html`
+      <div class="tap-card port-card route-card" style="left:${x}px; top:${y}px"
+        @pointerdown=${(e: Event) => e.stopPropagation()}>
+        <div class="tc-head">Route</div>
+        <div class="rt"><span>from</span>${end(r.src)}</div>
+        <div class="rt"><span>to</span>${end(r.dest)}</div>
+        <div class="tc-row" style="color:var(--app-text-color2)">${
+          !st ? 'Waiting for the engine…'
+          : !st.live ? 'Inert — its source isn’t rendering.'
+          : st.delayed ? 'Live, one frame late — its source renders after its reader.'
+          : 'Live.'}</div>
+        <div class="acts">
+          <button class="tc-toggle" @click=${() => store.removeRoute(r.id)}>Disconnect</button>
+          <button class="tc-toggle" @click=${() => store.closeRoutePopup()}>Close</button>
+        </div>
+      </div>
+    `;
   }
 
   // ── Tap popup ─────────────────────────────────────────────────────────

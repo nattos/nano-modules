@@ -343,8 +343,10 @@ clips).
   UI); a route whose source isn't rendering is inert (dimmed). Solo keeps (sent nowhere) any track
   that feeds a soloed one.
 - **UI.** I/O mode (`I/O` / key `O`) shows each header's ports in place of the fader; drag between a
-  port and a port or an inspector texture field. Routes whose far end isn't on screen show as chips.
-  A port's popup renames it, sets the output (normal / nowhere), and lists its routes.
+  port and a port or an inspector texture field (a rubber band follows the cursor), or click a port
+  to select it and click it again to pick it up (click-to-connect). Routes whose far end isn't on
+  screen show as chips. A port's popup renames it, sets the output (normal / nowhere), and lists its
+  routes; clicking a route wire opens its popup (both ends, live / late / inert, Disconnect).
 - **Next** (designed for, not built): device rows (displays, lights, MIDI) whose ports are just
   another route end; same-frame ordering (render producers first); scalar ports.
 

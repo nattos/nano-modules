@@ -2,8 +2,9 @@
  * <arr-io-strip> — a track header's Composition I/O ports (I/O mode, in place
  * of the mixer strip): the main `in` / `out`, the track's named ports, and a
  * `+` to add one. Each pip is a wire endpoint — drag from it to connect, drop
- * a field or another port on it, click it for its popup (rename / output
- * routing / its routes). A SEND-NOWHERE `out` is drawn hollow.
+ * a field or another port on it, click it to select it and open its popup
+ * (rename / output routing / its routes), click it AGAIN to pick it up for
+ * click-to-connect. A SEND-NOWHERE `out` is drawn hollow.
  */
 
 import { html, css, nothing } from 'lit';
@@ -13,7 +14,7 @@ import { store } from '../state/store';
 import { PORT_IN, PORT_OUT, type Track } from '../model/composition';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { setAnchor, AnchorKeys } from './anchor-registry';
-import { portConnect, portDir, portName } from './arr-io';
+import { beginPortClickConnect, portConnect, portDir, portName } from './arr-io';
 
 @customElement('arr-io-strip')
 export class ArrIoStrip extends MobxLitElement {
@@ -35,6 +36,7 @@ export class ArrIoStrip extends MobxLitElement {
     .port.none .dot { background: transparent; border: 1px dashed var(--io-color, #46d18c); }
     .port .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .port.wired { color: var(--app-text-color1); border-color: color-mix(in srgb, var(--io-color, #46d18c) 60%, transparent); }
+    .port.sel { border-color: var(--io-color, #46d18c); color: var(--app-text-color1); }
     .port:hover, .port[tap-drop-target] { background: color-mix(in srgb, var(--io-color, #46d18c) 20%, transparent); }
     .spacer { flex: 1 1 0; min-width: 0; }
     .add {
@@ -76,13 +78,14 @@ export class ArrIoStrip extends MobxLitElement {
     const dir = portDir(t, portId);
     const wired = store.routesAt({ kind: 'port', trackId: t.id, portId }).length > 0;
     const none = portId === PORT_OUT && store.trackOutputMode(t.id) === 'none';
+    const sel = store.isPortSelected(t.id, portId);
     const title = portId === PORT_IN
       ? 'Input — route a track or port here to process it instead of the stack below'
       : portId === PORT_OUT
         ? (none ? 'Output — sent nowhere (still renders; routes still deliver)' : 'Output — this track\'s picture, post-FX')
         : `${dir === 'out' ? 'Output' : 'Input'} port “${portName(t, portId)}” — wire it to a field`;
     return html`<span
-      class="port tap-overlay-hit ${dir} ${wired ? 'wired' : ''} ${none ? 'none' : ''}"
+      class="port tap-overlay-hit ${dir} ${wired ? 'wired' : ''} ${none ? 'none' : ''} ${sel ? 'sel' : ''}"
       data-port-track=${t.id}
       data-port-id=${portId}
       data-port-dir=${dir}
@@ -92,12 +95,16 @@ export class ArrIoStrip extends MobxLitElement {
     ><span class="dot"></span><span class="nm">${portName(t, portId)}</span></span>`;
   }
 
+  private eatClick = false;
+
   private onPipDown(e: PointerEvent, t: Track, portId: string, dir: 'in' | 'out') {
     e.stopPropagation(); // not a header drag / selection
+    this.eatClick = false;
     // A click-mode gesture picked up elsewhere completes HERE.
     if (WireConnect.active) {
       e.preventDefault();
       WireConnect.active.completeOnTrackPort(t.id, portId, dir);
+      this.eatClick = true; // …and its trailing click mustn't open this pip's popup
       return;
     }
     const el = e.currentTarget as HTMLElement;
@@ -112,6 +119,12 @@ export class ArrIoStrip extends MobxLitElement {
   private onPipClick(e: MouseEvent, t: Track, portId: string) {
     e.stopPropagation();
     if (portConnect.consumeClickSuppression()) return; // the end of a drag
+    if (this.eatClick) { this.eatClick = false; return; } // the end of a click-connect
+    // A click on the SELECTED port picks it up (the field-row convention).
+    if (store.isPortSelected(t.id, portId)) {
+      beginPortClickConnect(t.id, portId, portDir(t, portId));
+      return;
+    }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     store.openPortPopup(t.id, portId, r.left, r.bottom + 4);
   }
