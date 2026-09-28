@@ -86,6 +86,33 @@ forEachBackend((backend) => {
       expect(b.positionBeat).toBeCloseTo(a.positionBeat + 2, 6); // 1s @120BPM
     });
 
+    it('effects follow the transport: a paused playhead is a static frame, play animates', async () => {
+      // A time-dependent generator. The effect clock steps by how far the
+      // TRANSPORT moved (paused → 0), not by the frame's dt — the host
+      // contract both engines keep. The native host once stepped effects by
+      // the wall clock, so paused noise kept boiling there alone.
+      const run = await runCompScenario({
+        doc: mkComposition([
+          mkTrack('t1', [mkClip('c1', 0, 16, [mkDevice('d1', 'source.noise')])]),
+        ]),
+        width: 64,
+        height: 64,
+        ops: [
+          { seek: 4 },
+          { step: { frames: 2, dtSec: STEP } },
+          { capture: 'a' },
+          { step: { frames: 30, dtSec: STEP } },   // paused: frozen
+          { capture: 'b' },
+          { play: { frames: 30, dtSec: STEP } },   // playing: moves
+          { capture: 'c' },
+        ],
+      });
+      const a = run.capture('a');
+      expect(a.hasContent).toBe(true);
+      expect(run.capture('b').diffBytes(a)).toBe(0);
+      expect(run.capture('c').diffBytes(a)).toBeGreaterThan(0);
+    });
+
     it('bypassing a track structurally drops its layer, un-bypassing restores it', async () => {
       const run = await runCompScenario({
         doc: layeredCompositeDoc(),

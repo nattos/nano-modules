@@ -150,9 +150,9 @@ void CompHost::publishClock(double dt) {
   }
 }
 
-int32_t CompHost::renderFrame(double dt) {
-  cx_->transportResolve(dt);
-  const int32_t handle = cx_->render(inTex_, outTex_, cfg_.width, cfg_.height, dt);
+int32_t CompHost::renderFrame(double execDt) {
+  cx_->transportResolve(execDt);
+  const int32_t handle = cx_->render(inTex_, outTex_, cfg_.width, cfg_.height, execDt);
   if (lastFlags_ & comp::kCompStructureChanged) chainKeys_ = cx_->chainKeysJson();
   frames_++;
   // A Precise hold is the transport refusing to advance because a clip's media
@@ -166,10 +166,20 @@ int32_t CompHost::step(double dt) {
     pump_->setActiveClips(json::parse(cx_->videoDescsJson(), nullptr, false));
   }
   pump_->pump(cx_->positionBeat(), cx_->bpm());
-  hostTime_ += dt;
+  // The effect clock follows the TRANSPORT, not the wall clock — the web
+  // host's contract (executor-host.ts compFrame): effects step by how far the
+  // playhead moved since the last frame (paused → 0, a static frame; a scrub →
+  // a signed jump, so effects seek), and the host time is where the playhead
+  // was plus this frame's dt. `prevSec_` persists across frames on purpose: a
+  // seek lands BETWEEN frames, and reading it fresh would absorb the jump.
+  const double prevSec = havePrevSec_ ? prevSec_ : cx_->positionSec();
+  hostTime_ = prevSec + dt;
   lastFlags_ = cx_->update(dt);
+  const double nowSec = cx_->positionSec();
+  prevSec_ = nowSec;
+  havePrevSec_ = true;
   publishClock(dt);
-  return renderFrame(dt);
+  return renderFrame(nowSec - prevSec);
 }
 
 void CompHost::primeExport(double beat) {
@@ -191,6 +201,8 @@ int32_t CompHost::stepExport(double beat, double tSec, double fps) {
   const int32_t handle = cx_->render(inTex_, outTex_, cfg_.width, cfg_.height, dt);
   if (lastFlags_ & comp::kCompStructureChanged) chainKeys_ = cx_->chainKeysJson();
   frames_++;
+  prevSec_ = cx_->positionSec();
+  havePrevSec_ = true;
   return handle;
 }
 

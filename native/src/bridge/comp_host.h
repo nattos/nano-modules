@@ -7,7 +7,9 @@
 //     (realtime, over the bridge protocol).
 //
 // It owns the executor and the decode pump and does the per-frame host
-// contract (comp_executor.h), in this order:
+// contract (comp_executor.h), with the web host's clock: effects step by the
+// TRANSPORT's motion (paused = a static frame, a scrub = a seek), in this
+// order:
 //
 //   pump (the last frame's position)  → update → host clock → transportResolve
 //   → render
@@ -107,7 +109,7 @@ class CompHost {
  private:
   void ensureTextures();
   void publishClock(double dt);
-  int32_t renderFrame(double dt);
+  int32_t renderFrame(double execDt);
 
   gpu::GPUBackend* gpu_;
   effect_runtime::EffectRuntime* rt_;
@@ -123,6 +125,10 @@ class CompHost {
 
   int referenceH_ = 0;
   double hostTime_ = 0.0;
+  /** Transport position at the end of the last frame (the effect clock's
+   *  anchor — see step()). */
+  double prevSec_ = 0.0;
+  bool havePrevSec_ = false;
   uint32_t lastFlags_ = 0;
   std::string chainKeys_ = "[]";
   int frames_ = 0;
