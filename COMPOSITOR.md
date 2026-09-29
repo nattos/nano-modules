@@ -152,7 +152,13 @@ library's concept of a template that *looks like* the hardware:
 **Decided: no per-output sketch for now.** Per-output colour correction is attractive, but it
 complicates the UI. Revisit later.
 
-**Decided (2026-09-29): the model has four layers**, with the same words for every kind:
+**Decided (2026-09-29), revised for lights the same day: template → type → rig.** Lights shipped
+with THREE layers: a rig slot holds a type plus an address, so the address is the physical bar and
+there is no separate unit object (swap = exchange two slots' addresses, in the rig). The four-layer
+wording below stays as the general frame (a display's unit may still earn its keep: a projector's
+usable region matched by EDID).
+
+The model has four layers, with the same words for every kind:
 - **template**: in code, a parametric shape (`light.strip` {segments, px per segment, colour
   format}, `display.screen`, the MIDI drivers);
 - **type**: in the library, a template with its parameters filled in ("24 V bar: 12 seg × 5 px,
@@ -175,8 +181,8 @@ arrangement's main area switches between the timeline and the Devices panel (Rem
 layouts and muscle memory carry over); devices wire from there into the inspector. A device can
 also be shown as a row under the tracks (a glance at its state, and a wire source near the timeline),
 but a MIDI wire never needs one. Mid-wire, hovering the `Timeline | Devices` switch flips the view —
-the path texture devices (lights, displays) will need. The order is D2 lights, D3 displays, D4
-inputs (Art-Net in, FFT).
+the path texture devices (lights, displays) will need. The order is D2 lights (SHIPPED — see Art-Net
+/ DMX output below), D3 displays, D4 inputs (Art-Net in, FFT).
 
 #### The present API (`GPUBackend`)
 
@@ -237,7 +243,32 @@ need the main thread, so:
 - Publish on the render thread right after the frame's submit.
 - Test: a ctest that runs a `SyphonMetalClient` in-process and reads a known colour.
 
-#### Art-Net / DMX output (pixel mapping)
+#### Art-Net / DMX output (pixel mapping) — SHIPPED (devices D2, 2026-09-29)
+
+As built:
+- **The page resolves, the compositor maps.** The arrangement resolves its show (light placements,
+  per-slot layout) against this machine's library into a flat PLAN — fixtures, each an address plus
+  one normalized footprint per pixel (`web/src/lights/light-plan.ts`) — and sends it as
+  `comp_lights` (sticky, replayed on reconnect). What a light SAMPLES is the document's: a route
+  `{kind:'device', placementId}` from an out port, resolved by the builder into
+  `SketchBuild.lightSources` (no wire, so the goldens are untouched) and read as
+  `CompExecutor::lightSourceTexture` (materialised through the barrier predicate); unrouted, the
+  composite. Solo never cuts a light's source.
+- **`native/src/lights/light_map.h`** (pure): footprint box-averaging, gamma, channel order, RGBW
+  (w = min), never spilling past channel 512, and the test patterns.
+- **`bridge/comp_lights.h` `LightRunner`**, owned by `CompHost`: after each submitted frame, one
+  async Lanczos readback per source texture (long edge 256–1024, sized so the thinnest footprint
+  spans ~2 texels); the callback maps and hands the DMX to a sink.
+- **`artnet/artnet_sender`**: its own socket, latest-wins, a 40 Hz thread (ArtDmx per universe, one
+  ArtSync per destination). `NANO_ARTNET_REDIRECT=host:port` sends everything to one place — the
+  test compositors (ctest, `comp-backend.ts`) always set it.
+- **Report**: `comp_report.lights` (the colours each light shows, ≤30 Hz) and `lightStatus`.
+- Tests: `test_light_map`, `test_artnet_sender` (loopback), `test_comp_lights` (GPU, capture sink),
+  `test_compositor_protocol` (the process transmits to the redirect), e2e `arrangement-lights`.
+- Not yet: ArtPoll discovery, a logical-canvas mode (render at the grid instead of sampling a big
+  frame), per-channel (non-pixel) fixtures as wire destinations, output latency compensation.
+
+The original design notes:
 
 - **A separate transmitter.** `artnet/artnet_host.h` is a *receiver* with a hard rule: it never
   transmits, because it co-binds Resolume's 6454. Output needs its own socket on an ephemeral port,

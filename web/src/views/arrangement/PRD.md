@@ -350,7 +350,7 @@ clips).
 - **Next** (designed for, not built): light and display devices whose inputs are just another route
   end; same-frame ordering (render producers first); scalar ports.
 
-## Devices — *as-built (D1: MIDI)*
+## Devices — *as-built (D1: MIDI, D2: lights)*
 
 The devices push: every external thing a show touches is a device, DEFINED once in this machine's
 library and used per show (plan: COMPOSITOR.md § devices; lights and displays follow).
@@ -369,6 +369,27 @@ library and used per show (plan: COMPOSITOR.md § devices; lights and displays f
   and its shown bank's controls — live, drag to simulate, W-mode sources for anything easier to
   reach from the timeline. Clicking the row's header opens the device in the Devices view. Taking a
   row away keeps the device's wires. *Later:* choosing which controls a row shows.
+
+**Lights (D2)** — LED pixel fixtures over Art-Net, in the same Devices view:
+
+- **The library** (this machine's, `light-devices.json`): the `LED strip` template → a TYPE (pixels,
+  LEDs per pixel — a 24 V segment lights several, colour order RGB/GRB/BGR/RGBW/GRBW, gamma) → a RIG
+  of slots, each a type plus an ADDRESS (universe, start channel, destination: broadcast / IP /
+  `ip:port`) and a default layout. "New rig" makes N bars addressed one after another, laid out as
+  vertical strips at 1/8, 3/8, 5/8, 7/8 (the Resolume shows' geometry). There is no separate "unit":
+  a slot's address is the physical bar, so **swap** exchanges two slots' addresses (bars hung in each
+  other's places) — in the rig, so every show using it is fixed. **Identify** walks one bar (pixel 0
+  red, so its direction shows).
+- **In a show**: a card's `add to show` places the rig (`Composition.devices`, kind `light`) — a row
+  under the tracks with its bars' live pixels, a sending status and an output switch. It samples the
+  **main output** unless a **route** feeds its input: a track's out port (Composition I/O) dragged
+  onto the light's input pip — across the Timeline | Devices switch if need be. Where each bar
+  samples is the show's: the layout editor (drag a strip, its corner to resize; one undo point per
+  drag) overrides the rig's layout per slot. **Test patterns** (black, white, colours, chase, slot
+  numbers) are transient and light even a switched-off output.
+- **Output is the native compositor's** (a browser has no UDP): it reads back what each light
+  samples, maps it and transmits at a steady 40 Hz (ArtDmx + ArtSync), whatever the render rate.
+  The worker engine renders the same show and says it doesn't transmit.
 
 ## Automation (track-level and clip-level)
 

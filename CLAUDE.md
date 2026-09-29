@@ -166,7 +166,13 @@ ordinary sketch wire from `midi:<uuid>` and works with or without a placement �
 `setInjectedScalars` carry the values (the injected table is keyed by the BUILT sketch's bare keys,
 never namespaced). The worker engine gets the table `midiController` lowers from the COMPOSITION's
 sketches (`state/arr-midi.ts`); the native compositor reads CoreMIDI itself and only takes the
-library + on-screen simulation over the bridge (`CompEngine.mirrorMidi`).
+library + on-screen simulation over the bridge (`CompEngine.mirrorMidi`). **Lights** (D2): a library
+of types and rigs (`web/src/lights/`, `light-devices.json`; a rig slot = type + Art-Net address) placed
+per show (`DevicePlacement` kind `light`, per-slot layout; a route `{kind:'device'}` from an out port
+picks what it samples, else the main output). The page resolves them into a flat plan
+(`light-plan.ts` → `comp_lights`); the NATIVE compositor maps (`lights/light_map.h`, CompHost's
+`LightRunner`) and transmits (`artnet/artnet_sender`, 40 Hz) — the worker engine can't (no UDP).
+Tests redirect every light's DMX to loopback with `NANO_ARTNET_REDIRECT`; never let one reach the LAN.
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 
