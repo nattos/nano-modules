@@ -13,8 +13,9 @@
  * on-site "monkey patches" to its destinations — rebase every unicast
  * address onto the venue's subnet, or swap single destinations — without
  * touching the rigs. The built-in AUTO network lets the OS pick (and sends
- * `broadcast` to 255.255.255.255); a slot names a network in its address, so a
- * swap carries it along.
+ * `broadcast` to 255.255.255.255); the built-in LOOPBACK keeps everything on
+ * this machine (a local visualiser, or our own Art-Net input). A slot names a
+ * network in its address, so a swap carries it along.
  *
  * There is no separate "unit": a slot's address IS the physical bar. Swapping
  * two slots exchanges their addresses (and types), which is how a rig hung in
@@ -127,7 +128,8 @@ export interface NetworkOverride { from: string; to: string }
 
 export interface LightNetwork extends RowBase {
   kind: 'network';
-  /** The interface to send from ('en0'); '' = auto (the OS picks). */
+  /** The interface to send from ('en0'); '' = auto (the OS picks);
+   *  LOOPBACK_IFACE = this machine only, on every OS. */
   iface: string;
   /** Rebase unicast destinations onto this subnet ('10.0.5.0/24'): each keeps
    *  its host part (192.168.1.40 → 10.0.5.40). Absent / '' = off. */
@@ -142,6 +144,27 @@ export const AUTO_NETWORK_ID = 'net.auto';
 export const AUTO_NETWORK: LightNetwork = {
   kind: 'network', id: AUTO_NETWORK_ID, name: 'Auto', parentId: '', forkedAt: 0, updatedAt: 0, iface: '',
 };
+
+/** The interface that means "this machine": every destination becomes
+ *  127.0.0.1 (a 127.x one is kept, ports always are). Resolved on the page, so
+ *  the sender just unicasts to loopback — no interface name, no platform
+ *  difference. */
+export const LOOPBACK_IFACE = 'loopback';
+
+export const LOOPBACK_NETWORK_ID = 'net.loopback';
+
+/** The built-in network that never leaves this machine. */
+export const LOOPBACK_NETWORK: LightNetwork = {
+  kind: 'network', id: LOOPBACK_NETWORK_ID, name: 'Loopback', parentId: '', forkedAt: 0, updatedAt: 0,
+  iface: LOOPBACK_IFACE,
+};
+
+/** The networks every library has, not stored in it. */
+export const BUILTIN_NETWORKS: readonly LightNetwork[] = [AUTO_NETWORK, LOOPBACK_NETWORK];
+
+export function builtinNetwork(id: string): LightNetwork | undefined {
+  return BUILTIN_NETWORKS.find((n) => n.id === id);
+}
 
 export type LightRow = LightType | LightRig | LightNetwork;
 
@@ -225,10 +248,32 @@ export function parseCidr(s: string): { net: number; mask: number } | null {
 /**
  * Where a destination really goes on `network`: its first matching override,
  * else its rebase (unicast only — `broadcast` is the interface's to resolve),
- * else as the rig says.
+ * else as the rig says. On a loopback network, whatever that gave then stays
+ * on this machine.
  */
 export function resolveNetworkDest(dest: string, network: LightNetwork | undefined): string {
   if (!network) return dest;
+  const d = patchDest(dest, network);
+  return network.iface === LOOPBACK_IFACE ? toLoopback(d) : d;
+}
+
+/** `dest` kept on this machine: broadcast and any non-127 host → 127.0.0.1,
+ *  the port kept. */
+function toLoopback(dest: string): string {
+  const colon = dest.lastIndexOf(':');
+  const host = colon >= 0 ? dest.slice(0, colon) : dest;
+  const port = colon >= 0 ? dest.slice(colon) : '';
+  const ip = ipToInt(host);
+  return ip !== null && ip >>> 24 === 127 ? dest : `127.0.0.1${port}`;
+}
+
+/** The interface the sender binds for `network` ('' = the default socket —
+ *  which is also how loopback goes out). */
+export function networkSendIface(network: LightNetwork): string {
+  return network.iface === LOOPBACK_IFACE ? '' : network.iface;
+}
+
+function patchDest(dest: string, network: LightNetwork): string {
   const d = dest.trim() || 'broadcast';
   const colon = d.lastIndexOf(':');
   const host = colon >= 0 ? d.slice(0, colon) : d;

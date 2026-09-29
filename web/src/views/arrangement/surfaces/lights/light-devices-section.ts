@@ -21,7 +21,7 @@ import { html, css, nothing, svg } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../../mobx-lit-element';
 import {
-  AUTO_NETWORK_ID, LIGHT_TEMPLATES, LIGHT_FORMATS, slotChannels,
+  AUTO_NETWORK_ID, BUILTIN_NETWORKS, builtinNetwork, LIGHT_TEMPLATES, LOOPBACK_IFACE, LIGHT_FORMATS, slotChannels,
   type LightNetwork, type LightRig, type LightType,
 } from '../../../../lights/light-types';
 import { devicesUi } from '../../../devices/devices-ui';
@@ -87,7 +87,7 @@ export class LightDevicesSection extends MobxLitElement {
     for (const p of store.lightPlacements) {
       for (const s of lightController.rig(p.deviceId)?.slots ?? []) usedNets.add(s.address.network ?? AUTO_NETWORK_ID);
     }
-    const nets = [lightController.network(AUTO_NETWORK_ID)!, ...lightController.networks]
+    const nets = [...BUILTIN_NETWORKS, ...lightController.networks]
       .filter((n) => !this.inUse || usedNets.has(n.id));
     return html`
       <div>
@@ -179,9 +179,11 @@ export class LightDevicesSection extends MobxLitElement {
   private renderNetworkCard(n: LightNetwork) {
     const ifs = lightController.netIfaces;
     const cur = n.iface ? ifs?.find((i) => i.name === n.iface) : undefined;
-    const up = !n.iface || !!cur?.up;
+    const loopback = n.iface === LOOPBACK_IFACE;
+    const up = !n.iface || loopback || !!cur?.up;
     const where = n.id === AUTO_NETWORK_ID ? 'the system picks'
       : !n.iface ? 'any interface'
+      : loopback ? 'this machine only'
       : cur ? `${n.iface} · ${cur.address}${cur.up ? '' : ' · down'}`
       : ifs ? `${n.iface} · not on this machine` : n.iface;
     const patches = (n.rebase ? 1 : 0) + (n.overrides?.length ?? 0);
@@ -193,7 +195,7 @@ export class LightDevicesSection extends MobxLitElement {
         data-light-card=${n.id}
         ?selected=${devicesUi.selectedCardId === n.id}
         @click=${() => this.select(n.id)}>
-        ${n.id === AUTO_NETWORK_ID ? html`<span slot="head" class="builtin">built in</span>` : nothing}
+        ${builtinNetwork(n.id) ? html`<span slot="head" class="builtin">built in</span>` : nothing}
         <div class="meta">${bars ? `sends ${bars} bar${bars === 1 ? '' : 's'}` : 'no bars on it'}</div>
       </device-card>`;
   }

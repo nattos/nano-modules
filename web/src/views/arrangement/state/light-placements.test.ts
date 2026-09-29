@@ -146,6 +146,19 @@ describe('light library', () => {
     expect(lightController.networkUsers('net.auto')).toHaveLength(3);
   });
 
+  it('Loopback is built in: a bar names it, and a copy keeps its interface', () => {
+    const rig = lightController.newRig({
+      typeId: 'bar', count: 2, start: { universe: 0, channel: 1, dest: 'broadcast' },
+    })!;
+    expect(lightController.network('net.loopback')).toMatchObject({ name: 'Loopback', iface: 'loopback' });
+    lightController.editSlot(rig.id, rig.slots[1].id, { address: { network: 'net.loopback' } });
+    expect(lightController.rig(rig.id)!.slots[1].address.network).toBe('net.loopback');
+    expect(lightController.networkUsers('net.loopback')).toHaveLength(1);
+    const mine = lightController.newNetwork('net.loopback');
+    expect(mine).toMatchObject({ name: 'Loopback copy', iface: 'loopback', parentId: 'net.loopback' });
+    expect(lightController.networks.map((n) => n.id)).toEqual([mine.id]);
+  });
+
   it('swapping two slots exchanges where they SEND, not where they sample', () => {
     const rig = lightController.newRig({
       typeId: 'bar', count: 4, start: { universe: 0, channel: 1, dest: 'broadcast' },

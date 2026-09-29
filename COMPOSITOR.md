@@ -268,7 +268,9 @@ As built:
   socket — the test compositors (ctest, `comp-backend.ts`) always set it.
 - **Networks** (page-side): a library row choosing the interface and patching destinations on site
   (rebase unicast onto a subnet, exact overrides); `light-plan.ts` resolves each fixture to its
-  final `dest` + `iface`, so the compositor never sees a network.
+  final `dest` + `iface`, so the compositor never sees a network. Built in: Auto, and Loopback —
+  iface `loopback`, which the page resolves to 127.0.0.1 (a 127.x kept, ports kept) on the unbound
+  socket, so it works on every OS, Windows included.
 - **Report**: `comp_report.lights` (the colours each light shows, ≤30 Hz), `lightStatus`, and
   `netIfaces` (this machine's IPv4 interfaces, for a network's picker; on connect + on change).
   Windows lists none yet, so only Auto works there.

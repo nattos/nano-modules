@@ -12,7 +12,7 @@
 
 import type { Composition, DevicePlacement } from '../views/arrangement/model/composition';
 import {
-  AUTO_NETWORK, AUTO_NETWORK_ID, resolveNetworkDest, slotChannels, slotFootprints,
+  AUTO_NETWORK, builtinNetwork, networkSendIface, resolveNetworkDest, slotChannels, slotFootprints,
   type LightFormat, type LightNetwork, type LightRig, type LightRow, type LightType, type SlotRect,
 } from './light-types';
 
@@ -50,10 +50,13 @@ export function libraryType(library: readonly LightRow[], id: string): LightType
   return r?.kind === 'type' ? r : undefined;
 }
 
-/** A slot's network: Auto for none, else the library's (undefined when that
- *  network is gone or deleted — the plan then sends on Auto, and warns). */
+/** A slot's network: Auto for none, a built-in by its id, else the library's
+ *  (undefined when that network is gone or deleted — the plan then sends on
+ *  Auto, and warns). */
 export function libraryNetwork(library: readonly LightRow[], id: string | undefined): LightNetwork | undefined {
-  if (!id || id === AUTO_NETWORK_ID) return AUTO_NETWORK;
+  if (!id) return AUTO_NETWORK;
+  const builtin = builtinNetwork(id);
+  if (builtin) return builtin;
   const r = library.find((x) => x.id === id);
   return r?.kind === 'network' && !r.deleted ? r : undefined;
 }
@@ -83,7 +86,7 @@ export function rigFixtures(rig: LightRig, library: readonly LightRow[],
       universe: slot.address.universe,
       channel: slot.address.channel,
       dest: resolveNetworkDest(slot.address.dest || 'broadcast', net),
-      iface: net.iface,
+      iface: networkSendIface(net),
       format: type.format,
       gamma: type.gamma,
       footprints: slotFootprints(slotRectIn(placement, slot), type.pixels, type.vertical !== false, !!slot.reverse),
@@ -128,7 +131,11 @@ export function rigWarnings(rig: LightRig, library: readonly LightRow[]): LightW
       out.push({ rigId: rig.id, slotId: slot.id,
         message: `Slot ${i + 1} runs past channel 512 (ends at ${to}); the pixels past it aren't sent` });
     }
-    spans.push({ slotId: slot.id, key: `${slot.address.network ?? ''}/${slot.address.dest || 'broadcast'}/${slot.address.universe}`, from, to });
+    // Keyed by where it really goes, so two nodes' universes a network folds
+    // onto one destination (Loopback, an override) show up as the clash they are.
+    const net = libraryNetwork(library, slot.address.network) ?? AUTO_NETWORK;
+    const dest = resolveNetworkDest(slot.address.dest || 'broadcast', net);
+    spans.push({ slotId: slot.id, key: `${networkSendIface(net)}/${dest}/${slot.address.universe}`, from, to });
   });
   for (let i = 0; i < spans.length; i++) {
     for (let j = i + 1; j < spans.length; j++) {

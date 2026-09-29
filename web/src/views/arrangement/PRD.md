@@ -385,7 +385,9 @@ library and used per show (plan: COMPOSITOR.md § devices; lights and displays f
   red, so its direction shows).
 - **Networks** (library too): which interface a bar's DMX leaves from, and on-site "monkey
   patches" — rebase every unicast destination onto the venue's subnet, or swap single
-  destinations — without touching the rigs. **Auto** (built in) lets the system pick. Each bar
+  destinations — without touching the rigs. **Auto** (built in) lets the system pick;
+  **Loopback** (built in, and an interface any network can choose) keeps every destination on this
+  machine — 127.0.0.1, ports kept — for a local visualiser or our own Art-Net input. Each bar
   picks its network ("via", part of its address — a swap carries it); changing one bar's offers
   to switch the rest of its rig. A named interface broadcasts on its own subnet; the interface
   list comes from the native compositor.

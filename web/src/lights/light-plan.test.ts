@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  consecutiveAddresses, defaultStripLayout, parseCidr, resolveNetworkDest, slotFootprints, validDest,
-  type LightNetwork, type LightRig, type LightType,
+  consecutiveAddresses, defaultStripLayout, LOOPBACK_NETWORK, parseCidr, resolveNetworkDest, slotFootprints,
+  validDest, type LightNetwork, type LightRig, type LightType,
 } from './light-types';
 import { buildLightPlan, rigWarnings } from './light-plan';
 import type { Composition } from '../views/arrangement/model/composition';
@@ -110,6 +110,20 @@ describe('networks', () => {
     expect(resolveNetworkDest('192.168.1.43', n)).toBe('10.0.5.43');
     expect(resolveNetworkDest('192.168.1.43', undefined)).toBe('192.168.1.43');
   });
+
+  it('loopback keeps everything on this machine: 127.0.0.1, ports kept, a 127.x kept', () => {
+    expect(resolveNetworkDest('broadcast', LOOPBACK_NETWORK)).toBe('127.0.0.1');
+    expect(resolveNetworkDest('192.168.1.40', LOOPBACK_NETWORK)).toBe('127.0.0.1');
+    expect(resolveNetworkDest('192.168.1.40:7000', LOOPBACK_NETWORK)).toBe('127.0.0.1:7000');
+    expect(resolveNetworkDest('127.0.0.2:7000', LOOPBACK_NETWORK)).toBe('127.0.0.2:7000');
+    // A loopback network of your own: its patches pick the port (or a 127.x) first.
+    const mine = net({ iface: 'loopback', overrides: [
+      { from: '192.168.1.41', to: '127.0.0.1:6455' },
+      { from: '192.168.1.42', to: '10.0.0.9' },
+    ] });
+    expect(resolveNetworkDest('192.168.1.41', mine)).toBe('127.0.0.1:6455');
+    expect(resolveNetworkDest('192.168.1.42', mine)).toBe('127.0.0.1');
+  });
 });
 
 describe('the light plan', () => {
@@ -121,6 +135,23 @@ describe('the light plan', () => {
     const [a, b] = plan.outputs[0].fixtures;
     expect([a.iface, a.dest]).toEqual(['en7', '10.0.5.40']);
     expect([b.iface, b.dest]).toEqual(['', 'broadcast']);  // Auto
+  });
+
+  it('a bar on Loopback goes out the default socket to 127.0.0.1', () => {
+    const r = rig(2);
+    r.slots[0].address = { ...r.slots[0].address, dest: '192.168.1.40:7000', network: 'net.loopback' };
+    r.slots[1].address = { ...r.slots[1].address, network: 'net.loopback' };
+    const [a, b] = buildLightPlan(comp([{ id: 'p1', kind: 'light', deviceId: 'rig' }]), [bar, r]).outputs[0].fixtures;
+    expect([a.iface, a.dest]).toEqual(['', '127.0.0.1:7000']);
+    expect([b.iface, b.dest]).toEqual(['', '127.0.0.1']);
+    expect(rigWarnings(r, [bar, r])).toEqual([]);
+  });
+
+  it('two nodes a network folds onto one destination clash, and say so', () => {
+    const r = rig(2);
+    r.slots[0].address = { universe: 0, channel: 1, dest: '192.168.1.40', network: 'net.loopback' };
+    r.slots[1].address = { universe: 0, channel: 1, dest: '192.168.1.41', network: 'net.loopback' };
+    expect(rigWarnings(r, [bar, r]).map((w) => w.message)).toEqual(['Slots 1 and 2 share channels 1–40']);
   });
 
   it('a bar whose network is gone (or deleted) is sent on Auto, with a warning', () => {

@@ -157,7 +157,7 @@ export class LightController {
     return this.library.filter((r): r is LightRig => r.kind === 'rig' && !r.deleted);
   }
 
-  /** The user's networks (Auto is built in: `network(undefined)`). */
+  /** The user's networks (Auto and Loopback are built in: BUILTIN_NETWORKS). */
   get networks(): LightNetwork[] {
     return this.library.filter((r): r is LightNetwork => r.kind === 'network' && !r.deleted);
   }
@@ -270,7 +270,7 @@ export class LightController {
     return row;
   }
 
-  /** A new network — a copy of `from` (another network, or Auto). */
+  /** A new network — a copy of `from` (another network, or a built-in). */
   newNetwork(from: string = AUTO_NETWORK_ID): LightNetwork {
     const src = this.network(from);
     const now = Date.now();

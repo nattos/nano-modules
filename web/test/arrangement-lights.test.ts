@@ -222,6 +222,23 @@ describe('Arrangement lights (GPU)', () => {
     expect(await deepCentre('[data-light-action="net-all"]')).toBeNull();
   });
 
+  it('networks: Loopback is built in — a bar on it is planned to 127.0.0.1', async () => {
+    await resetShow([1, 0, 0], [0, 1, 0]);
+    const { rig } = await makeRig(2);
+    await waitDeep('[data-light-card="net.loopback"]');
+    await clickDeep('[data-light-card="net.loopback"]');
+    await waitDeep('[data-light-action="duplicate-network"]');
+    await clickDeep(`[data-light-card="${rig}"]`);
+    await selectDeep('[data-light-net="1"]', 'net.loopback');
+    expect(await page.evaluate((id: string) => (window as any).lightController.rig(id).slots
+      .map((s: any) => s.address.network ?? null), rig)).toEqual([null, 'net.loopback']);
+    // What the engine is handed: bar 2 unicast to this machine, on the default socket.
+    const fixtures = await page.evaluate(() =>
+      JSON.parse((window as any).lightController.lastPlanJson).outputs[0].fixtures
+        .map((f: any) => [f.iface, f.dest]));
+    expect(fixtures).toEqual([['', 'broadcast'], ['', '127.0.0.1']]);
+  });
+
   it('layout: dragging a strip moves it in THIS show, as one undo point', async () => {
     await resetShow([1, 0, 0], [0, 1, 0]);
     const { rig, pid } = await makeRig(4);

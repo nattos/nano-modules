@@ -24,7 +24,7 @@ import { html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../../mobx-lit-element';
 import {
-  addressLabel, AUTO_NETWORK_ID, LIGHT_FORMATS, lightTemplate, parseCidr, resolveNetworkDest, validDest,
+  addressLabel, AUTO_NETWORK_ID, BUILTIN_NETWORKS, builtinNetwork, LIGHT_FORMATS, LOOPBACK_IFACE, lightTemplate, parseCidr, resolveNetworkDest, validDest,
   type LightFormat, type LightNetwork, type LightRig, type LightTemplate, type LightType,
 } from '../../../../lights/light-types';
 import { rigWarnings } from '../../../../lights/light-plan';
@@ -48,6 +48,9 @@ const PATTERNS: { id: LightPattern; label: string; title: string }[] = [
 ];
 
 export const MISSING_PREFIX = 'missing-light:';
+
+const LOOPBACK_NOTE = html`Everything stays on this machine: <b>broadcast</b> and every address go
+  to 127.0.0.1 (a 127.x address is kept), on the same port.`;
 
 @customElement('light-details')
 export class LightDetails extends MobxLitElement {
@@ -130,7 +133,8 @@ export class LightDetails extends MobxLitElement {
     if (id.startsWith(MISSING_PREFIX)) return this.renderMissing(id.slice(MISSING_PREFIX.length));
     const tpl = lightTemplate(id);
     if (tpl) return this.renderTemplate(tpl);
-    if (id === AUTO_NETWORK_ID) return this.renderNetwork(lightController.network(id)!);
+    const builtin = builtinNetwork(id);
+    if (builtin) return this.renderNetwork(builtin);
     const row = lightController.row(id);
     if (!row) return nothing;
     if (row.kind === 'network') return this.renderNetwork(row);
@@ -140,7 +144,6 @@ export class LightDetails extends MobxLitElement {
   // ── Network ─────────────────────────────────────────────────────────────
 
   private renderNetwork(n: LightNetwork) {
-    const auto = n.id === AUTO_NETWORK_ID;
     const users = lightController.networkUsers(n.id);
     const byRig = new Map<string, { name: string; bars: number[] }>();
     for (const u of users) {
@@ -151,7 +154,7 @@ export class LightDetails extends MobxLitElement {
     const usedBy = users.length ? html`<div class="note">Sends ${users.length} bar${users.length === 1 ? '' : 's'}:
       ${[...byRig.values()].map((e, i) => html`${i ? ', ' : ''}${e.name} (${e.bars.join(', ')})`)}</div>`
       : html`<div class="note">No bars use it yet — pick it on a rig's bars ("via").</div>`;
-    if (auto) {
+    if (n.id === AUTO_NETWORK_ID) {
       return html`
         <div class="head"><span class="title">Auto</span><span class="kind">network</span></div>
         <div class="sec">
@@ -163,7 +166,20 @@ export class LightDetails extends MobxLitElement {
             devicesUi.selectCard(lightController.newNetwork().id)}>new network</button></div>
         </div>`;
     }
+    if (builtinNetwork(n.id)) {
+      return html`
+        <div class="head"><span class="title">${n.name}</span><span class="kind">network</span></div>
+        <div class="sec">
+          <div class="note">${LOOPBACK_NOTE} Nothing reaches the LAN — for a visualiser on this
+            machine, or this app's own Art-Net input.</div>
+          ${usedBy}
+          <div class="btns"><button data-light-action="duplicate-network"
+            title="A loopback network of your own, to send some destinations to other ports"
+            @click=${() => devicesUi.selectCard(lightController.newNetwork(n.id).id)}>duplicate</button></div>
+        </div>`;
+    }
     const ifs = lightController.netIfaces;
+    const loopback = n.iface === LOOPBACK_IFACE;
     const cur = ifs?.find((i) => i.name === n.iface);
     const rebaseOk = !n.rebase || !!parseCidr(n.rebase);
     const overrides = n.overrides ?? [];
@@ -181,15 +197,17 @@ export class LightDetails extends MobxLitElement {
           ${ifs ? html`<select data-light-field="iface" @change=${(e: Event) =>
               lightController.editNetwork(n.id, { iface: (e.target as HTMLSelectElement).value })}>
               <option value="" ?selected=${!n.iface}>auto — the system picks</option>
+              <option value=${LOOPBACK_IFACE} ?selected=${loopback}>loopback — this machine only</option>
               ${ifs.filter((i) => !i.loopback || i.name === n.iface).map((i) => html`<option value=${i.name}
                 ?selected=${i.name === n.iface}>${i.name} · ${i.address}${i.up ? '' : ' (down)'}</option>`)}
-              ${n.iface && !cur ? html`<option value=${n.iface} selected>${n.iface} — not on this machine</option>` : nothing}
+              ${n.iface && !cur && !loopback ? html`<option value=${n.iface} selected>${n.iface} — not on this machine</option>` : nothing}
             </select>`
           : html`<input data-light-field="iface" placeholder="auto" .value=${n.iface}
-              title="An interface name, e.g. en0 — blank lets the system pick"
+              title="An interface name, e.g. en0 — blank lets the system pick, ${LOOPBACK_IFACE} keeps it on this machine"
               @change=${(e: Event) => lightController.editNetwork(n.id, { iface: (e.target as HTMLInputElement).value })}>`}
         </div>
         ${!n.iface ? html`<div class="note">No interface chosen: the system picks, as Auto does.</div>`
+          : loopback ? html`<div class="note">${LOOPBACK_NOTE}</div>`
           : !ifs ? html`<div class="note">The interface list comes from the native compositor.</div>`
           : !cur ? html`<div class="warn">${n.iface} isn't on this machine — its bars send nothing.</div>`
           : !cur.up ? html`<div class="warn">${n.iface} is down — its bars send nothing.</div>`
@@ -433,7 +451,7 @@ export class LightDetails extends MobxLitElement {
         <span class="k">via</span>
         <select data-light-net=${i} title="The network it's sent on" @click=${(e: Event) => e.stopPropagation()}
           @change=${(e: Event) => this.onSlotNetwork(rig, s.id, (e.target as HTMLSelectElement).value)}>
-          <option value=${AUTO_NETWORK_ID} ?selected=${netId === AUTO_NETWORK_ID}>Auto</option>
+          ${BUILTIN_NETWORKS.map((n) => html`<option value=${n.id} ?selected=${n.id === netId}>${n.name}</option>`)}
           ${lightController.networks.map((n) => html`<option value=${n.id} ?selected=${n.id === netId}>${n.name}</option>`)}
           ${lightController.network(netId) ? nothing : html`<option selected disabled>missing network</option>`}
         </select>

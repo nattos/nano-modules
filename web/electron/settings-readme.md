@@ -107,7 +107,9 @@ NETWORK (`{"kind":"network", "iface", "rebase", "overrides": [{ "from", "to" }],
 (absent: Auto — the system picks the interface); `layout` is the slot's default
 sampling rect in the frame (0–1, top-left origin). A network's `iface` is an
 interface name (`"en0"`, `""` = auto; broadcast then goes to that interface's
-subnet), `rebase` a subnet (`"10.0.5.0/24"`) every unicast destination is moved
+subnet; `"loopback"` = this machine only — every destination becomes 127.0.0.1, a
+127.x one and the port kept; `"net.loopback"` is the built-in network that does
+this), `rebase` a subnet (`"10.0.5.0/24"`) every unicast destination is moved
 onto keeping its host part, and `overrides` exact destination swaps checked
 first (an IP `from` matches any port). Used by the arrangement app
 (its Devices view) and applied live; a show stores only which rigs it includes
