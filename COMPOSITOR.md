@@ -301,8 +301,9 @@ the main thread). ⌘⇧D stops them too. Tests: `test_syphon_outputs` (a privat
 in-process client → the pixels), `test_comp_displays` (render size, a publish per frame),
 e2e native leg (offscreen redirect).
 
-Also shipped with it: the cursor hides over a fullscreen output (the window server's
-"SetsCursorInBackground" connection property — private, looked up at run time).
+Not done, by decision: hiding the cursor over a fullscreen output. Only the frontmost app may hide
+it and an output never takes focus; the private "SetsCursorInBackground" workaround had no effect
+on macOS 26 (Resolume has the same limit), so the pointer stays visible.
 
 The original notes:
 

@@ -3,8 +3,8 @@
 // through bridge_api.h's NanoDisplayProvider).
 //
 //   - Fullscreen: a borderless window over its screen's whole frame (menu bar
-//     included), never key, never in the window cycle; the cursor hides while
-//     it's over one.
+//     included), never key, never in the window cycle. The cursor stays
+//     visible: only the frontmost app may hide it, and an output never is.
 //   - Window mode (rehearsal): a normal titled, resizable window. Closing it
 //     turns the display off (a `closed` event); moving it is remembered (a
 //     `moved` event).

@@ -12,7 +12,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
-#include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -38,26 +37,6 @@ char* dupString(const std::string& s) {
 
 double nowSec() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-/**
- * Let this (background) process hide the cursor. Only the frontmost app may
- * hide it through public API, and a fullscreen output never takes focus; the
- * window server's long-standing "SetsCursorInBackground" connection property
- * lifts that (what cursor-hiding utilities use). Private, so looked up at run
- * time: if it's ever gone, the cursor simply stays visible.
- */
-bool allowBackgroundCursorHiding() {
-  using ConnFn = int (*)();
-  using SetPropFn = int (*)(int, int, CFStringRef, CFTypeRef);
-  static const bool ok = [] {
-    auto conn = (ConnFn)dlsym(RTLD_DEFAULT, "_CGSDefaultConnection");
-    auto set = (SetPropFn)dlsym(RTLD_DEFAULT, "CGSSetConnectionProperty");
-    if (!conn || !set) return false;
-    const int c = conn();
-    return set(c, c, CFSTR("SetsCursorInBackground"), kCFBooleanTrue) == 0;
-  }();
-  return ok;
 }
 
 std::string displayUuid(CGDirectDisplayID d) {
@@ -184,7 +163,6 @@ class MacDisplayWindows final : public DisplayWindows {
     if (quitKey_) UnregisterEventHotKey(quitKey_);
     if (hotKeyHandler_) RemoveEventHandler(hotKeyHandler_);
     if (keyMonitor_) [NSEvent removeMonitor:keyMonitor_];
-    if (cursorHidden_) CGDisplayShowCursor(kCGDirectMainDisplay);
     [link_ invalidate];
     for (auto& [pid, o] : outs_) [o.win orderOut:nil];
   }
@@ -203,7 +181,6 @@ class MacDisplayWindows final : public DisplayWindows {
       } else {
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, sec, true);
       }
-      updateCursor();
       const double now = nowSec();
       std::lock_guard<std::mutex> lk(mu_);
       retired_.erase(std::remove_if(retired_.begin(), retired_.end(),
@@ -521,24 +498,6 @@ class MacDisplayWindows final : public DisplayWindows {
     return noErr;
   }
 
-  /** Hide the cursor while it's over a fullscreen output (a projection shows
-   *  no pointer); show it again anywhere else, and when outputs close. Called
-   *  from every main-thread pump (~20 Hz, sooner on events). */
-  void updateCursor() {
-    bool over = false;
-    if (!outs_.empty()) {
-      const NSPoint m = [NSEvent mouseLocation];
-      for (const auto& [pid, o] : outs_) {
-        if (!o.want.window && NSPointInRect(m, o.win.frame)) over = true;
-      }
-    }
-    if (over == cursorHidden_) return;
-    if (over && !allowBackgroundCursorHiding()) return;
-    if (over) CGDisplayHideCursor(kCGDirectMainDisplay);
-    else CGDisplayShowCursor(kCGDirectMainDisplay);
-    cursorHidden_ = over;
-  }
-
   /** Every output off NOW, here — no round trip — then the page is told. */
   void killOutputs() {
     killed_ = true;
@@ -547,7 +506,6 @@ class MacDisplayWindows final : public DisplayWindows {
     applySyphon({});
     rePace();
     syncHotKey();
-    updateCursor();
     pushEvent({{"type", "disableOutput"}});
   }
 
@@ -817,7 +775,6 @@ class MacDisplayWindows final : public DisplayWindows {
   id keyMonitor_ = nil;  // ⌘Q while one of our windows is in front
   EventHandlerRef hotKeyHandler_ = nullptr;
   bool killed_ = false;
-  bool cursorHidden_ = false;  // hidden by us (updateCursor): balance it
   SyphonOutputs syphon_;
   std::set<std::string> syphonKeys_;  // placements with a Syphon server  // ⌘⇧D pressed; cleared once the page sends no wants
   CADisplayLink* link_ = nil;

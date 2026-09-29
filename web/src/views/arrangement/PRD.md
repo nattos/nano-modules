@@ -426,7 +426,7 @@ library and used per show (plan: COMPOSITOR.md § devices).
   turns it off from anywhere — even with a fullscreen output covering the editor.
 - **Syphon**: instead of a screen, a display can be a Syphon server ("Nano Modules" – the slot's
   name) that Resolume, MadMapper, OBS… read — the show's frame at full resolution.
-- The cursor hides while it's over a fullscreen output.
+- The cursor stays visible over a fullscreen output (macOS lets only the frontmost app hide it).
 - *Later:* a crop / usable region per projector; Windows.
 
 ## Automation (track-level and clip-level)
