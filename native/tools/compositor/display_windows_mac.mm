@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -153,6 +154,7 @@ class MacDisplayWindows final : public DisplayWindows {
     CGDisplayRemoveReconfigurationCallback(&MacDisplayWindows::onReconfigure, this);
     if (hotKey_) UnregisterEventHotKey(hotKey_);
     if (hotKeyHandler_) RemoveEventHandler(hotKeyHandler_);
+    if (keyMonitor_) [NSEvent removeMonitor:keyMonitor_];
     [link_ invalidate];
     for (auto& [pid, o] : outs_) [o.win orderOut:nil];
   }
@@ -332,6 +334,27 @@ class MacDisplayWindows final : public DisplayWindows {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     [NSApp finishLaunching];
     appStarted_ = true;
+    // ⌘Q with one of our windows in front (a rehearsal window has focus): this
+    // process has no menu, so the chord would do nothing. Outputs off at once,
+    // then ask the parent app to quit (a line on stdout — compositor.cjs).
+    MacDisplayWindows* me = this;
+    keyMonitor_ = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                        handler:^NSEvent*(NSEvent* e) {
+      const NSEventModifierFlags mods =
+          e.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+      if ((mods & ~NSEventModifierFlagCapsLock) == NSEventModifierFlagCommand &&
+          [e.charactersIgnoringModifiers.lowercaseString isEqualToString:@"q"]) {
+        me->quitRequested();
+        return nil;
+      }
+      return e;
+    }];
+  }
+
+  void quitRequested() {
+    killOutputs();
+    std::printf("nano_compositor quit\n");
+    std::fflush(stdout);
   }
 
   static NSRect frameFromJson(const json& f, NSRect fallback) {
@@ -671,6 +694,7 @@ class MacDisplayWindows final : public DisplayWindows {
   std::set<std::string> dismissed_;
   std::vector<NSWindow*> identifyWindows_;
   EventHotKeyRef hotKey_ = nullptr;
+  id keyMonitor_ = nil;  // ⌘Q while one of our windows is in front
   EventHandlerRef hotKeyHandler_ = nullptr;
   bool killed_ = false;  // ⌘⇧D pressed; cleared once the page sends no wants
   CADisplayLink* link_ = nil;

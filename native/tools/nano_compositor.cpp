@@ -23,6 +23,8 @@
 // frames; otherwise the steady clock does.
 //
 // Prints one line, "nano_compositor ready port=<p> key=<k>", once it listens.
+// Prints "nano_compositor quit" when the viewer presses ⌘Q in one of its output
+// windows (it has no menu): the parent app should quit (electron/compositor.cjs).
 // Exits on SIGINT/SIGTERM, or when stdin reaches EOF if stdin isn't a
 // terminal — so a parent that dies (Electron, a test) takes it with it.
 //

@@ -10,6 +10,8 @@
  * protocol at all.
  *
  * The process exits when its stdin closes, so it never outlives the shell.
+ * It asks the shell to QUIT by printing "nano_compositor quit" (⌘Q with one
+ * of its output windows in front — it has no menu of its own).
  * If it dies while the shell runs, it is restarted on the SAME port: the
  * renderer's socket reconnects and replays the document.
  *
@@ -17,6 +19,7 @@
  * tree, `native/build/nano_compositor` first (the staged copy may be stale).
  */
 
+const { app } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -104,8 +107,14 @@ class Compositor {
       let ready = false;
       let out = '';
       child.stdout.on('data', (chunk) => {
-        if (ready) return;
         out += chunk.toString();
+        if (ready) {
+          // Line-oriented after ready: only the quit request means anything.
+          const lines = out.split('\n');
+          out = lines.pop() ?? '';
+          if (lines.some((l) => l.trim() === 'nano_compositor quit')) app.quit();
+          return;
+        }
         if (out.includes('nano_compositor ready')) {
           ready = true;
           console.log(`[electron] compositor ready on port ${this.port} (pid ${child.pid})`);
