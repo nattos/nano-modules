@@ -334,21 +334,23 @@ struct Builder {
   nlohmann::json instances = nlohmann::json::object();
   int wid = 0;
 
-  /** Out-of-chain wire sources this build keeps: `midi:<uuid>` for every
-   *  ENABLED device placement. A sketch wire from one keeps its src verbatim
-   *  (the executor seeds it from the host's external-scalar table); from any
-   *  other device it drops, so the dest keeps its authored value. */
-  std::set<std::string> externalSrcs;
-
-  /** A wire's src is foldable: a device pushed in this sketch, or an enabled
-   *  external device. */
-  bool srcFoldable(const std::string& srcKey, const std::set<std::string>& pushed) const {
-    return pushed.count(srcKey) || externalSrcs.count(srcKey);
+  /** An out-of-chain wire source: a MIDI device control (`midi:<uuid>`). A
+   *  sketch wire from one keeps its src verbatim — the executor seeds it from
+   *  the host's external-scalar table (unseeded: the dest keeps its authored
+   *  value). */
+  static bool isExternalSrc(const std::string& srcKey) {
+    return srcKey.rfind("midi:", 0) == 0;
   }
-  /** The folded src endpoint: an external source verbatim, a local device
+
+  /** A wire's src is foldable: a device pushed in this sketch, or a device
+   *  control. */
+  bool srcFoldable(const std::string& srcKey, const std::set<std::string>& pushed) const {
+    return pushed.count(srcKey) || isExternalSrc(srcKey);
+  }
+  /** The folded src endpoint: a device control verbatim, a local device
    *  re-keyed to `localKey`. */
   nlohmann::json foldSrc(const nlohmann::json& src, const std::string& localKey) const {
-    if (externalSrcs.count(src.value("instanceKey", std::string()))) return src;
+    if (isExternalSrc(src.value("instanceKey", std::string()))) return src;
     return remapEndpoint(src, localKey);
   }
 
@@ -1349,9 +1351,6 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
   using namespace build_detail;
   Builder b{cat, railBases, railSigned};
   if (comp) {
-    for (const auto& d : comp->devices) {
-      if (d.kind == "midi" && d.enabled) b.externalSrcs.insert("midi:" + d.deviceId);
-    }
     for (const auto& r : comp->routes) {
       if (r.dest.isPort && r.dest.portId == kPortIn && routeIsLegal(*comp, r))
         b.inRouted.insert(r.dest.trackId);

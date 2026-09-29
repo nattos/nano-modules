@@ -422,9 +422,9 @@ struct BackgroundM {
 };
 
 /** A device INCLUDED in the composition (composition.ts DevicePlacement): a
- *  library device the show uses, enabled or parked. Only a MIDI placement
- *  means anything to the engine today — its wires (`midi:<deviceId>` sources)
- *  fold into the build only while it is enabled. */
+ *  library device the show puts on its timeline. The engine ignores MIDI
+ *  placements (a MIDI wire works whether or not its device is placed);
+ *  lights and displays will read theirs. */
 struct DevicePlacementM {
   std::string id;
   std::string kind;      // "midi"

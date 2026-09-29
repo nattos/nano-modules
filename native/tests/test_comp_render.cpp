@@ -4069,7 +4069,7 @@ double renderMean(Harness& hx, comp::CompExecutor& cx) {
 
 }  // namespace
 
-TEST_CASE("devices: a MIDI wire reads the host table only while its placement is enabled",
+TEST_CASE("devices: a MIDI wire reads the host table, placed on the timeline or not",
           "[comp_devices]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
@@ -4088,19 +4088,17 @@ TEST_CASE("devices: a MIDI wire reads the host table only while its placement is
     return renderMean(hx, cx);
   };
 
-  const json enabled = json::array(
-      {{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}, {"enabled", true}}});
-  const json parked = json::array(
-      {{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}, {"enabled", false}}});
-
-  const double live = run(enabled, true);
-  INFO("enabled + fed: " << live << " (expect ~127: the knob at 0.5 fades the layer)");
-  CHECK(std::abs(live - 127.0) < 25.0);
-  // Not included, parked, or included but silent: the wire is inert and the
-  // layer keeps its authored opacity (full white).
-  CHECK(run(json(), true) > 240.0);
-  CHECK(run(parked, true) > 240.0);
-  CHECK(run(enabled, false) > 240.0);
+  const json placed = json::array(
+      {{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}}});
+  // The knob at 0.5 fades the layer to ~127, with or without a placement.
+  const double bare = run(json(), true);
+  INFO("no placement: " << bare);
+  CHECK(std::abs(bare - 127.0) < 25.0);
+  const double onTimeline = run(placed, true);
+  INFO("placed: " << onTimeline);
+  CHECK(std::abs(onTimeline - 127.0) < 25.0);
+  // A silent device (no value in the table) leaves the authored opacity.
+  CHECK(run(json(), false) > 240.0);
 }
 
 TEST_CASE("devices: the MIDI table survives an internal executor reset", "[comp_devices]") {
@@ -4108,7 +4106,6 @@ TEST_CASE("devices: the MIDI table survives an internal executor reset", "[comp_
   if (!hx.init()) SKIP("No GPU device available");
   json doc = mkComposition(json::array({mkTrack("t1", json::array({mkWiredWhiteClip(
       json::array(), {{"instanceKey", "midi:dev-1"}, {"field", "b0/e00/turn"}})}))}));
-  doc["devices"] = json::array({{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}}});
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
   cx.loadDocument(doc);
