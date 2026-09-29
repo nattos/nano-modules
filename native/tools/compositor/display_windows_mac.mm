@@ -411,7 +411,9 @@ class MacDisplayWindows final : public DisplayWindows {
                                               defer:NO];
       o.win.title = [NSString stringWithFormat:@"%s — Nano Modules", w.name.c_str()];
       o.win.releasedWhenClosed = NO;
-      o.win.contentAspectRatio = NSZeroSize;
+      // Never constrain the aspect here: a {0,0} contentAspectRatio makes
+      // AppKit's live resize divide 0/0 and trap (SIGTRAP mid-drag).
+      o.win.contentMinSize = NSMakeSize(160, 90);
       frame = content;
     } else {
       frame = screen.frame;
