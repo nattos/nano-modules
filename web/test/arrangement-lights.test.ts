@@ -85,6 +85,8 @@ async function resetShow(a: number[], b: number[]) {
     const store = (window as any).arrangementStore;
     const lc = (window as any).lightController;
     lc.library = [];
+    // The master output switch starts off at launch; these tests transmit.
+    (window as any).outputMaster.set(true);
     while (store.composition.tracks.filter((t: any) => t.kind === 'track').length < 2) store.addTrack();
     const tracks = store.composition.tracks.filter((t: any) => t.kind === 'track');
     for (const t of tracks) {

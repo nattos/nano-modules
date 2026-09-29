@@ -19,6 +19,7 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
+import { outputMaster } from './state/output-master';
 import { beginDragGesture } from '../../utils/drag-gesture';
 import { engineBridge } from './engine/engine-bridge';
 import { generatorThumbCapturer } from './media/generator-thumb-capture';
@@ -496,6 +497,15 @@ export class ArrangementApp extends MobxLitElement {
   };
 
   private onKey = (e: KeyboardEvent) => {
+    // ⌘⇧D — Disable Output (Resolume's chord): the master output switch off.
+    // First, and even while typing: it's the emergency stop for a projector
+    // covering this window. (With an output window up, the compositor holds
+    // the chord as a system hotkey and reports it — the same end.)
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyD') {
+      e.preventDefault();
+      outputMaster.set(false);
+      return;
+    }
     // Resolve focus through shadow roots — typing in any editor consumes the key.
     if (isEditable(deepActiveElement())) return;
     if (e.key === 'Backspace' || e.key === 'Delete') {

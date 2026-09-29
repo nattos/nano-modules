@@ -18,6 +18,7 @@ import { devicesUi } from '../../devices/devices-ui';
 import { engineBridge } from '../engine/engine-bridge';
 import { lightController } from '../state/light-controller';
 import { displayController } from '../state/display-controller';
+import { outputMaster } from '../state/output-master';
 import { DISPLAY_FITS } from '../../../displays/display-types';
 import { displayWhere } from './displays/display-where';
 import { store } from '../state/store';
@@ -77,6 +78,7 @@ export class ArrDeviceInspector extends MobxLitElement {
     const sending = !rig || rig.deleted ? 'not in this machine’s library'
       : !engineBridge.outputsLights ? 'this engine doesn’t transmit'
       : status?.error ? status.error
+      : on && !outputMaster.armed ? 'output is off (the Devices panel’s switch)'
       : on ? `${status?.pps ?? 0} packets/s` : 'not sending';
     const types = rig ? [...new Set(rig.slots.map((s) => lightController.type(s.typeId)?.name ?? 'missing type'))] : [];
     const chans = rig ? rig.slots.reduce((n, s) => {

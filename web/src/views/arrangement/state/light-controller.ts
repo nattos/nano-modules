@@ -26,6 +26,7 @@ import {
 } from '../../../lights/light-plan';
 import type { CompFrameInfo } from '../../../engine-types';
 import { loadLightLibrary, saveLightRow, watchLightLibrary } from '../../../state/light-device-store';
+import { outputMaster } from './output-master';
 import { store } from './store';
 
 const SAVE_DEBOUNCE_MS = 300;
@@ -105,10 +106,12 @@ export class LightController {
   }
 
   /** The plan for the current show + library → the engine (deduped). Call
-   *  after anything that changes either. */
+   *  after anything that changes either. With the master output off
+   *  (outputMaster) every light is sent as off. */
   pushPlan(): void {
     if (!this.sink) return;
     const plan = buildLightPlan(store.composition, this.library);
+    if (!outputMaster.armed) for (const o of plan.outputs) o.enabled = false;
     const json = JSON.stringify(plan);
     if (json === this.lastPlanJson) return;
     this.lastPlanJson = json;

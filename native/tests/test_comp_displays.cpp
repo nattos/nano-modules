@@ -225,6 +225,18 @@ TEST_CASE("displays: a routed display shows its track; switched off, it closes",
   hx.frames(*h);
   CHECK(h->displays().targetTexture("d1") == -1);
   CHECK(h->displays().status()["d1"]["state"] == "off");
+
+  // The master switch off: an enabled display shows nothing either.
+  json plan = mkPlan("stretch");
+  plan["armed"] = false;
+  h->displays().setPlan(plan);
+  hx.frames(*h);
+  CHECK(h->displays().targetTexture("d1") == -1);
+  CHECK(h->displays().status()["d1"]["state"] == "disarmed");
+  plan["armed"] = true;
+  h->displays().setPlan(plan);
+  hx.frames(*h);
+  CHECK(h->displays().targetTexture("d1") > 0);
 }
 
 TEST_CASE("displays: no screen is an unplugged cable; a window opens anyway", "[comp_displays]") {

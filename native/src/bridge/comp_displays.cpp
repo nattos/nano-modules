@@ -186,6 +186,7 @@ void DisplayRunner::releaseTarget(Target& t) {
 
 void DisplayRunner::setPlan(const nlohmann::json& plan) {
   outputs_ = parseDisplayPlan(plan);
+  armed_ = !plan.is_object() || plan.value("armed", true);
 }
 
 void DisplayRunner::setSurfaces(DisplaySurfaces* surfaces) {
@@ -239,7 +240,7 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, bool h
 
   std::vector<DisplayWant> wants;
   for (const auto& o : outputs_) {
-    if (!o.enabled) continue;
+    if (!o.enabled || !armed_) continue;
     DisplayWant w;
     w.placementId = o.placementId;
     w.slotId = o.slotId;
@@ -335,6 +336,8 @@ nlohmann::json DisplayRunner::status() {
     nlohmann::json s = {{"state", "off"}};
     if (!surfaces_) {
       s["state"] = "no-output";
+    } else if (o.enabled && !armed_) {
+      s["state"] = "disarmed";
     } else if (o.enabled) {
       const int si = o.window ? -1 : resolveDisplayScreen(o, screens_);
       if (!o.window && si < 0) {

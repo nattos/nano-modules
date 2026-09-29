@@ -415,8 +415,8 @@ export class EngineBridge {
   /** Is a display showing this show (enabled, on an engine that outputs)? */
   private get displayLive(): boolean {
     if (!this.outputsDisplays) return false;
-    const outs = (this.displayPlan as { outputs?: { enabled?: boolean }[] } | undefined)?.outputs;
-    return !!outs?.some((o) => o.enabled !== false);
+    const plan = this.displayPlan as { armed?: boolean; outputs?: { enabled?: boolean }[] } | undefined;
+    return !!plan?.armed && !!plan.outputs?.some((o) => o.enabled !== false);
   }
   private externalScalarsJson = '';
   private midiMirror = new Map<'library' | 'sim', unknown>();

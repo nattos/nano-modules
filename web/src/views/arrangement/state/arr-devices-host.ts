@@ -22,6 +22,7 @@ import { store } from './store';
 
 import '../surfaces/lights/light-devices-section';
 import '../surfaces/displays/display-devices-section';
+import '../surfaces/output-master-button';
 
 /** A ClipSketch in the editor's Sketch shape (chain entries keyed by device id). */
 function asSketch(sk: ClipSketch): Sketch {
@@ -96,6 +97,7 @@ export const arrDevicesHost: DevicesHost = {
   usageLabel: 'wired in this arrangement or shown on its timeline',
   renderLights: (o) => html`<light-devices-section .inUse=${o.inUse} .templates=${o.templates}
     .deleted=${o.deleted}></light-devices-section>`,
+  renderHeader: () => html`<output-master-button></output-master-button>`,
   renderDisplays: (o) => html`<display-devices-section .inUse=${o.inUse}
     .deleted=${o.deleted}></display-devices-section>`,
   included: {

@@ -9,6 +9,7 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { engineBridge } from '../engine/engine-bridge';
+import { outputMaster } from '../state/output-master';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-number';
 import '../../../widgets/bars-beats-field';
@@ -215,6 +216,7 @@ export class TransportBar extends MobxLitElement {
 
   /** Is an output device live — a display showing, a light transmitting? */
   private get outputLive(): boolean {
+    if (!outputMaster.armed) return false;
     const on = (kind: 'display' | 'light') =>
       store.devicePlacements.some((p) => p.kind === kind && p.enabled !== false);
     return (engineBridge.outputsDisplays && on('display')) || (engineBridge.outputsLights && on('light'));

@@ -59,7 +59,10 @@ describe('display plan', () => {
       kind: 'display', id: 'display.1', name: 'Main', updatedAt: 1,
       screen: { uuid: 'B', name: 'Projector' }, window: true, windowFrame: { x: 10, y: 20, w: 800, h: 450 },
     }];
-    expect(buildDisplayPlan(comp(), lib).outputs).toEqual([
+    const plan = buildDisplayPlan(comp(), lib, true);
+    expect(plan.armed).toBe(true);
+    expect(buildDisplayPlan(comp(), lib, false).armed).toBe(false);
+    expect(plan.outputs).toEqual([
       { placementId: 'p1', slotId: 'display.1', name: 'Main', enabled: true, screenUuid: 'B', ordinal: 1,
         window: true, windowFrame: { x: 10, y: 20, w: 800, h: 450 }, fit: 'fit' },
       { placementId: 'p2', slotId: 'display.3', name: 'Display 3', enabled: false, screenUuid: '', ordinal: 3,

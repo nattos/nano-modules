@@ -421,6 +421,9 @@ library and used per show (plan: COMPOSITOR.md § devices).
   composition's full resolution. Closing a rehearsal window turns that display off (undoable);
   moving it is remembered. While any display or light output is on and the transport is in
   Precise, the **Live** button pulses — Precise can hold a frame on decode, a visible hitch.
+- **The master output switch** (the Devices panel's header) is OFF at every launch and never saved:
+  nothing projects or transmits until you turn output on. **⌘⇧D** (Disable Output, as in Resolume)
+  turns it off from anywhere — even with a fullscreen output covering the editor.
 - *Later:* Syphon; a crop / usable region per projector; Windows.
 
 ## Automation (track-level and clip-level)

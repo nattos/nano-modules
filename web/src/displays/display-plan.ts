@@ -27,10 +27,13 @@ export interface DisplayPlanOutput {
 }
 
 export interface DisplayPlan {
+  /** The master output switch (output-master.ts): off, nothing shows. */
+  armed: boolean;
   outputs: DisplayPlanOutput[];
 }
 
-export function buildDisplayPlan(comp: Composition, library: readonly DisplaySlot[]): DisplayPlan {
+export function buildDisplayPlan(comp: Composition, library: readonly DisplaySlot[],
+                                 armed: boolean): DisplayPlan {
   const outputs: DisplayPlanOutput[] = [];
   for (const p of comp.devices ?? []) {
     if (p.kind !== 'display') continue;
@@ -48,5 +51,5 @@ export function buildDisplayPlan(comp: Composition, library: readonly DisplaySlo
       fit: p.fit ?? 'fit',
     });
   }
-  return { outputs };
+  return { armed, outputs };
 }

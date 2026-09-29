@@ -393,6 +393,7 @@ export class DevicesTab extends MobxLitElement {
     return html`
       <div class="header">
         <div class="title">Devices</div>
+        ${host.renderHeader?.() ?? nothing}
         <div class="spacer"></div>
         ${(Object.keys(FILTER_LABELS) as FilterKey[]).map(key => html`
           <button class="chip" ?data-on=${!!filters[key]} data-filter=${key}

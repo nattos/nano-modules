@@ -223,6 +223,12 @@ As built (the design notes follow, below):
 - **Report**: `screens` (on connect + hotplug), `displayStatus` (per placement: showing / window /
   opening / no-screen / off, size, fps; offscreen targets add a 16×16 probe), `displayEvents`
   (closed / moved / identified).
+- **Master output switch** (page, `output-master.ts`, the Devices panel's header): OFF at every
+  launch, never persisted; off, no display shows (`plan.armed` false → the runner wants nothing,
+  status `disarmed`) and every light is planned off. **⌘⇧D** ("Disable Output", Resolume's chord)
+  turns it off — in the page, and, while any output window is up, as a Carbon system hotkey in the
+  compositor (so it works whichever window is in front): it closes every output at once, reports
+  `disableOutput`, and opens nothing again until the page has sent an unarmed plan.
 - **Page**: while a display shows the show, the engine renders at the composition's FULL resolution
   (not the 1280 preview cap). The Live button pulses while Precise is on and any display or light
   output is live.

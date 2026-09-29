@@ -8,6 +8,9 @@
 //     turns the display off (a `closed` event); moving it is remembered (a
 //     `moved` event).
 //   - Identify: a big label over the screen for a few seconds.
+//   - ⌘⇧D ("Disable Output", as in Resolume): while any output is up, a system
+//     hotkey closes them all at once and reports `disableOutput`; nothing
+//     reopens until the page has switched its master output off.
 //
 // THREADS. The provider's callbacks run on the RENDER thread and never wait on
 // the main thread: they read a mutex-guarded snapshot and queue work. The main

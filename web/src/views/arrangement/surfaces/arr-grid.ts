@@ -37,6 +37,7 @@ import './arr-display-lane';
 import './device-input-pip';
 import { lightController } from '../state/light-controller';
 import { displayController } from '../state/display-controller';
+import { outputMaster } from '../state/output-master';
 import { displayWhere } from './displays/display-where';
 import { engineBridge } from '../engine/engine-bridge';
 import { midiController } from '../../../state/midi-controller';
@@ -792,9 +793,9 @@ export class ArrGrid extends MobxLitElement {
     const name = rig?.name ?? p.label ?? 'Missing light';
     const on = p.enabled !== false;
     const transmits = engineBridge.outputsLights;
-    const status = !rig || rig.deleted ? 'missing' : !on ? 'offline' : transmits ? 'live' : 'local';
+    const status = !rig || rig.deleted ? 'missing' : !on || !outputMaster.armed ? 'offline' : transmits ? 'live' : 'local';
     const statusTitle = status === 'missing' ? 'Not in this machine\u2019s light library — nothing is sent'
-      : status === 'offline' ? 'Output off'
+      : status === 'offline' ? (on ? 'Output is off (the Devices panel\u2019s switch)' : 'Output off')
       : status === 'live' ? (lightController.status?.error ?? 'Sending')
       : 'This engine doesn\u2019t transmit (light output needs the native compositor)';
     return html`

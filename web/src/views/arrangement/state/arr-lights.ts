@@ -12,6 +12,7 @@
 
 import { engineBridge } from '../engine/engine-bridge';
 import { lightController } from './light-controller';
+import { outputMaster } from './output-master';
 
 let booted = false;
 
@@ -23,6 +24,7 @@ export async function bootArrangementLights(): Promise<void> {
     test: (placementId, slotId, pattern) => engineBridge.lightTest(placementId, slotId, pattern),
   });
   engineBridge.addDocShippedListener(() => lightController.pushPlan());
+  outputMaster.onChange(() => lightController.pushPlan());
   try {
     await lightController.load();
   } catch (err) {

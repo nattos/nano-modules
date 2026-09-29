@@ -23,13 +23,15 @@ import {
 } from '../../../displays/display-types';
 import { buildDisplayPlan, type DisplayPlan } from '../../../displays/display-plan';
 import { loadDisplayLibrary, saveDisplayRow, watchDisplayLibrary } from '../../../state/display-device-store';
+import { outputMaster } from './output-master';
 import { store } from './store';
 
 const SAVE_DEBOUNCE_MS = 300;
 
 /** One display's state, as the native compositor reports it. */
 export interface DisplayStatus {
-  /** 'showing' | 'window' | 'opening' | 'no-screen' | 'off' | 'no-output'. */
+  /** 'showing' | 'window' | 'opening' | 'no-screen' | 'off' | 'disarmed'
+   *  (the master output switch is off) | 'no-output'. */
   state: string;
   screen?: DisplayScreen;
   width?: number;
@@ -43,7 +45,10 @@ export interface DisplayStatus {
 export type DisplayEvent =
   | { type: 'closed'; placementId: string }
   | { type: 'moved'; slotId: string; frame: WindowFrame }
-  | { type: 'identified'; label: string; screenUuid: string; window: boolean };
+  | { type: 'identified'; label: string; screenUuid: string; window: boolean }
+  /** ⌘⇧D pressed while an output window was in front: the compositor closed
+   *  them all itself; the master switch follows. */
+  | { type: 'disableOutput' };
 
 /** What the engine seam takes (arr-displays.ts binds engineBridge). */
 export interface DisplayEngineSink {
@@ -98,7 +103,7 @@ export class DisplayController {
    *  after anything that changes either. */
   pushPlan(): void {
     if (!this.sink) return;
-    const plan = buildDisplayPlan(store.composition, this.library);
+    const plan = buildDisplayPlan(store.composition, this.library, outputMaster.armed);
     const json = JSON.stringify(plan);
     if (json === this.lastPlanJson) return;
     this.lastPlanJson = json;
@@ -135,6 +140,8 @@ export class DisplayController {
         this.setWindowFrame(e.slotId, e.frame);
       } else if (e.type === 'identified') {
         this.lastIdentified = { label: e.label, at: Date.now() };
+      } else if (e.type === 'disableOutput') {
+        outputMaster.set(false);
       }
     }
   }

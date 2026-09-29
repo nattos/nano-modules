@@ -30,6 +30,7 @@ import { bootArrangementDisplays } from './views/arrangement/state/arr-displays'
 import { bootArrangementLights } from './views/arrangement/state/arr-lights';
 import { lightController } from './views/arrangement/state/light-controller';
 import { displayController } from './views/arrangement/state/display-controller';
+import { outputMaster } from './views/arrangement/state/output-master';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -55,6 +56,8 @@ import { displayController } from './views/arrangement/state/display-controller'
 (window as any).lightController = lightController;
 // This machine's display slots (which screen fills each) + identify.
 (window as any).displayController = displayController;
+// The master output switch (off at launch; ⌘⇧D).
+(window as any).outputMaster = outputMaster;
 void bootArrangementMidi();
 void bootArrangementLights();
 void bootArrangementDisplays();

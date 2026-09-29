@@ -6,6 +6,7 @@
 import type { DisplayScreen, DisplaySlot } from '../../../../displays/display-types';
 import { engineBridge } from '../../engine/engine-bridge';
 import { displayController } from '../../state/display-controller';
+import { outputMaster } from '../../state/output-master';
 import { store } from '../../state/store';
 
 export function screenLabel(s: DisplayScreen): string {
@@ -26,6 +27,7 @@ export function displayWhere(slot: DisplaySlot, placementId?: string): DisplayWh
   if (p) {
     if (!engineBridge.outputsDisplays) return { text: 'this engine doesn’t output displays', state: 'local' };
     if (p.enabled === false) return { text: 'off', state: 'off' };
+    if (!outputMaster.armed) return { text: 'output is off (the Devices panel’s switch)', state: 'off' };
     const st = displayController.status[p.id];
     switch (st?.state) {
       case 'showing':

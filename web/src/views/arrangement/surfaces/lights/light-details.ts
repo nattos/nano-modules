@@ -32,6 +32,7 @@ import { devicesUi } from '../../../devices/devices-ui';
 import { devicesHost } from '../../../devices/devices-host';
 import { engineBridge } from '../../engine/engine-bridge';
 import { lightController, type LightPattern } from '../../state/light-controller';
+import { outputMaster } from '../../state/output-master';
 import { store } from '../../state/store';
 import { routeEndLabel } from '../arr-io';
 
@@ -361,6 +362,7 @@ export class LightDetails extends MobxLitElement {
             @click=${() => store.setLightEnabled(pid, !enabled)}>${enabled ? 'on' : 'off'}</button>
           <span class="note">${!transmits ? 'this engine doesn\'t transmit'
             : status?.error ? status.error
+            : enabled && !outputMaster.armed ? 'output is off (the Devices panel’s switch)'
             : enabled ? `${status?.pps ?? 0} packets/s` : 'not sending'}</span></div>
         <div class="row"><label>samples</label>
           <device-input-pip .placementId=${pid} .scope=${'devices'}></device-input-pip>

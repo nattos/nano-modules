@@ -348,7 +348,8 @@ export interface CompFrameInfo {
   /** …and what the viewer did to an output window: closed it, moved it. */
   displayEvents?: ({ type: 'closed'; placementId: string }
     | { type: 'moved'; slotId: string; frame: { x: number; y: number; w: number; h: number } }
-    | { type: 'identified'; label: string; screenUuid: string; window: boolean })[];
+    | { type: 'identified'; label: string; screenUuid: string; window: boolean }
+    | { type: 'disableOutput' })[];
 }
 
 // --- Worker events (worker → main) ---

@@ -134,7 +134,8 @@ class DisplayRunner {
   DisplayRunner(const DisplayRunner&) = delete;
   DisplayRunner& operator=(const DisplayRunner&) = delete;
 
-  /// The page's resolved plan. Replaces the previous one.
+  /// The page's resolved plan. Replaces the previous one. Its `armed` is the
+  /// page's master output switch (absent = on): off, nothing shows.
   void setPlan(const nlohmann::json& plan);
   /// Not owned; may be null (nothing shows). Must outlive the runner, or be
   /// replaced first.
@@ -150,7 +151,8 @@ class DisplayRunner {
   void identify(const nlohmann::json& m);
 
   /// placementId → {state, screen?, width, height, fps[, probe]}. `state`:
-  /// 'showing' | 'window' | 'opening' | 'no-screen' | 'off' | 'no-output'.
+  /// 'showing' | 'window' | 'opening' | 'no-screen' | 'off' | 'disarmed'
+  /// (the master switch is off) | 'no-output'.
   /// `probe` (offscreen targets only): 16×16 RGB of what was presented, for
   /// tests.
   nlohmann::json status();
@@ -178,6 +180,7 @@ class DisplayRunner {
   gpu::GPUBackend* gpu_;
   DisplaySurfaces* surfaces_ = nullptr;
   std::vector<DisplayOutput> outputs_;
+  bool armed_ = true;
   std::vector<DisplayWant> lastWants_;
   bool wantsSent_ = false;
   uint64_t lastScreensVersion_ = 0;

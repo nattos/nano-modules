@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { runInAction } from 'mobx';
 import { store } from './store';
 import { displayController } from './display-controller';
+import { lightController } from './light-controller';
+import { outputMaster } from './output-master';
 import { PORT_OUT } from '../model/composition';
 import type { FieldConnectInfo } from '../../../sketch-types';
 import type { DisplayPlan } from '../../../displays/display-plan';
@@ -114,6 +116,36 @@ describe('display library', () => {
     expect(store.placementById(pid)!.enabled).toBe(false);
     store.undo();
     expect(store.placementById(pid)!.enabled).toBeUndefined();
+  });
+
+  it('the master output switch: off at start; the plans carry it; ⌘⇧D from the compositor turns it off', () => {
+    expect(outputMaster.armed).toBe(false);
+    const pid = store.includeDevice('display.1', { kind: 'display' });
+    displayController.pushPlan();
+    expect(sent.at(-1)!.armed).toBe(false);
+    // Lights: every one is sent as off while the master is off.
+    const lights: { outputs: { enabled: boolean }[] }[] = [];
+    lightController.bindEngine({ plan: (p) => lights.push(p), test: () => {} });
+    runInAction(() => {
+      lightController.library = [{
+        kind: 'type', id: 'bar', templateId: 'light.strip', parentId: 'light.strip', name: 'Bar',
+        pixels: 2, ledsPerPixel: 1, format: 'rgb', gamma: 1, vertical: true, forkedAt: 0, updatedAt: 0,
+      }];
+    });
+    const rig = lightController.newRig({ typeId: 'bar', count: 1, start: { universe: 0, channel: 1, dest: 'broadcast' } })!;
+    store.includeDevice(rig.id, { kind: 'light' });
+    lightController.pushPlan();
+    expect(lights.at(-1)!.outputs.map((o) => o.enabled)).toEqual([false]);
+    outputMaster.set(true);
+    displayController.pushPlan();
+    lightController.pushPlan();
+    expect(sent.at(-1)!.armed).toBe(true);
+    expect(lights.at(-1)!.outputs.map((o) => o.enabled)).toEqual([true]);
+    // The compositor's hotkey closed its windows: the master follows.
+    displayController.setTelemetry(undefined, undefined, [{ type: 'disableOutput' }]);
+    expect(outputMaster.armed).toBe(false);
+    void pid;
+    lightController.bindEngine(null);
   });
 
   it('identify names the slot and where it binds', () => {

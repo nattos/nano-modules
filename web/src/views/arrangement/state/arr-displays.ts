@@ -12,6 +12,7 @@
 
 import { engineBridge } from '../engine/engine-bridge';
 import { displayController } from './display-controller';
+import { outputMaster } from './output-master';
 
 let booted = false;
 
@@ -23,6 +24,7 @@ export async function bootArrangementDisplays(): Promise<void> {
     identify: (msg) => engineBridge.identifyDisplay(msg),
   });
   engineBridge.addDocShippedListener(() => displayController.pushPlan());
+  outputMaster.onChange(() => displayController.pushPlan());
   try {
     await displayController.load();
   } catch (err) {

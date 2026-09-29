@@ -3,6 +3,7 @@
 #include "compositor/display_windows.h"
 
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -150,6 +151,8 @@ class MacDisplayWindows final : public DisplayWindows {
 
   ~MacDisplayWindows() override {
     CGDisplayRemoveReconfigurationCallback(&MacDisplayWindows::onReconfigure, this);
+    if (hotKey_) UnregisterEventHotKey(hotKey_);
+    if (hotKeyHandler_) RemoveEventHandler(hotKeyHandler_);
     [link_ invalidate];
     for (auto& [pid, o] : outs_) [o.win orderOut:nil];
   }
@@ -344,6 +347,12 @@ class MacDisplayWindows final : public DisplayWindows {
       std::lock_guard<std::mutex> lk(mu_);
       wants = pendingWants_;
     }
+    // After ⌘⇧D nothing opens until the page has acknowledged (its master
+    // switch off → an empty want list); only then may outputs come back.
+    if (killed_) {
+      if (wants.empty()) killed_ = false;
+      else wants.clear();
+    }
     std::set<std::string> wanted;
     for (const auto& w : wants) wanted.insert(w.placementId);
     // A window the viewer closed stays down until the page drops it.
@@ -385,6 +394,47 @@ class MacDisplayWindows final : public DisplayWindows {
       updateSurface(o);
     }
     rePace();
+    syncHotKey();
+  }
+
+  /**
+   * ⌘⇧D — "Disable Output", as in Resolume — while any output window is up.
+   * A system hotkey, so it works whichever window is in front (a fullscreen
+   * output covering the editor, a rehearsal window with focus, another app);
+   * registered only while outputs show, so it steals the chord from nothing
+   * otherwise. Needs no permission (Carbon hotkeys never do).
+   */
+  void syncHotKey() {
+    const bool want = !outs_.empty();
+    if (want && !hotKey_) {
+      if (!hotKeyHandler_) {
+        const EventTypeSpec spec{kEventClassKeyboard, kEventHotKeyPressed};
+        InstallApplicationEventHandler(&MacDisplayWindows::onHotKey, 1, &spec, this, &hotKeyHandler_);
+      }
+      const EventHotKeyID id{'nano', 1};
+      if (RegisterEventHotKey(kVK_ANSI_D, cmdKey | shiftKey, id, GetApplicationEventTarget(), 0,
+                              &hotKey_) != noErr) {
+        hotKey_ = nullptr;
+      }
+    } else if (!want && hotKey_) {
+      UnregisterEventHotKey(hotKey_);
+      hotKey_ = nullptr;
+    }
+  }
+
+  static OSStatus onHotKey(EventHandlerCallRef, EventRef, void* ctx) {
+    self(ctx)->killOutputs();
+    return noErr;
+  }
+
+  /** Every output off NOW, here — no round trip — then the page is told. */
+  void killOutputs() {
+    killed_ = true;
+    for (auto& [pid, o] : outs_) closeOut(o);
+    outs_.clear();
+    rePace();
+    syncHotKey();
+    pushEvent({{"type", "disableOutput"}});
   }
 
   bool openOut(const Want& w) {
@@ -485,6 +535,7 @@ class MacDisplayWindows final : public DisplayWindows {
     closeOut(it->second);
     outs_.erase(it);
     rePace();
+    syncHotKey();
     pushEvent({{"type", "closed"}, {"placementId", pid}});
   }
 
@@ -557,9 +608,6 @@ class MacDisplayWindows final : public DisplayWindows {
         if (s.uuid == uuid) screenName = s.name;
       }
     }
-    NSString* text = screenName.empty()
-        ? [NSString stringWithUTF8String:label.c_str()]
-        : [NSString stringWithFormat:@"%s\n%s", label.c_str(), screenName.c_str()];
     const NSRect box = NSMakeRect(NSMidX(area) - 360, NSMidY(area) - 140, 720, 280);
     NSWindow* w = [[NSWindow alloc] initWithContentRect:box styleMask:NSWindowStyleMaskBorderless
                                                 backing:NSBackingStoreBuffered defer:NO];
@@ -570,17 +618,30 @@ class MacDisplayWindows final : public DisplayWindows {
     w.releasedWhenClosed = NO;
     w.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                            NSWindowCollectionBehaviorIgnoresCycle;
+    // Layers only — no drawRect. The scrim drew but an NSTextField's text never
+    // did (this process pumps events by hand, and a view's draw pass isn't
+    // guaranteed to run); a CATextLayer is drawn by Core Animation at commit.
     NSView* bg = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, box.size.width, box.size.height)];
     bg.wantsLayer = YES;
     bg.layer.backgroundColor = [NSColor colorWithWhite:0 alpha:0.8].CGColor;
     bg.layer.cornerRadius = 24;
-    NSTextField* t = [NSTextField labelWithString:text];
-    t.font = [NSFont boldSystemFontOfSize:64];
-    t.textColor = NSColor.whiteColor;
-    t.alignment = NSTextAlignmentCenter;
-    t.maximumNumberOfLines = 2;
-    t.frame = NSMakeRect(20, 40, box.size.width - 40, box.size.height - 80);
-    [bg addSubview:t];
+    const CGFloat scale = [NSScreen screens].firstObject.backingScaleFactor ?: 2;
+    auto line = [&](NSString* str, CGFloat size, CGFloat y, CGFloat h, CGFloat alpha) {
+      CATextLayer* t = [CATextLayer layer];
+      t.string = str;
+      t.font = (__bridge CFTypeRef)[NSFont boldSystemFontOfSize:size];
+      t.fontSize = size;
+      t.foregroundColor = [NSColor colorWithWhite:1 alpha:alpha].CGColor;
+      t.alignmentMode = kCAAlignmentCenter;
+      t.truncationMode = kCATruncationEnd;
+      t.contentsScale = scale;
+      t.frame = CGRectMake(20, y, box.size.width - 40, h);
+      [bg.layer addSublayer:t];
+    };
+    line([NSString stringWithUTF8String:label.c_str()], 72, screenName.empty() ? 96 : 120, 90, 1.0);
+    if (!screenName.empty()) {
+      line([NSString stringWithUTF8String:screenName.c_str()], 30, 60, 44, 0.7);
+    }
     w.contentView = bg;
     [w orderFrontRegardless];
     identifyWindows_.push_back(w);
@@ -609,6 +670,9 @@ class MacDisplayWindows final : public DisplayWindows {
   std::map<std::string, Out> outs_;
   std::set<std::string> dismissed_;
   std::vector<NSWindow*> identifyWindows_;
+  EventHotKeyRef hotKey_ = nullptr;
+  EventHandlerRef hotKeyHandler_ = nullptr;
+  bool killed_ = false;  // ⌘⇧D pressed; cleared once the page sends no wants
   CADisplayLink* link_ = nil;
   NanoOutputView* linkView_ = nil;
   NanoLinkTarget* linkTarget_ = nil;

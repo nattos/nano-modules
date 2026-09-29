@@ -1491,7 +1491,7 @@ if(NANO_HAS_GPU_BACKEND)
     set_source_files_properties(tools/compositor/display_windows_mac.mm
       PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json
-      "-framework AppKit" "-framework QuartzCore" "-framework CoreGraphics")
+      "-framework AppKit" "-framework QuartzCore" "-framework CoreGraphics" "-framework Carbon")
     # Staged (web/scripts/stage_resources.sh → <root>/bin/) with its own
     # libbridge_server beside it: find that one, not the build tree's.
     if(APPLE)

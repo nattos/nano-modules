@@ -97,6 +97,7 @@ async function resetShow(a: number[], b: number[]) {
     store.composition.devices = undefined;
     store.setDeviceFilters({ ...store.deviceFilters, inUse: false, templates: true });
     store.setTransportMode('live');
+    (window as any).outputMaster.set(false);
     const [t1, t2] = tracks;
     const d1 = store.insertTrackDeviceAt(t1.id, 0, 'source.solid_color');
     store.setTrackDeviceField(t1.id, d1, 'color', ca);
@@ -263,10 +264,32 @@ describe('Arrangement displays (GPU)', () => {
     expect(await page.evaluate(() => (window as any).displayController.slot('display.1').window)).toBeUndefined();
   });
 
+  it('output starts off; the Devices header switch turns it on; ⌘⇧D turns it off', async () => {
+    await resetShow([1, 0, 0], [0, 1, 0]);
+    await place();
+    await waitDeep('[data-output-master="off"]');
+    expect(await page.evaluate(() => (window as any).displayController.lastPlan.armed)).toBe(false);
+    await clickDeep('[data-output-master="off"]');
+    await waitDeep('[data-output-master="on"]');
+    expect(await page.evaluate(() => (window as any).displayController.lastPlan.armed)).toBe(true);
+    // The chord works even with focus in a text field.
+    await page.evaluate(() => (window as any).arrangementStore.setMainView('timeline'));
+    await page.keyboard.down('Meta');
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('KeyD');
+    await page.keyboard.up('Shift');
+    await page.keyboard.up('Meta');
+    expect(await page.evaluate(() => (window as any).outputMaster.armed)).toBe(false);
+    expect(await page.evaluate(() => (window as any).displayController.lastPlan.armed)).toBe(false);
+  });
+
   it('the worker engine says it opens no screens; the Live button stays calm', async () => {
     await resetShow([1, 0, 0], [0, 1, 0]);
     const pid = await place();
-    await page.evaluate(() => (window as any).arrangementStore.setTransportMode('precise'));
+    await page.evaluate(() => {
+      (window as any).outputMaster.set(true);
+      (window as any).arrangementStore.setTransportMode('precise');
+    });
     const nudge = await page.evaluate(() => {
       const stack: (Document | ShadowRoot)[] = [document];
       while (stack.length) {
@@ -307,6 +330,10 @@ describe('Arrangement displays (GPU)', () => {
       await page.waitForFunction((n: number) => ((window as any).displayController.screens ?? []).length === n,
         { timeout: 10_000 }, FAKE_SCREENS.length);
       const pid = await place();
+      // Output starts off: nothing shows until the master switch is on.
+      await page.waitForFunction((p: string) =>
+        (window as any).displayController.status[p]?.state === 'disarmed', { timeout: 10_000 }, pid);
+      await page.evaluate(() => (window as any).outputMaster.set(true));
       // Automatic: the first screen that isn't the main one.
       await page.waitForFunction((p: string) => {
         const st = (window as any).displayController.status[p];
