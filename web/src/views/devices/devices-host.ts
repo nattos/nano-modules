@@ -63,6 +63,9 @@ export interface DevicesHost {
   /** Arrangement only: the light devices section (types, rigs), rendered
    *  after the MIDI groups with the panel's filters. */
   renderLights?(opts: { inUse: boolean; templates: boolean; deleted: boolean }): unknown;
+  /** Arrangement only: the display devices section (display slots), rendered
+   *  after the lights with the panel's filters. */
+  renderDisplays?(opts: { inUse: boolean; deleted: boolean }): unknown;
   /** Arrangement only: the "show on the timeline" toggle per device. */
   included?: {
     has(deviceId: string): boolean;

@@ -33,8 +33,11 @@ import './arr-rail-lane';
 import './arr-scene';
 import './arr-device-lane';
 import './arr-light-lane';
+import './arr-display-lane';
 import './device-input-pip';
 import { lightController } from '../state/light-controller';
+import { displayController } from '../state/display-controller';
+import { displayWhere } from './displays/display-where';
 import { engineBridge } from '../engine/engine-bridge';
 import { midiController } from '../../../state/midi-controller';
 import { appState } from '../../../state/app-state';
@@ -746,6 +749,7 @@ export class ArrGrid extends MobxLitElement {
    */
   private renderDeviceRow(p: DevicePlacement, first: boolean) {
     if (p.kind === 'light') return this.renderLightRow(p, first);
+    if (p.kind === 'display') return this.renderDisplayRow(p, first);
     const inst = midiController.instance(p.deviceId);
     const name = inst?.name ?? p.label ?? 'Missing device';
     const status = !inst ? 'missing' : appState.local.midi.connected[p.deviceId] ? 'live' : 'offline';
@@ -817,6 +821,47 @@ export class ArrGrid extends MobxLitElement {
           </div>
         </div>
         <div class="lane device"><arr-light-lane .placementId=${p.id}></arr-light-lane></div>
+      </div>
+    `;
+  }
+
+  /**
+   * A display in the show: header = name, whether it's showing, its output
+   * switch and its input (what it shows — a route target); lane = the display
+   * drawn with the frame fitted on it, and where it lands. The header selects
+   * it.
+   */
+  private renderDisplayRow(p: DevicePlacement, first: boolean) {
+    const slot = displayController.slot(p.deviceId);
+    const name = slot?.name ?? p.label ?? 'Display';
+    const on = p.enabled !== false;
+    const where = slot ? displayWhere(slot, p.id) : { text: '', state: 'none' as const };
+    const status = where.state === 'live' ? 'live' : where.state === 'local' ? 'local'
+      : where.state === 'none' ? 'missing' : 'offline';
+    return html`
+      <div class="row device display ${first ? 'first' : ''}" data-display-row=${p.id}>
+        <div
+          class="header ${store.isSelected(paths.device(p.id)) ? 'selected' : ''}"
+          @pointerdown=${(e: PointerEvent) => {
+            e.stopPropagation();
+            store.select(paths.device(p.id));
+          }}
+        >
+          <div class="h-top" style="padding-left: var(--app-sp-3)">
+            <ui-icon class="devico" icon="la-desktop"></ui-icon>
+            <span class="devstat ${status}" title=${where.text}></span>
+            <span class="tname" title=${name}>${name}</span>
+            <button class="lighton ${on ? 'on' : ''}" data-display-enable=${p.id}
+              title=${on ? 'On — click to take it off its screen' : 'Off — click to show it'}
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => { e.stopPropagation(); store.setDisplayEnabled(p.id, !on); }}>${on ? 'on' : 'off'}</button>
+          </div>
+          <div class="h-bottom" style="padding-left: var(--app-sp-3)">
+            <span class="dchip">DISPLAY</span>
+            <device-input-pip .placementId=${p.id} .scope=${'timeline'}></device-input-pip>
+          </div>
+        </div>
+        <div class="lane device"><arr-display-lane .placementId=${p.id}></arr-display-lane></div>
       </div>
     `;
   }

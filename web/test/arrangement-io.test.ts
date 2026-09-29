@@ -76,6 +76,8 @@ describe('Arrangement clipless layers + I/O routes (GPU)', () => {
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },
     );
+    // The main view persists: a suite before this one may have left Devices up.
+    await page.evaluate(() => (window as any).arrangementStore.setMainView('timeline'));
   });
 
   it('a clipless track with a generator renders continuously', async () => {

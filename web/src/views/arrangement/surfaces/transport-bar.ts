@@ -8,6 +8,7 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { engineBridge } from '../engine/engine-bridge';
 import '../../../widgets/ui-icon';
 import '../../../widgets/editable-number';
 import '../../../widgets/bars-beats-field';
@@ -201,7 +202,23 @@ export class TransportBar extends MobxLitElement {
       opacity: 0.5;
       cursor: not-allowed;
     }
+    /* An output (a display, a light) is live while Precise may hold a frame on
+       decode: the Live button pulses as a nudge — nothing switches by itself. */
+    .seg button.nudge {
+      animation: live-nudge 1.2s ease-in-out infinite;
+    }
+    @keyframes live-nudge {
+      0%, 100% { background: transparent; }
+      50% { background: color-mix(in srgb, var(--app-hi-color1, #e0a040) 45%, transparent); }
+    }
   `;
+
+  /** Is an output device live — a display showing, a light transmitting? */
+  private get outputLive(): boolean {
+    const on = (kind: 'display' | 'light') =>
+      store.devicePlacements.some((p) => p.kind === kind && p.enabled !== false);
+    return (engineBridge.outputsDisplays && on('display')) || (engineBridge.outputsLights && on('light'));
+  }
 
   render() {
     const meta = store.composition.meta;
@@ -297,7 +314,11 @@ export class TransportBar extends MobxLitElement {
             Precise
           </button>
           <button
-            class=${store.transportMode === 'live' ? 'on' : ''}
+            class=${store.transportMode === 'live' ? 'on' : this.outputLive ? 'nudge' : ''}
+            data-transport-live
+            title=${store.transportMode !== 'live' && this.outputLive
+              ? 'An output is live: Precise can hold a frame while video decodes — a visible hitch on a screen or the lights. Live never waits.'
+              : 'Live plays straight through (may briefly show an undecoded frame).'}
             @click=${() => store.setTransportMode('live')}
           >
             Live

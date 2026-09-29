@@ -22,15 +22,21 @@ let URL = '';
 
 type Pt = { x: number; y: number };
 
-/** Every shadow root's first visible match's centre. */
+/** Every shadow root's first visible match's centre — scrolled into view
+ *  first (a long Devices view, e.g. after another suite's MIDI devices, puts
+ *  later sections below the fold, where a click lands on nothing). */
 async function deepCentre(sel: string): Promise<Pt | null> {
   return page.evaluate((selector: string) => {
     const stack: (Document | ShadowRoot)[] = [document];
     while (stack.length) {
       const root = stack.pop()!;
       for (const hit of root.querySelectorAll(selector) as NodeListOf<HTMLElement>) {
-        const r = hit.getBoundingClientRect();
+        let r = hit.getBoundingClientRect();
         if (r.width > 0 && r.height > 0 && getComputedStyle(hit).visibility !== 'hidden') {
+          if (r.bottom > innerHeight || r.top < 0) {
+            hit.scrollIntoView({ block: 'center' });
+            r = hit.getBoundingClientRect();
+          }
           return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
         }
       }
@@ -126,6 +132,15 @@ describe('Arrangement lights (GPU)', () => {
         && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },
     );
+  });
+
+  // The main view and I/O mode persist: leave the timeline up for the next suite.
+  afterAll(async () => {
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      store.setMainView('timeline');
+      if (store.ioMode) store.toggleIoMode();
+    });
   });
 
   it('template → type → rig from the Devices view; "add to show" gives it a row', async () => {

@@ -1,8 +1,9 @@
 /**
  * <arr-device-inspector> — the inspector for a device row selected on the
- * timeline (`device/<placementId>`): what it is, whether it's live, and for a
- * light what it samples and where each bar listens. Selecting a row never
- * leaves the timeline; "Edit in Devices" is the explicit way there.
+ * timeline (`device/<placementId>`): what it is, whether it's live, for a
+ * light what it samples and where each bar listens, for a display where it
+ * lands, how the frame fits and what it shows. Selecting a row never leaves
+ * the timeline; "Edit in Devices" is the explicit way there.
  */
 
 import { html, css, nothing } from 'lit';
@@ -16,10 +17,14 @@ import { appState } from '../../../state/app-state';
 import { devicesUi } from '../../devices/devices-ui';
 import { engineBridge } from '../engine/engine-bridge';
 import { lightController } from '../state/light-controller';
+import { displayController } from '../state/display-controller';
+import { DISPLAY_FITS } from '../../../displays/display-types';
+import { displayWhere } from './displays/display-where';
 import { store } from '../state/store';
 import type { DevicePlacement } from '../model/composition';
 import { routeEndLabel } from './arr-io';
 import './lights/light-rig-surface';
+import './displays/display-surface';
 
 @customElement('arr-device-inspector')
 export class ArrDeviceInspector extends MobxLitElement {
@@ -51,14 +56,16 @@ export class ArrDeviceInspector extends MobxLitElement {
     }
     button:hover { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
     button.on { border-color: var(--app-cat-source, #57b47a); color: var(--app-cat-source, #57b47a); }
-    light-rig-surface { max-width: 320px; }
+    light-rig-surface, display-surface { max-width: 320px; }
+    .fits { display: flex; gap: 4px; }
   `;
 
   render() {
     const p = store.placementById(this.placementId);
     if (!p) return html`<div class="section-header">Device</div>
       <div class="body"><span class="muted">No longer in this show.</span></div>`;
-    return p.kind === 'light' ? this.renderLight(p) : this.renderMidi(p);
+    return p.kind === 'light' ? this.renderLight(p)
+      : p.kind === 'display' ? this.renderDisplay(p) : this.renderMidi(p);
   }
 
   private renderLight(p: DevicePlacement) {
@@ -104,6 +111,38 @@ export class ArrDeviceInspector extends MobxLitElement {
         <div class="actions">
           <button data-inspector-action="edit-in-devices" @click=${() => {
             devicesUi.selectCard(rig && !rig.deleted ? rig.id : `missing-light:${p.id}`);
+            store.setMainView('devices');
+          }}>Edit in Devices</button>
+          <button @click=${() => this.removeFromShow(p.id)}>Remove from show</button>
+        </div>
+      </div>`;
+  }
+
+  private renderDisplay(p: DevicePlacement) {
+    const slot = displayController.slot(p.deviceId);
+    const name = slot?.name ?? p.label ?? 'Display';
+    const on = p.enabled !== false;
+    const route = store.deviceInputRoute(p.id);
+    const fit = p.fit ?? 'fit';
+    return html`
+      <div class="section-header">Display · ${name}</div>
+      <div class="body">
+        ${slot ? html`<display-surface .slotId=${slot.id} .placementId=${p.id}></display-surface>` : nothing}
+        <div class="row"><label>Output</label>
+          <span class="val muted">${slot ? displayWhere(slot, p.id).text : ''}</span>
+          <button class=${on ? 'on' : ''} data-inspector-display-enable
+            @click=${() => store.setDisplayEnabled(p.id, !on)}>${on ? 'on' : 'off'}</button></div>
+        <div class="row"><label>Fit</label>
+          <span class="fits">${DISPLAY_FITS.map((f) => html`<button class=${fit === f.id ? 'on' : ''}
+            data-inspector-display-fit=${f.id} title=${f.title}
+            @click=${() => store.setDisplayFit(p.id, f.id)}>${f.label}</button>`)}</span></div>
+        <div class="row"><label>Shows</label>
+          <span class="val">${route ? routeEndLabel(route.src) : 'main output'}</span>
+          ${route ? html`<button title="Show the main output again"
+            @click=${() => store.removeRoute(route.id)}>main</button>` : nothing}</div>
+        <div class="actions">
+          <button data-inspector-action="edit-in-devices" @click=${() => {
+            devicesUi.selectCard(p.deviceId);
             store.setMainView('devices');
           }}>Edit in Devices</button>
           <button @click=${() => this.removeFromShow(p.id)}>Remove from show</button>
