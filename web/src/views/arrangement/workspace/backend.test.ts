@@ -105,6 +105,33 @@ describe('composition (de)serialization', () => {
     expect(back.loop).toBeUndefined();
   });
 
+  it('keeps routes, placed devices and the migrations list (regression: deserialize dropped them)', () => {
+    const comp = emptyComposition();
+    comp.migrations = ['lfo-rate-hz'];
+    comp.devices = [
+      { id: 'p1', kind: 'light', deviceId: 'rig-1', enabled: false, label: 'Bars',
+        layout: { s1: { x: 0.1, y: 0, w: 0.02, h: 1 } } },
+      { id: 'd1', kind: 'display', deviceId: 'display.1', fit: 'fill' },
+      { id: 'm1', kind: 'midi', deviceId: 'twister' },
+    ];
+    comp.routes = [{ id: 'r1', src: { kind: 'port', trackId: 't', portId: '__out__' },
+      dest: { kind: 'device', placementId: 'd1' } }];
+    const back = deserializeComposition(serializeComposition(comp));
+    expect(back.devices).toEqual(comp.devices);
+    expect(back.routes).toEqual(comp.routes);
+    expect(back.migrations).toEqual(['lfo-rate-hz']);
+  });
+
+  it('keeps fields it doesn\'t know; drops malformed optional ones', () => {
+    const text = JSON.stringify({ format: 'nano-arr', composition: {
+      ...JSON.parse(serializeComposition(emptyComposition())).composition,
+      futureThing: { a: 1 }, routes: 'nope', devices: {}, migrations: [1], loop: 3,
+    } });
+    const back = deserializeComposition(text) as unknown as Record<string, unknown>;
+    expect(back.futureThing).toEqual({ a: 1 });
+    for (const k of ['routes', 'devices', 'migrations', 'loop']) expect(k in back).toBe(false);
+  });
+
   // ── media bindings ──
   // `source.url` is an object URL scoped to the page that made it: persisting it
   // wrote a dead pointer into every saved file. `source.ref` is what actually

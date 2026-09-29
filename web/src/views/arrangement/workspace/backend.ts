@@ -164,20 +164,35 @@ function normalizeSequenceLanes(tracks: Track[]): Track[] {
  * Parse an arrangement file. Tolerates a bare `Composition` (no envelope) and
  * normalizes against `emptyComposition()` defaults so a partial / old / corrupt
  * file can never white-screen the surfaces (which assume `tracks`/`rails` etc.).
+ *
+ * Everything the file carries is KEPT — only the required fields are defaulted
+ * and the optional ones shape-checked. (A field list here once silently dropped
+ * `routes`, `devices` and `migrations`: I/O routes and placed lights/displays
+ * vanished on reopen, and every open re-ran every effect migration — an LFO's
+ * rate ×10 per open.)
  */
 export function deserializeComposition(text: string): Composition {
   const parsed = JSON.parse(text);
-  const comp = (parsed && parsed.format === 'nano-arr' && parsed.composition
+  const raw = (parsed && parsed.format === 'nano-arr' && parsed.composition
     ? parsed.composition
     : parsed) as Partial<Composition> | null;
+  const comp: Partial<Composition> = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const base = emptyComposition();
-  return {
-    meta: { ...base.meta, ...(comp?.meta ?? {}) },
-    tracks: normalizeSequenceLanes(comp?.tracks ?? base.tracks),
-    rails: comp?.rails ?? base.rails,
-    playMode: { ...base.playMode, ...(comp?.playMode ?? {}) },
-    loop: comp?.loop, // persisted loop markers (undefined on legacy files ⇒ store keeps defaults)
+  const out: Composition = {
+    ...comp,
+    meta: { ...base.meta, ...(comp.meta ?? {}) },
+    tracks: normalizeSequenceLanes(Array.isArray(comp.tracks) ? comp.tracks : base.tracks),
+    rails: Array.isArray(comp.rails) ? comp.rails : base.rails,
+    playMode: { ...base.playMode, ...(comp.playMode ?? {}) },
   };
+  // Optional: kept when well-formed, else omitted (absent means the default).
+  // `loop` omitted ⇒ the store keeps its defaults; `migrations` omitted ⇒ a
+  // pre-migration file, so all of them run once.
+  if (!(comp.loop && typeof comp.loop === 'object')) delete out.loop;
+  if (!(Array.isArray(comp.migrations) && comp.migrations.every((m) => typeof m === 'string'))) delete out.migrations;
+  if (!Array.isArray(comp.routes)) delete out.routes;
+  if (!Array.isArray(comp.devices)) delete out.devices;
+  return out;
 }
 
 /**
