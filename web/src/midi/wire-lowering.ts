@@ -13,7 +13,11 @@
 
 import { isMidiInstanceKey, midiInstanceIdFromKey } from './midi-types';
 import { aliasEdgeKey, type AliasEdge } from './alias-groups';
-import type { Sketch, Wire } from '../sketch-types';
+import type { Wire } from '../sketch-types';
+
+/** Anything carrying sketch wires — an editor Sketch or an arrangement
+ *  ClipSketch. Lowering only ever reads `wires`. */
+export type WireBearer = { wires?: readonly Wire[] };
 
 /** True for a wire whose BOTH endpoints are device controls — a control
  *  ALIAS, not a modulation wire. It synthesizes no rail and no read tap; the
@@ -29,7 +33,7 @@ export function isAliasWire(wire: Wire): boolean {
  * would otherwise widen a group for nothing.
  */
 export function collectAliasEdges(
-  sketches: Record<string, Sketch | undefined>,
+  sketches: Record<string, WireBearer | undefined>,
 ): AliasEdge[] {
   const out: AliasEdge[] = [];
   const seen = new Set<string>();
@@ -51,7 +55,7 @@ export function collectAliasEdges(
 
 /** deviceInstanceId → the endpoint fields some wire reads. */
 export function collectDeviceWireRefs(
-  sketches: Record<string, Sketch | undefined>,
+  sketches: Record<string, WireBearer | undefined>,
 ): Map<string, Set<string>> {
   const refs = new Map<string, Set<string>>();
   for (const sketch of Object.values(sketches)) {
@@ -82,7 +86,7 @@ export function collectDeviceWireRefs(
  * aliased device. Omitted → identity.
  */
 export function buildExternalScalars(
-  sketches: Record<string, Sketch | undefined>,
+  sketches: Record<string, WireBearer | undefined>,
   values: (deviceInstanceId: string) => ReadonlyMap<string, number>,
   resolveId?: (referencedId: string) => string,
 ): string {

@@ -95,6 +95,8 @@ interface ExecutorExports {
   comp_register_schema(c: number, mt: number, mtLen: number, fields: number, len: number): void;
   comp_register_capabilities(c: number, mt: number, mtLen: number, caps: number, len: number): void;
   comp_load_document(c: number, json: number, len: number): void;
+  comp_set_external_scalars?(c: number, json: number, len: number): void;
+  comp_set_injected_scalars?(c: number, json: number, len: number): void;
   comp_doc_epoch(c: number): number;
   comp_set_device_param(c: number, owner: number, ownerLen: number, dev: number, devLen: number,
                         field: number, fieldLen: number, value: number, valueLen: number): void;
@@ -709,6 +711,9 @@ export class WasmSketchExecutor {
     for (const slot of this.slots.values()) {
       this.exports.executor_set_external_scalars(slot.exPtr, ptr, bytes.length);
     }
+    // The composition (arrangement) keeps its own copy: only an ENABLED device
+    // placement's wires survive its build to read it.
+    if (this.compPtr) this.exports.comp_set_external_scalars?.(this.compPtr, ptr, bytes.length);
     this.exports.free(ptr);
   }
 
@@ -726,6 +731,7 @@ export class WasmSketchExecutor {
     for (const slot of this.slots.values()) {
       this.exports.executor_set_injected_scalars(slot.exPtr, ptr, bytes.length);
     }
+    if (this.compPtr) this.exports.comp_set_injected_scalars?.(this.compPtr, ptr, bytes.length);
     this.exports.free(ptr);
   }
 
@@ -975,7 +981,19 @@ export class WasmSketchExecutor {
   get compActive(): boolean { return this.compPtr !== 0; }
 
   private ensureComp(): number {
-    if (!this.compPtr) this.compPtr = this.exports.comp_create();
+    if (!this.compPtr) {
+      this.compPtr = this.exports.comp_create();
+      // Device values pushed before the comp existed (setExternalScalars).
+      const c = this.compPtr;
+      if (this.externalScalarsJson) {
+        this.withBytes(this.externalScalarsJson,
+          (p, l) => this.exports.comp_set_external_scalars?.(c, p, l));
+      }
+      if (this.injectedScalarsJson) {
+        this.withBytes(this.injectedScalarsJson,
+          (p, l) => this.exports.comp_set_injected_scalars?.(c, p, l));
+      }
+    }
     return this.compPtr;
   }
 

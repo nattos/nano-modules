@@ -825,6 +825,53 @@ export interface Composition {
   migrations?: string[];
   /** Composition I/O routes (see {@link Route}). Omitted ⇒ none. */
   routes?: Route[];
+  /** Devices this show INCLUDES (see {@link DevicePlacement}). Omitted ⇒ none. */
+  devices?: DevicePlacement[];
+}
+
+/**
+ * A library device INCLUDED in a composition (the devices push). The library
+ * (per machine) defines devices; a show includes the ones it uses and can park
+ * one without losing its wires. Only MIDI controllers today — lights and
+ * displays extend `kind`.
+ *
+ * A MIDI placement's wires are ordinary sketch wires with
+ * `src: { instanceKey: 'midi:<deviceId>', field: 'b0/e05/turn' }`; the engine
+ * keeps them only while the placement is enabled (a parked or missing device
+ * leaves every field it drives at its authored value).
+ * LOCK-STEP: comp_model.h DevicePlacementM.
+ */
+export interface DevicePlacement {
+  id: string;
+  kind: 'midi';
+  /** The library device's uuid — what the show's wires address. */
+  deviceId: string;
+  /** Parked when false (wires kept, inert). Omitted ⇒ enabled. */
+  enabled?: boolean;
+  /** The device's name and template when it was included: all a machine
+   *  WITHOUT that device has to show ("missing: Twister #2") and draw. */
+  label?: string;
+  templateId?: string;
+}
+
+/** A placement's wire namespace (`midi:<deviceId>`). */
+export function placementInstanceKey(p: DevicePlacement): string {
+  return `midi:${p.deviceId}`;
+}
+
+/**
+ * Every sketch in the document keyed by its editor sketch id — each lane's
+ * own sketch (`track/<id>`) and each clip's (`clip/<track>/<clip>`),
+ * sequence interiors included. For readers that only need the wires (MIDI
+ * lowering, device-wire scans).
+ */
+export function compositionSketches(comp: Composition): Record<string, ClipSketch> {
+  const out: Record<string, ClipSketch> = {};
+  for (const lane of allLanes(comp)) {
+    out[`track/${lane.id}`] = lane.sketch;
+    for (const c of lane.clips) out[`clip/${lane.id}/${c.id}`] = c.sketch;
+  }
+  return out;
 }
 
 /** Stable id of the master/main-bus group. Identity is by THIS id (not just

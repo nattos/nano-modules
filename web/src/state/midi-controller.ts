@@ -22,7 +22,7 @@ import { forkInstance } from '../midi/matching';
 import { MidiManager } from '../midi/midi-manager';
 import { libraryKnownIds } from '../midi/midi-types';
 import type { ControlMapping, DeviceInstance, PhysicalIdentity } from '../midi/midi-types';
-import { buildExternalScalars, collectAliasEdges } from '../midi/wire-lowering';
+import { buildExternalScalars, collectAliasEdges, type WireBearer } from '../midi/wire-lowering';
 import { aliasGroups } from '../midi/alias-groups';
 import { appState } from './app-state';
 import { loadDeviceLibrary, saveDeviceInstance, validDeviceRows, watchDeviceLibrary } from './midi-device-store';
@@ -44,6 +44,10 @@ export class MidiController {
   private lastSimJson = '';
   /** Last alias edge set handed to the manager (syncAliases dedupe). */
   private lastAliasJson = '';
+  /** Where the device wires live: the editor's sketches, unless a surface
+   *  with its own document (the arrangement) rebinds it. */
+  private sketchSource: () => Record<string, WireBearer | undefined> =
+    () => appState.database.sketches;
 
   constructor() {
     const midi = () => appState.local.midi;
@@ -235,6 +239,15 @@ export class MidiController {
 
   // --- Engine push (external scalars) ---
 
+  /** Read device wires from another document (the arrangement's sketches)
+   *  instead of the editor's. Re-pushes at once. */
+  bindSketchSource(source: () => Record<string, WireBearer | undefined>): void {
+    this.sketchSource = source;
+    this.lastPushedJson = '';
+    this.lastAliasJson = '';
+    this.pushExternalScalars();
+  }
+
   /** Boot wires this to `engine.setExternalScalars` (see boot.ts). */
   bindEnginePush(push: (json: string) => void): void {
     this.enginePush = push;
@@ -288,7 +301,7 @@ export class MidiController {
       for (const a of inst.knownAs ?? []) aliasToCanonical.set(a, inst.id);
     }
     const json = buildExternalScalars(
-      appState.database.sketches, id => this.manager.getValues(id),
+      this.sketchSource(), id => this.manager.getValues(id),
       aliasToCanonical.size ? (id => aliasToCanonical.get(id) ?? id) : undefined);
     if (json === this.lastPushedJson) return;
     this.lastPushedJson = json;
@@ -306,7 +319,7 @@ export class MidiController {
    * what actually drives the show.
    */
   private syncAliases(): void {
-    const edges = collectAliasEdges(appState.database.sketches);
+    const edges = collectAliasEdges(this.sketchSource());
     const json = JSON.stringify(edges);
     if (json === this.lastAliasJson) return;
     this.lastAliasJson = json;

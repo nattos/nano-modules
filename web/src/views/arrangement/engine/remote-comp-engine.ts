@@ -205,8 +205,19 @@ export class RemoteCompEngine implements CompEngine {
     this.action('comp_op', msg);
   }
 
+  /** The compositor's CoreMIDI host reads hardware itself. */
+  setExternalScalars(_json: string): void {}
+
+  mirrorMidi(kind: 'library' | 'sim', value: unknown): void {
+    this.midiMirror[kind] = value;
+    this.client.sendAction('set', { path: `/global/midi_${kind === 'library' ? 'devices' : 'sim'}`, value });
+  }
+  private midiMirror: { library?: unknown; sim?: unknown } = {};
+
   private replay() {
     if (this.lastDoc !== null) this.action('comp_load_doc', { json: this.lastDoc });
+    if (this.midiMirror.library !== undefined) this.mirrorMidi('library', this.midiMirror.library);
+    if (this.midiMirror.sim !== undefined) this.mirrorMidi('sim', this.midiMirror.sim);
     // Settings first, then where the playhead WAS (not the last seek — it has
     // moved on since), then whether it runs.
     for (const slot of ['mode', 'loop', 'clipTiming', 'ignoreSolo']) {

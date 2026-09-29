@@ -274,6 +274,10 @@ export class ArrEngine implements CompEngine {
 
   /** Full composition document replace (open/undo/redo/structural edits). */
   compLoadDoc(json: string) { this.proxy.compLoadDoc(json); }
+  /** MIDI device values (the lowered table) — the worker's comp reads them. */
+  setExternalScalars(json: string) { this.proxy.setExternalScalars(json); }
+  /** The worker folds library + simulation into the table already. */
+  mirrorMidi(_kind: 'library' | 'sim', _value: unknown) {}
   /** Transport + Precise-gate commands. */
   compControl(msg: CompControlMsg) {
     this.proxy.compControl(msg);

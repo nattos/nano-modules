@@ -24,6 +24,8 @@ import * as paths from './state/paths';
 import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
 import { debugPerf } from './views/arrangement/state/debug-perf';
 import { previewSurfaces } from './preview-surfaces';
+import { midiController } from './state/midi-controller';
+import { bootArrangementMidi } from './views/arrangement/state/arr-midi';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -43,3 +45,6 @@ import { previewSurfaces } from './preview-surfaces';
 (window as any).__debugPerf = debugPerf;
 // Shared-surface preview transport stats (native engine in the desktop app).
 (window as any).__previewSurfaces = previewSurfaces;
+// The MIDI device library + Web MIDI (devices the show includes drive its wires).
+(window as any).midiController = midiController;
+void bootArrangementMidi();

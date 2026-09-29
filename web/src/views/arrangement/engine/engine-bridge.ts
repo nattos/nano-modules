@@ -358,8 +358,31 @@ export class EngineBridge {
     void discoverEffectBundles().then((ids) => e.warmBundles(ids));
     e.onCompInfo = (info) => this.handleCompInfo(info);
     void e.compEnable(COMPOSITE_ID);
+    // Device values pushed before this engine existed (or by its predecessor).
+    if (this.externalScalarsJson) e.setExternalScalars(this.externalScalarsJson);
+    for (const [kind, value] of this.midiMirror) e.mirrorMidi(kind, value);
     this.engine = e;
     return e;
+  }
+
+  // ── Devices: MIDI values → the composition (see CompEngine) ──────────────
+
+  /** Called after each document ship (arr-midi re-lowers the MIDI table). */
+  onDocShipped: (() => void) | null = null;
+  private externalScalarsJson = '';
+  private midiMirror = new Map<'library' | 'sim', unknown>();
+
+  /** The lowered MIDI table (the worker engine reads it). Remembered, so an
+   *  engine created later (or swapped) starts with it. */
+  setExternalScalars(json: string) {
+    this.externalScalarsJson = json;
+    this.engine?.setExternalScalars(json);
+  }
+
+  /** Library / simulation mirror (the native compositor's CoreMIDI host). */
+  mirrorMidi(kind: 'library' | 'sim', value: unknown) {
+    this.midiMirror.set(kind, value);
+    this.engine?.mirrorMidi(kind, value);
   }
 
   /** Per-frame comp-executor report (comp mode): hasContent + structure-change
@@ -592,6 +615,8 @@ export class EngineBridge {
     if (store.docRev !== this.sentDocRev) {
       this.sentDocRev = store.docRev;
       e.compLoadDoc(JSON.stringify(store.composition));
+      // A document edit can change which device controls a wire reads.
+      this.onDocShipped?.();
       // The full document supersedes any queued field patches (they're already
       // reflected in the doc we just shipped).
       store.pendingCompOps.length = 0;

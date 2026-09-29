@@ -58,6 +58,22 @@ export interface CompEngine {
   compControl(msg: CompControlMsg): void;
   compOp(msg: CompOpMsg): void;
 
+  /**
+   * MIDI device values for the composition's device wires. The worker engine
+   * takes the LOWERED table (`{"midi:<uuid>": {"b0/e05/turn": 0.42}}`, see
+   * midi/wire-lowering.ts); the native compositor reads its own CoreMIDI host
+   * and ignores it.
+   */
+  setExternalScalars(json: string): void;
+  /**
+   * The native compositor's side of the same thing: the device library (so its
+   * CoreMIDI host can map hardware headlessly) and the on-screen simulation
+   * overrides it merges over the hardware — the bridge's /global/midi_devices
+   * and /global/midi_sim, as Remote Control mirrors them to a barrel. The
+   * worker engine ignores it (its table already folds both in).
+   */
+  mirrorMidi(kind: 'library' | 'sim', value: unknown): void;
+
   /** Per-device texture traces, merged with the composite trace. */
   setExtraTracePoints(tps: TracePoint[]): void;
   /** Bind a decoded video frame to a source instance (null clears). Only

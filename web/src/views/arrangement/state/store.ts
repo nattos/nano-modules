@@ -65,8 +65,8 @@ import {
 } from '../../../state/paths';
 import { resolveFileRef } from '../../../state/handle-ref';
 import { ALL_MIGRATION_IDS, migrateDeviceState } from '../../../state/effect-migrations';
-import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID, PORT_IN, PORT_OUT, pruneDanglingRoutes, routeIsLegal, sameRouteEnd } from '../model/composition';
-import type { Route, RouteEnd } from '../model/composition';
+import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID, PORT_IN, PORT_OUT, pruneDanglingRoutes, routeIsLegal, sameRouteEnd, compositionSketches, placementInstanceKey } from '../model/composition';
+import type { DevicePlacement, Route, RouteEnd } from '../model/composition';
 import {
   allLanes,
   mediaSourceKeys,
@@ -551,6 +551,18 @@ function concatChains(target: Clip, sources: Clip[]): void {
 
 /** Resolve a column-group sketchId (`clip/<trk>/<clip>` | `track/<trk>`) to its
  *  ClipSketch within a draft composition. */
+/** Include `deviceId` in the draft's devices unless already there (a
+ *  placement for it, parked or not, counts). */
+function addPlacement(d: Composition, id: string, deviceId: string,
+                      info: { label?: string; templateId?: string }) {
+  if (d.devices?.some((p) => p.deviceId === deviceId)) return;
+  d.devices = [...(d.devices ?? []), {
+    id, kind: 'midi', deviceId,
+    ...(info.label ? { label: info.label } : {}),
+    ...(info.templateId ? { templateId: info.templateId } : {}),
+  }];
+}
+
 function draftSketch(d: Composition, sketchId: string): ClipSketch | undefined {
   if (sketchId.startsWith('clip/')) {
     const [, trackId, clipId] = sketchId.split('/');
@@ -4741,6 +4753,12 @@ export class ArrangementStore {
       this.connectRoute(a, b);
       return;
     }
+    // A MIDI device CONTROL (a device row): always the writer, into an input
+    // field or a track's layer opacity.
+    if (a.deviceControl || b.deviceControl) {
+      this.connectDeviceControl(a, b);
+      return;
+    }
     // Scene / scene-track TRIGGER-LISTEN endpoint: pairs with a rail — the
     // scene (or the whole scene track) launches from that rail's trigger
     // events instead of the global trigger bus.
@@ -4843,6 +4861,121 @@ export class ArrangementStore {
           combine: 'add', magnitude: 'auto',
         });
       }
+    });
+  }
+
+  // ── Devices: placements + MIDI control wires ────────────────────────────
+
+  /** The devices this show includes (document order = row order). */
+  get devicePlacements(): DevicePlacement[] {
+    return this.composition.devices ?? [];
+  }
+
+  placementForDevice(deviceId: string): DevicePlacement | undefined {
+    return this.devicePlacements.find((p) => p.deviceId === deviceId);
+  }
+
+  /** Is a device's wiring live in this show (included AND enabled)? */
+  deviceEnabled(deviceId: string): boolean {
+    const p = this.placementForDevice(deviceId);
+    return !!p && p.enabled !== false;
+  }
+
+  /** Include a library MIDI device in the show (enabled). Including one
+   *  already present returns its placement. */
+  includeDevice(deviceId: string, info: { label?: string; templateId?: string } = {}): string {
+    const existing = this.placementForDevice(deviceId);
+    if (existing) return existing.id;
+    const id = uid('dev');
+    this.mutate('include device', (d) => { addPlacement(d, id, deviceId, info); });
+    return id;
+  }
+
+  /** Park (false) or re-enable a placement: parked devices keep their wires,
+   *  inert — every field they drive holds its authored value. */
+  setDeviceEnabled(placementId: string, enabled: boolean) {
+    this.mutate(enabled ? 'enable device' : 'park device', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p) return;
+      if (enabled) delete p.enabled;
+      else p.enabled = false;
+    });
+  }
+
+  /** Remove a device from the show, and every wire it drives with it. */
+  removeDevicePlacement(placementId: string) {
+    this.mutate('remove device', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p) return;
+      d.devices = d.devices!.filter((x) => x.id !== placementId);
+      if (d.devices.length === 0) delete d.devices;
+      const key = placementInstanceKey(p);
+      for (const sk of Object.values(compositionSketches(d))) {
+        if (sk.wires?.some((w) => w.src.instanceKey === key)) {
+          sk.wires = sk.wires.filter((w) => w.src.instanceKey !== key);
+        }
+      }
+    });
+  }
+
+  /** How many wires in the show a device drives. */
+  deviceWireCount(deviceId: string): number {
+    const key = `midi:${deviceId}`;
+    let n = 0;
+    for (const sk of Object.values(compositionSketches(this.composition))) {
+      for (const w of sk.wires ?? []) if (w.src.instanceKey === key) n++;
+    }
+    return n;
+  }
+
+  /** A MIDI control → an INPUT field (any sketch in the show) or a track's
+   *  layer opacity. The device is included on the way if it wasn't. */
+  private connectDeviceControl(a: FieldConnectInfo, b: FieldConnectInfo) {
+    const ctl = (a.deviceControl ?? b.deviceControl)!;
+    const other = a.deviceControl ? b : a;
+    // Control aliases (device → device) belong to the Devices tab.
+    if (other.deviceControl || other.railId || other.triggerTrack || other.trackPort) return;
+    const srcKey = `midi:${ctl.deviceInstanceId}`;
+    const src = { instanceKey: srcKey, field: ctl.controlId };
+    const id = uid('wire');
+    if (other.layerOwner) {
+      if ((other.layerField ?? 'opacity') !== 'opacity') return;
+      const owner = other.layerOwner;
+      this.mutate('connect device wire', (d) => {
+        const t = draftLane(d, owner);
+        if (!t) return;
+        addPlacement(d, uid('dev'), ctl.deviceInstanceId, {});
+        t.sketch.wires = (t.sketch.wires ?? []).filter(
+          (w) => !(w.dest.instanceKey === LAYER_TARGET_ID && w.dest.field === 'opacity'));
+        t.sketch.wires.push({ id, src, dest: { instanceKey: LAYER_TARGET_ID, field: 'opacity' },
+                              combine: 'replace' });
+      });
+      return;
+    }
+    // Devices drive inputs. A RELAY field (io in|out, e.g. a dashboard knob)
+    // surfaces as an output yet is a legitimate dest; a pure output isn't.
+    const io = (other.schemaDef as { io?: number } | null)?.io ?? 0;
+    if (other.isOutput && !(io & 1)) return;
+    const destType = (other.schemaDef as { type?: string } | null)?.type;
+    if (destType === 'texture') return;
+    const destIsVec = destType === 'float2' || destType === 'float3' || destType === 'float4';
+    this.mutate('connect device wire', (d) => {
+      const sk = draftSketch(d, other.sketchId);
+      const dev = sk?.devices[other.chainIdx];
+      if (!sk || !dev) return;
+      addPlacement(d, uid('dev'), ctl.deviceInstanceId, {});
+      // Re-dragging the same control onto the same input replaces its wire; a
+      // different control stacks (the combine modes fold them).
+      sk.wires = (sk.wires ?? []).filter(
+        (w) => !(w.dest.instanceKey === dev.id && w.dest.field === other.fieldPath
+                 && (w.dest.lane ?? -1) === (other.lane ?? -1)
+                 && w.src.instanceKey === srcKey && w.src.field === ctl.controlId));
+      sk.wires.push({
+        id, src,
+        dest: { instanceKey: dev.id, field: other.fieldPath,
+                ...(other.lane != null ? { lane: other.lane } : {}) },
+        combine: destIsVec ? 'replace' : 'add',
+      });
     });
   }
 
