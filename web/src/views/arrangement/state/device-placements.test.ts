@@ -8,10 +8,9 @@ import { seedTestPlugins } from '../engine/test-plugins';
 seedTestPlugins();
 
 /**
- * Devices in the arrangement: a show INCLUDES library devices (placements),
- * can park one (its wires stay, inert), and removing one takes its wires with
- * it. A MIDI control dragged onto an input lands a `midi:<uuid>` sketch wire
- * and includes the device on the way.
+ * Devices in the arrangement: a MIDI control dragged onto an input lands a
+ * `midi:<uuid>` sketch wire — no placement needed. A placement only puts the
+ * device on the timeline as a row; removing the row keeps its wires.
  */
 describe('device placements', () => {
   let t: Track;
@@ -37,16 +36,15 @@ describe('device placements', () => {
   const midiWires = () => Object.values(compositionSketches(store.composition))
     .flatMap((sk) => sk.wires ?? []).filter((w) => w.src.instanceKey.startsWith('midi:'));
 
-  it('includes a device once, enabled', () => {
+  it('puts a device on the timeline once', () => {
     const p1 = store.includeDevice('dev-1', { label: 'Twister', templateId: 'com.nano.midi.mft' });
     const p2 = store.includeDevice('dev-1');
     expect(p2).toBe(p1);
     expect(store.devicePlacements).toHaveLength(1);
     expect(store.devicePlacements[0]).toMatchObject({ kind: 'midi', deviceId: 'dev-1', label: 'Twister' });
-    expect(store.deviceEnabled('dev-1')).toBe(true);
   });
 
-  it('a control onto a clip input lands a midi wire and includes the device', () => {
+  it('a control onto a clip input lands a midi wire, with no placement', () => {
     const clipPath = store.createEmptyClip(t.id, 0, 4)!;
     const clipId = clipPath.split('/')[2];
     store.addClipDeviceType(t.id, clipId, 'color.hsl');
@@ -59,7 +57,7 @@ describe('device placements', () => {
       dest: { instanceKey: dev.id, field: 'hue_shift' },
       combine: 'add',
     });
-    expect(store.placementForDevice('dev-1')).toBeDefined();
+    expect(store.devicePlacements).toHaveLength(0);
     // The same control again replaces; another control stacks.
     store.connectSketchWire(control('dev-1'), field(`clip/${t.id}/${clipId}`, 0, 'hue_shift'));
     expect(midiWires()).toHaveLength(1);
@@ -89,24 +87,16 @@ describe('device placements', () => {
     });
   });
 
-  it('parking keeps the wires; removing prunes them — undoably', () => {
+  it('removing a timeline row keeps its wires — undoably', () => {
     store.insertTrackDeviceAt(t.id, 0, 'color.hsl');
     store.connectSketchWire(control('dev-1'), field(`track/${t.id}`, 0, 'saturation'));
-    const pid = store.placementForDevice('dev-1')!.id;
-    store.setDeviceEnabled(pid, false);
-    expect(store.deviceEnabled('dev-1')).toBe(false);
-    expect(store.placementForDevice('dev-1')!.enabled).toBe(false);
-    expect(midiWires()).toHaveLength(1);
-    store.setDeviceEnabled(pid, true);
-    expect(store.placementForDevice('dev-1')!.enabled).toBeUndefined();
-
+    const pid = store.includeDevice('dev-1');
     expect(store.deviceWireCount('dev-1')).toBe(1);
     store.removeDevicePlacement(pid);
     expect(store.devicePlacements).toHaveLength(0);
     expect(store.composition.devices).toBeUndefined();
-    expect(midiWires()).toHaveLength(0);
+    expect(midiWires()).toHaveLength(1);
     store.undo();
     expect(store.devicePlacements).toHaveLength(1);
-    expect(midiWires()).toHaveLength(1);
   });
 });

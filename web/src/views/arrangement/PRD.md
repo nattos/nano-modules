@@ -353,20 +353,22 @@ clips).
 ## Devices — *as-built (D1: MIDI)*
 
 The devices push: every external thing a show touches is a device, DEFINED once in this machine's
-library and INCLUDED per show (plan: COMPOSITOR.md § devices; lights and displays follow).
+library and used per show (plan: COMPOSITOR.md § devices; lights and displays follow).
 
-- **Placements** (`Composition.devices`). A show includes library devices; each is a row under the
-  tracks — header (status: connected / offline / missing from this machine's library; the enable
-  switch), lane (the shown bank's controls, live, draggable to simulate). A PARKED device keeps its
-  wires but they go inert; removing one removes its wires (one undo).
-- **Wiring.** In W mode every control gesture (turn / press / shift) wears the output mask: drag it
-  onto an input field in any clip, track or main-bus sketch in the inspector, or onto a track's
-  fader; or click it to pick it up. Wiring a control includes its device. Wires draw from the control
-  to the field; the device's inspector lists them (click a destination to show it, × to disconnect)
-  above the controller's full surface.
-- **Devices tab** (right panel). This machine's library: include a device, define a plugged-in
-  controller as a template that recognises it, or make one from a template with no hardware.
-  Mappings, colours and aliases stay in the editor's Devices tab (the library is shared).
+- **The Devices view.** A `Timeline | Devices` switch in the top bar swaps the main area for the
+  Devices panel — the same panel as Remote Control's (define, templates, ghosts, mappings, colours,
+  each device's wires with their settings). The right panel stays, so in W mode a control drags (or
+  click-connects) straight onto a field in the inspector. The `in use` filter narrows the panel to
+  the devices this arrangement wires or shows on its timeline (Remote Control and Effect Dev have
+  the same chip: wired in the composition / these sketches).
+- **Mid-wire view switching.** During any connect gesture, passing over `Timeline` or `Devices`
+  flips the main area — pick a field up, hover Devices, click a knob.
+- **Wires need nothing else.** A MIDI wire works whether or not its device is on the timeline.
+- **Timeline rows** (`Composition.devices`). A card's `timeline` toggle shows the device as a row
+  under the tracks: status (connected / offline / missing from this machine's library), wire count,
+  and its shown bank's controls — live, drag to simulate, W-mode sources for anything easier to
+  reach from the timeline. Clicking the row's header opens the device in the Devices view. Taking a
+  row away keeps the device's wires. *Later:* choosing which controls a row shows.
 
 ## Automation (track-level and clip-level)
 

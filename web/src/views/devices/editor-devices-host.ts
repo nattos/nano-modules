@@ -54,7 +54,7 @@ export const editorDevicesHost: DevicesHost = {
   filters: () => appState.local.userSettings.deviceFilters,
   setFilters: (f) => appController.setUserSetting('deviceFilters', { ...f, inUse: !!f.inUse }),
   // Above the floating output monitor the Devices tab pops out.
-  detailsBottomInset: () => appState.local.userSettings.devicesMonitorHeight,
+  detailsInset: () => ({ right: 12, bottom: appState.local.userSettings.devicesMonitorHeight + 24 }),
   get usageLabel() {
     return appState.local.barrelMode ? 'wired in the composition' : 'wired in these sketches';
   },

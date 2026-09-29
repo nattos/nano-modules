@@ -35,6 +35,24 @@ export class TransportBar extends MobxLitElement {
       color: var(--app-text-color1);
       font-weight: 600;
     }
+    /* The main-area switch: Timeline | Devices. */
+    .views { display: flex; margin-left: var(--app-sp-3); }
+    .views button {
+      --icon-size: 11px;
+      display: inline-flex; align-items: center; gap: 4px;
+      font: inherit; font-size: var(--app-fs-sm); letter-spacing: 0;
+      height: 22px; padding: 0 8px; cursor: pointer;
+      color: var(--app-text-color2); background: none;
+      border: 1px solid var(--app-tint-3);
+    }
+    .views button + button { border-left: none; }
+    .views button:first-child { border-radius: 2px 0 0 2px; }
+    .views button:last-child { border-radius: 0 2px 2px 0; }
+    .views button:hover { color: var(--app-text-color1); }
+    .views button.on {
+      color: var(--app-hi-color2); border-color: var(--app-hi-color2);
+      background: rgba(65, 105, 225, 0.1);
+    }
     .center {
       display: flex;
       align-items: center;
@@ -192,7 +210,14 @@ export class TransportBar extends MobxLitElement {
 
     return html`
       <div class="brand">
-        nano <b>arrangement</b>
+        <span>nano <b>arrangement</b></span>
+        <div class="views" title="What the main area shows (mid-wire, hover to switch)">
+          ${(['timeline', 'devices'] as const).map((v) => html`<button
+            data-main-view=${v}
+            class=${store.mainView === v ? 'on' : ''}
+            @click=${() => store.setMainView(v)}
+          ><ui-icon icon=${v === 'timeline' ? 'la-stream' : 'la-sliders-h'}></ui-icon>${v === 'timeline' ? 'Timeline' : 'Devices'}</button>`)}
+        </div>
       </div>
 
       <div class="center">

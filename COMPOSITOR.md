@@ -170,10 +170,13 @@ it, then becomes a per-show copy (lazy fork).
 - **A light samples the main output** unless a route feeds its input.
 - The custom 24 V hardware speaks Art-Net / DMX.
 
-**Decided: placements live in device ROWS under the tracks.** Each row's lane is a live picture of
-the device (a MIDI controller's controls), its inspector is the device's editor, and a "Devices"
-right tab is the library. D1 (MIDI) shipped this way. The order is D2 lights, D3 displays, D4 inputs
-(Art-Net in, FFT).
+**Decided: the Devices view + optional timeline rows** (revised 2026-09-29 after using D1). The
+arrangement's main area switches between the timeline and the Devices panel (Remote Control's, so
+layouts and muscle memory carry over); devices wire from there into the inspector. A device can
+also be shown as a row under the tracks (a glance at its state, and a wire source near the timeline),
+but a MIDI wire never needs one. Mid-wire, hovering the `Timeline | Devices` switch flips the view —
+the path texture devices (lights, displays) will need. The order is D2 lights, D3 displays, D4
+inputs (Art-Net in, FFT).
 
 #### The present API (`GPUBackend`)
 
@@ -281,11 +284,11 @@ async readback as Art-Net, at output resolution. It fits after Syphon and Art-Ne
 ### MIDI and Art-Net *into* the comp — SHIPPED for MIDI (devices D1, 2026-09-29)
 
 What was built:
-- **Authoring**: device placements (`Composition.devices`), device rows under the tracks, a
-  "Devices" right tab over the shared library, and W-mode wires from a control to any input field or
-  a track's fader. See the arrangement PRD ("Devices").
-- **The builder** keeps a `midi:<uuid>` wire only while that device's placement is enabled
-  (`Builder::externalSrcs`), at every fold site.
+- **Authoring**: the Devices view (Remote Control's panel in the arrangement's main area, over a
+  `DevicesHost`), W-mode wires from a control to any input field or a track's fader, and optional
+  timeline rows (`Composition.devices`). See the arrangement PRD ("Devices").
+- **The builder** keeps any `midi:<uuid>` wire (src verbatim) at every fold site
+  (`Builder::srcFoldable`); a placement is only a timeline row, not a gate.
 - **The executor**: `CompExecutor::setExternalScalars` / `setInjectedScalars` forward both tables to
   the composite executor and survive `resetInternalExecutor`. **Decided: the injected table is keyed
   by the BUILT sketch's bare keys** (`clip_<clip>_<dev>`); the namespace prefixes the shared instance

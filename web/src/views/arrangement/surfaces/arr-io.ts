@@ -57,20 +57,6 @@ export function beginPortClickConnect(trackId: string, portId: string, dir: 'in'
   if (portConnect.state) { portConnect.state.pointerX = cx; portConnect.state.pointerY = cy; }
 }
 
-/** Pick a MIDI control up for CLICK-to-connect from the inspector's list, as a
- *  lane mask click does (the band starts at the control's anchor). */
-export function beginDeviceControlClick(deviceId: string, endpoint: string) {
-  const r = anchorRect(AnchorKeys.deviceControl(deviceId, endpoint));
-  const cx = r ? (r.left + r.right) / 2 : 0;
-  const cy = r ? (r.top + r.bottom) / 2 : 0;
-  portConnect.beginFromFieldClick('', `device/${deviceId}/${endpoint}`, {
-    sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: true,
-    viewportY: cy, schemaDef: null,
-    deviceControl: { deviceInstanceId: deviceId, controlId: endpoint },
-  });
-  if (portConnect.state) { portConnect.state.pointerX = cx; portConnect.state.pointerY = cy; }
-}
-
 /** "Track · Device.field" (clip sketches name the clip; a layer wire names
  *  the track's opacity) — where a sketch wire lands. */
 export function sketchWireDestLabel(sketchId: string, w: Wire): string {

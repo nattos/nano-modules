@@ -22,12 +22,7 @@ import { sequenceLaneOf, sequenceInteriorBeats, clipProcessesTexture, clipTransp
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
-import { setInspectorFieldLookup, beginDeviceControlClick, sketchWireDestLabel } from './arr-io';
-import { midiController } from '../../../state/midi-controller';
-import { appState } from '../../../state/app-state';
-import { getDeviceTemplate } from '../../../midi/device-registry';
-import '../../devices/device-surface';
-import './arr-devices-panel';
+import { setInspectorFieldLookup } from './arr-io';
 import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, trackTransportTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
 import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
@@ -329,19 +324,6 @@ export class ArrInspector extends MobxLitElement {
       color: var(--app-hi-color2);
     }
     .btn[disabled] { opacity: 0.5; cursor: default; }
-    /* Device inspector. */
-    .dev-wires { margin: 8px 0; }
-    .dev-wires .subhead { font-size: var(--app-fs-xs); color: var(--app-text-color2); margin-bottom: 4px; }
-    .dev-wire { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: var(--app-fs-sm); }
-    .dev-wire .ctl { color: #ff8c00; cursor: pointer; font-variant-numeric: tabular-nums; }
-    .dev-wire .arrow { color: var(--app-text-color2); }
-    .dev-wire .dst {
-      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      cursor: pointer; color: var(--app-text-color2);
-    }
-    .dev-wire .dst:hover { color: var(--app-text-color1); }
-    .dev-wire .x { background: none; border: none; cursor: pointer; color: var(--app-text-color2); }
-    .dev-surface { margin-top: 8px; }
     .muted { color: var(--app-text-color2); font-size: var(--app-fs-sm); }
     .err { color: var(--app-hi-color1); font-size: var(--app-fs-sm); white-space: pre-wrap; }
     .exp-progress { height: 6px; border-radius: 3px; overflow: hidden; background: var(--app-tint-3); margin-top: 8px; }
@@ -693,7 +675,6 @@ export class ArrInspector extends MobxLitElement {
   render() {
     let content: TemplateResult;
     switch (store.activeRightTab) {
-      case 'devices': content = html`<arr-devices-panel></arr-devices-panel>`; break;
       case 'workspace': content = this.renderWorkspace(); break;
       case 'settings': content = this.renderSettings(); break;
       case 'export': content = this.renderExport(); break;
@@ -742,7 +723,6 @@ export class ArrInspector extends MobxLitElement {
     if (kind === 'clip') return this.renderClipInspector(path);
     if (kind === 'track') return this.renderTrackInspector(path);
     if (kind === 'rail') return this.renderRailInspector(path);
-    if (kind === 'device') return this.renderDeviceInspector(path);
     return html`<div class="empty">Selected: ${path}</div>`;
   }
 
@@ -1439,54 +1419,6 @@ export class ArrInspector extends MobxLitElement {
       <div class="body">
         <div class="row"><label>Default</label><span class="val">${rail.defaultValue}</span></div>
         <div class="row"><label>Range</label><span class="val">${rail.range.min} … ${rail.range.max}</span></div>
-      </div>
-    `;
-  }
-
-  /** A device the show includes: status, enable, remove, the wires it
-   *  drives (click one to reveal its field), and the controller's surface. */
-  private renderDeviceInspector(path: string): TemplateResult {
-    const p = store.devicePlacements.find((x) => x.id === path.split('/')[1]);
-    if (!p) return html`<div class="empty">Device not found.</div>`;
-    const inst = midiController.instance(p.deviceId);
-    const template = getDeviceTemplate(inst?.templateId ?? p.templateId ?? '');
-    const enabled = p.enabled !== false;
-    const connected = !!appState.local.midi.connected[p.deviceId];
-    const wires = store.deviceWires(p.deviceId);
-    return html`
-      <div class="section-header">Device · ${inst?.name ?? p.label ?? 'Missing device'}</div>
-      <div class="body">
-        <div class="row"><label>Model</label><span class="val">${template?.name ?? p.templateId ?? '—'}</span></div>
-        <div class="row"><label>Status</label><span class="val dev-status">${!inst
-          ? 'not in this machine’s library — wires inert'
-          : connected ? 'connected' : 'not connected — the on-screen controls still drive it'}</span></div>
-        <div class="row">
-          <label>In this show</label>
-          <span class="val">
-            <button class="btn ${enabled ? 'primary' : ''} dev-enable"
-              @click=${() => store.setDeviceEnabled(p.id, !enabled)}
-            >${enabled ? 'Enabled' : 'Parked'}</button>
-            <button class="btn dev-remove" title="Remove the device and every wire it drives"
-              @click=${() => store.removeDevicePlacement(p.id)}
-            >Remove</button>
-          </span>
-        </div>
-        <div class="dev-wires">
-          <div class="subhead">Wires (${wires.length})</div>
-          ${wires.length === 0
-            ? html`<div class="hint">Turn on W, then drag a control from the device’s row onto a field in a clip, a track or the main bus.</div>`
-            : wires.map(({ sketchId, wire }) => html`
-                <div class="dev-wire">
-                  <span class="ctl" title="Pick up this control to wire it somewhere else"
-                    @click=${() => beginDeviceControlClick(p.deviceId, wire.src.field)}
-                  >${wire.src.field}</span>
-                  <span class="arrow">→</span>
-                  <span class="dst" title="Show this field" @click=${() => store.setSelection([sketchId])}
-                  >${sketchWireDestLabel(sketchId, wire)}</span>
-                  <button class="x" title="Disconnect" @click=${() => store.removeSketchWire(sketchId, wire.id)}>×</button>
-                </div>`)}
-        </div>
-        ${inst ? html`<device-surface class="dev-surface" .deviceId=${p.deviceId}></device-surface>` : nothing}
       </div>
     `;
   }

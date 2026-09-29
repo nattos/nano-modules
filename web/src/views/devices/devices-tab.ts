@@ -153,6 +153,15 @@ export class DevicesTab extends MobxLitElement {
       cursor: pointer;
     }
     .enable:hover { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
+    /* Slotted into a card's header (light DOM — styled from here). */
+    .include {
+      flex: 0 0 auto; font: inherit; font-size: var(--app-fs-xs); cursor: pointer;
+      color: var(--app-text-color2); background: none;
+      border: 1px solid var(--app-tint-4); border-radius: 1px; padding: 0 4px;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .include:hover { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
+    .include.on { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
     /* Slotted into the ghost card's body (light DOM — styled from here). */
     .ghost-define { display: block; margin: 6px auto; padding: 2px 16px; }
   `;
@@ -225,12 +234,28 @@ export class DevicesTab extends MobxLitElement {
         @click=${() => this.onCardClick(instance.id, forkable)}
         @card-action=${() => this.onReassign(instance.id)}
       >
+        ${this.renderIncludeToggle(instance, status)}
         <device-surface
           .deviceId=${instance.id}
           .interactive=${status !== 'deleted' && !define}
         ></device-surface>
       </device-card>
     `;
+  }
+
+  /** The host's "show on the timeline" toggle (the arrangement's device
+   *  rows); absent in the editor. Wiring never needs it. */
+  private renderIncludeToggle(instance: DeviceInstance, status: string) {
+    const inc = devicesHost().included;
+    if (!inc || status === 'deleted') return nothing;
+    const on = inc.has(instance.id);
+    return html`<button slot="head" class="include ${on ? 'on' : ''}" data-include=${instance.id}
+      title=${on ? 'Shown on the timeline — click to remove its row (its wires stay)'
+                 : 'Show this device as a row on the timeline'}
+      @click=${(e: Event) => {
+        e.stopPropagation();
+        inc.toggle(instance.id, { label: instance.name, templateId: instance.templateId });
+      }}>${on ? 'on timeline' : 'timeline'}</button>`;
   }
 
   private renderTemplateCard(template: DeviceTemplate) {
@@ -306,7 +331,9 @@ export class DevicesTab extends MobxLitElement {
     const filters = host.filters();
     const define = devicesUi.defineMode;
     const ghosts = hostGhosts(host);
-    // "in use": only the devices this project wires (or shows on its timeline).
+    // "in use": only the devices this project wires (or shows on its timeline)
+    // — templates and unclaimed ports aren't in any project, so they go too;
+    // missing devices (wired, unknown to the library) stay.
     const used = filters.inUse ? devicesInUse(host) : null;
     const inUse = (i: DeviceInstance) => !used || used.has(i.id);
 
@@ -322,8 +349,10 @@ export class DevicesTab extends MobxLitElement {
           <div class="group-label">Connected</div>
           <div class="cards">
             ${connected.map(i => this.renderInstanceCard(i, 'connected'))}
-            ${filters.unrecognized ? midi.unknownPorts.map(p => this.renderGhostCard(p)) : nothing}
-            ${connected.length === 0 && midi.unknownPorts.length === 0
+            ${filters.unrecognized && !used ? midi.unknownPorts.map(p => this.renderGhostCard(p)) : nothing}
+            ${connected.length === 0 && used
+              ? html`<div class="empty-note">No connected device is ${devicesHost().usageLabel}.</div>`
+              : connected.length === 0 && midi.unknownPorts.length === 0
               ? html`<div class="empty-note">No devices detected.
                   ${midiController.manager.initialized ? nothing : html`
                     <button class="enable" @click=${() => midiController.initMidi()}>enable MIDI access</button>`}
@@ -336,7 +365,7 @@ export class DevicesTab extends MobxLitElement {
           <div class="group-label">Your devices — disconnected</div>
           <div class="cards">${disconnected.map(i => this.renderInstanceCard(i, 'disconnected'))}</div>
         </div>` : nothing,
-      filters.templates ? html`
+      filters.templates && !used ? html`
         <div>
           <div class="group-label">Templates</div>
           <div class="cards">${templates.map(t => this.renderTemplateCard(t))}</div>

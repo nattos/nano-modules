@@ -28,6 +28,10 @@ export interface ArrLayout {
   automationMode?: boolean;
   ioMode?: boolean;
   helpMode?: boolean;
+  /** What the main area shows: the timeline or the devices panel. */
+  mainView?: 'timeline' | 'devices';
+  /** The devices panel's group toggles (DeviceFilters). */
+  deviceFilters?: Record<string, boolean>;
   /** Name of the last-opened arrangement file (re-opened on next mount). */
   lastFile?: string | null;
 }

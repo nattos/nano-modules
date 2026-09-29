@@ -10,6 +10,7 @@
 import { makeAutoObservable, runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import type { StateDiff, PluginInfo } from '../../../engine-types';
 import type { FieldConnectInfo, Wire as SketchWire } from '../../../sketch-types';
+import type { DeviceFilters } from '../../devices/devices-host';
 import { isDeviceOff } from '../../../sketch-types';
 import {
   Composition,
@@ -65,7 +66,7 @@ import {
 } from '../../../state/paths';
 import { resolveFileRef } from '../../../state/handle-ref';
 import { ALL_MIGRATION_IDS, migrateDeviceState } from '../../../state/effect-migrations';
-import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID, PORT_IN, PORT_OUT, pruneDanglingRoutes, routeIsLegal, sameRouteEnd, compositionSketches, placementInstanceKey } from '../model/composition';
+import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID, PORT_IN, PORT_OUT, pruneDanglingRoutes, routeIsLegal, sameRouteEnd, compositionSketches } from '../model/composition';
 import type { DevicePlacement, Route, RouteEnd } from '../model/composition';
 import {
   allLanes,
@@ -178,7 +179,8 @@ export interface Selection {
   path: string;
 }
 
-export type RightTab = 'inspector' | 'devices' | 'workspace' | 'settings' | 'export' | 'debug';
+export type RightTab = 'inspector' | 'workspace' | 'settings' | 'export' | 'debug';
+const RIGHT_TABS: RightTab[] = ['inspector', 'workspace', 'settings', 'export', 'debug'];
 
 /** A resolved composite layer (the monitor draws these bottom→top). */
 export interface CompositeLayer {
@@ -692,6 +694,16 @@ export class ArrangementStore {
   /** The open route popup (a clicked route wire: its ends, status, disconnect),
    *  or null. Its route draws selected while open. */
   routePopup: { routeId: string; x: number; y: number } | null = null;
+  /** What the main area shows: the timeline, or the devices panel (the
+   *  Remote Control panel, over the shared library). The right panel stays
+   *  either way, so a device control wires to an inspector field. Persisted. */
+  mainView: 'timeline' | 'devices' = 'timeline';
+  /** The devices panel's group toggles; `inUse` narrows it to the devices
+   *  this arrangement wires or shows on its timeline. Persisted. */
+  deviceFilters: DeviceFilters = {
+    connected: true, disconnected: true, unrecognized: true, templates: true, deleted: false,
+    inUse: true,
+  };
   /** Global wires mode: reveals the rail modulation wires. */
   wiresMode = true;
   /** Global "?" help mode: reveals inline effect help text + section help. */
@@ -1342,6 +1354,8 @@ export class ArrangementStore {
   private serializeLayout(): ArrLayout {
     return {
       activeRightTab: this.activeRightTab,
+      mainView: this.mainView,
+      deviceFilters: { ...this.deviceFilters },
       clipViewOpen: this.clipViewOpen,
       clipViewHeight: this.clipViewHeight,
       sidePanelWidth: this.sidePanelWidth,
@@ -1392,7 +1406,11 @@ export class ArrangementStore {
   private applyLayout(l: ArrLayout) {
     {
       runInAction(() => {
-        if (l.activeRightTab) this.activeRightTab = l.activeRightTab as RightTab;
+        if (l.activeRightTab && RIGHT_TABS.includes(l.activeRightTab as RightTab)) {
+          this.activeRightTab = l.activeRightTab as RightTab;
+        }
+        if (l.mainView === 'timeline' || l.mainView === 'devices') this.mainView = l.mainView;
+        if (l.deviceFilters) this.deviceFilters = { ...this.deviceFilters, ...l.deviceFilters };
         if (typeof l.clipViewOpen === 'boolean') this.clipViewOpen = l.clipViewOpen;
         if (typeof l.clipViewHeight === 'number') this.setClipViewHeight(l.clipViewHeight);
         if (typeof l.sidePanelWidth === 'number') this.setSidePanelWidth(l.sidePanelWidth);
@@ -2599,6 +2617,18 @@ export class ArrangementStore {
     else { this.activeRightTab = tab; this.sideCollapsed = false; }
     this.requestLayoutSave();
   }
+  /** Show the timeline or the devices panel in the main area. */
+  setMainView(view: 'timeline' | 'devices') {
+    if (this.mainView === view) return;
+    this.mainView = view;
+    this.requestLayoutSave();
+  }
+
+  setDeviceFilters(f: DeviceFilters) {
+    this.deviceFilters = { ...f, inUse: !!f.inUse };
+    this.requestLayoutSave();
+  }
+
   /** Reveal a tab. Unlike `setRightTab` this never collapses — use it for
    *  programmatic "show me the Workspace" jumps (folder drop / picker), where
    *  the toggle would hide the panel exactly when the tab is already active. */
@@ -4875,46 +4905,24 @@ export class ArrangementStore {
     return this.devicePlacements.find((p) => p.deviceId === deviceId);
   }
 
-  /** Is a device's wiring live in this show (included AND enabled)? */
-  deviceEnabled(deviceId: string): boolean {
-    const p = this.placementForDevice(deviceId);
-    return !!p && p.enabled !== false;
-  }
-
-  /** Include a library MIDI device in the show (enabled). Including one
-   *  already present returns its placement. */
+  /** Put a library MIDI device on the timeline (a device row). Including one
+   *  already there returns its placement. Wiring doesn't need it: a device's
+   *  wires work whether or not it has a row. */
   includeDevice(deviceId: string, info: { label?: string; templateId?: string } = {}): string {
     const existing = this.placementForDevice(deviceId);
     if (existing) return existing.id;
     const id = uid('dev');
-    this.mutate('include device', (d) => { addPlacement(d, id, deviceId, info); });
+    this.mutate('show device on timeline', (d) => { addPlacement(d, id, deviceId, info); });
     return id;
   }
 
-  /** Park (false) or re-enable a placement: parked devices keep their wires,
-   *  inert — every field they drive holds its authored value. */
-  setDeviceEnabled(placementId: string, enabled: boolean) {
-    this.mutate(enabled ? 'enable device' : 'park device', (d) => {
-      const p = d.devices?.find((x) => x.id === placementId);
-      if (!p) return;
-      if (enabled) delete p.enabled;
-      else p.enabled = false;
-    });
-  }
-
-  /** Remove a device from the show, and every wire it drives with it. */
+  /** Take a device's row off the timeline. Its wires stay: they belong to the
+   *  fields they drive. */
   removeDevicePlacement(placementId: string) {
-    this.mutate('remove device', (d) => {
-      const p = d.devices?.find((x) => x.id === placementId);
-      if (!p) return;
-      d.devices = d.devices!.filter((x) => x.id !== placementId);
+    this.mutate('remove device row', (d) => {
+      if (!d.devices?.some((x) => x.id === placementId)) return;
+      d.devices = d.devices.filter((x) => x.id !== placementId);
       if (d.devices.length === 0) delete d.devices;
-      const key = placementInstanceKey(p);
-      for (const sk of Object.values(compositionSketches(d))) {
-        if (sk.wires?.some((w) => w.src.instanceKey === key)) {
-          sk.wires = sk.wires.filter((w) => w.src.instanceKey !== key);
-        }
-      }
     });
   }
 
@@ -4934,7 +4942,7 @@ export class ArrangementStore {
   }
 
   /** A MIDI control → an INPUT field (any sketch in the show) or a track's
-   *  layer opacity. The device is included on the way if it wasn't. */
+   *  layer opacity. */
   private connectDeviceControl(a: FieldConnectInfo, b: FieldConnectInfo) {
     const ctl = (a.deviceControl ?? b.deviceControl)!;
     const other = a.deviceControl ? b : a;
@@ -4949,7 +4957,6 @@ export class ArrangementStore {
       this.mutate('connect device wire', (d) => {
         const t = draftLane(d, owner);
         if (!t) return;
-        addPlacement(d, uid('dev'), ctl.deviceInstanceId, {});
         t.sketch.wires = (t.sketch.wires ?? []).filter(
           (w) => !(w.dest.instanceKey === LAYER_TARGET_ID && w.dest.field === 'opacity'));
         t.sketch.wires.push({ id, src, dest: { instanceKey: LAYER_TARGET_ID, field: 'opacity' },
@@ -4968,7 +4975,6 @@ export class ArrangementStore {
       const sk = draftSketch(d, other.sketchId);
       const dev = sk?.devices[other.chainIdx];
       if (!sk || !dev) return;
-      addPlacement(d, uid('dev'), ctl.deviceInstanceId, {});
       // Re-dragging the same control onto the same input replaces its wire; a
       // different control stacks (the combine modes fold them).
       sk.wires = (sk.wires ?? []).filter(

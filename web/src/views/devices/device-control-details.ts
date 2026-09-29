@@ -296,7 +296,8 @@ export class DeviceControlDetails extends MobxLitElement {
   /** Anchor directly above the floating output monitor, growing upward —
    *  capped so a long wires list scrolls instead of running off-screen. */
   private anchorAboveMonitor() {
-    const bottom = devicesHost().detailsBottomInset() + 24;
+    const { right, bottom } = devicesHost().detailsInset();
+    this.style.right = `${right}px`;
     this.style.bottom = `${bottom}px`;
     this.style.maxHeight = `calc(100vh - ${bottom + 60}px)`;
   }

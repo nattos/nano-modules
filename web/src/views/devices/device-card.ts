@@ -1,7 +1,8 @@
 /**
  * <device-card> — one MIDI device (template, user fork, ghost, or deleted
  * row) in the Devices tab grid. Header carries the name + status badge; the
- * body is slotted (the data-driven <device-surface> renders there). Styling
+ * body is slotted (the data-driven <device-surface> renders there); a `head`
+ * slot takes extra header controls (the arrangement's timeline toggle). Styling
  * follows the Instances tab's card vocabulary: 1px tint borders, radius 1px,
  * dashed for placeholders, --app-ok connection dot, --app-hi-color2 selection.
  */
@@ -160,6 +161,7 @@ export class DeviceCard extends MobxLitElement {
         <div class="dot ${this.status === 'connected' ? 'on' : ''}"></div>
         <div class="name" title=${this.name}>${this.name}</div>
         ${badge ? html`<div class="badge">${badge}</div>` : nothing}
+        <slot name="head"></slot>
         ${this.actionLabel ? html`
           <button class="action" @click=${(e: Event) => {
             e.stopPropagation();

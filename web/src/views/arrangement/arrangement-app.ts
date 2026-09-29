@@ -47,6 +47,10 @@ import './surfaces/arr-inspector';
 import './surfaces/arr-monitor';
 import './surfaces/arr-overlay';
 import './surfaces/arr-clip-view';
+// The Devices panel (Remote Control's) in the main area, over this page's host.
+import './state/arr-devices-host';
+import '../devices/devices-tab';
+import { connectGestureActive } from '../../widgets/taps-connect';
 
 /** The focused element, resolved through nested shadow roots. */
 function deepActiveElement(): Element | null {
@@ -113,7 +117,18 @@ export class ArrangementApp extends MobxLitElement {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      position: relative;
     }
+    .main devices-tab.main-devices {
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      background: var(--app-bg-color1);
+      visibility: hidden;
+    }
+    .main.show-devices devices-tab.main-devices { visibility: visible; }
+    .main.show-devices arr-ruler,
+    .main.show-devices arr-grid { visibility: hidden; }
     arr-ruler {
       flex-shrink: 0;
     }
@@ -223,6 +238,7 @@ export class ArrangementApp extends MobxLitElement {
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('resize', this.onWindowResize);
     window.addEventListener('pointerdown', this.onPointerDownCapture, true);
+    window.addEventListener('pointermove', this.onGestureMove, true);
     this.addEventListener('dragover', this.onDragOver);
     this.addEventListener('dragleave', this.onDragLeave);
     this.addEventListener('drop', this.onDrop);
@@ -259,6 +275,7 @@ export class ArrangementApp extends MobxLitElement {
     window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('pointerdown', this.onPointerDownCapture, true);
+    window.removeEventListener('pointermove', this.onGestureMove, true);
     this.removeEventListener('dragover', this.onDragOver);
     this.removeEventListener('dragleave', this.onDragLeave);
     this.removeEventListener('drop', this.onDrop);
@@ -459,6 +476,25 @@ export class ArrangementApp extends MobxLitElement {
     this.raf = requestAnimationFrame(this.tick);
   };
 
+  /**
+   * While a wire gesture is in flight (drag OR click-to-connect), passing over
+   * the Timeline / Devices switch flips the main area, so a wire can run from a
+   * device control to something on the timeline and back. Hit-tested by rect
+   * on every move: a drag holds pointer capture, so the buttons never see
+   * pointerenter themselves.
+   */
+  private onGestureMove = (e: PointerEvent) => {
+    if (!connectGestureActive()) return;
+    const bar = this.renderRoot.querySelector('transport-bar');
+    for (const b of bar?.shadowRoot?.querySelectorAll<HTMLElement>('[data-main-view]') ?? []) {
+      const r = b.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+        store.setMainView(b.dataset.mainView as 'timeline' | 'devices');
+        return;
+      }
+    }
+  };
+
   private onKey = (e: KeyboardEvent) => {
     // Resolve focus through shadow roots — typing in any editor consumes the key.
     if (isEditable(deepActiveElement())) return;
@@ -504,10 +540,7 @@ export class ArrangementApp extends MobxLitElement {
         store.deleteTime(); // ripple-delete the time box
         return;
       }
-      if (store.primaryPath?.startsWith('device/')) {
-        e.preventDefault();
-        store.removeDevicePlacement(store.primaryPath.split('/')[1]); // + its wires (undoable)
-      } else if (store.primaryPath?.startsWith('track/')) {
+      if (store.primaryPath?.startsWith('track/')) {
         e.preventDefault();
         store.deleteSelectedTracks(); // a focused track → delete it (never the bus)
       } else if (store.hasTimeSelection) {
@@ -635,9 +668,13 @@ export class ArrangementApp extends MobxLitElement {
     return html`
       <app-titlebar label="Nano Arrangement"></app-titlebar>
       <div class="transport-row"><transport-bar></transport-bar></div>
-      <div class="main">
+      <div class="main ${store.mainView === 'devices' ? 'show-devices' : ''}">
         <arr-ruler></arr-ruler>
         <arr-grid></arr-grid>
+        <!-- Both views stay MOUNTED (the inactive one is visibility:hidden):
+             a wire dragged across the switch keeps its source element, and
+             hidden elements are skipped by the drop hit-test. -->
+        <devices-tab class="main-devices"></devices-tab>
       </div>
       ${store.sideCollapsed
         ? ''

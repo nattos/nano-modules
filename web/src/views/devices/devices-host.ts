@@ -55,8 +55,9 @@ export interface DevicesHost {
   connect(): WireConnect;
   filters(): DeviceFilters;
   setFilters(f: DeviceFilters): void;
-  /** Bottom inset for the floating details panel (a float monitor below it). */
-  detailsBottomInset(): number;
+  /** Where the floating details panel sits (px from the viewport's right /
+   *  bottom edges) — clear of a float monitor, or of a side panel. */
+  detailsInset(): { right: number; bottom: number };
   /** "in this arrangement" / "in the composition" / "in this sketch". */
   usageLabel: string;
   /** Arrangement only: the "show on the timeline" toggle per device. */

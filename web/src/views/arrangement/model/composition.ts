@@ -830,15 +830,14 @@ export interface Composition {
 }
 
 /**
- * A library device INCLUDED in a composition (the devices push). The library
- * (per machine) defines devices; a show includes the ones it uses and can park
- * one without losing its wires. Only MIDI controllers today — lights and
- * displays extend `kind`.
+ * A library device the show puts ON ITS TIMELINE (the devices push): a device
+ * row under the tracks. Only MIDI controllers today — lights and displays
+ * extend `kind`, and will use `enabled`.
  *
- * A MIDI placement's wires are ordinary sketch wires with
- * `src: { instanceKey: 'midi:<deviceId>', field: 'b0/e05/turn' }`; the engine
- * keeps them only while the placement is enabled (a parked or missing device
- * leaves every field it drives at its authored value).
+ * A MIDI device's wires are ordinary sketch wires with
+ * `src: { instanceKey: 'midi:<deviceId>', field: 'b0/e05/turn' }`, and they
+ * work whether or not the device has a placement: the row is for seeing and
+ * reaching the device, not for enabling it.
  * LOCK-STEP: comp_model.h DevicePlacementM.
  */
 export interface DevicePlacement {
@@ -846,17 +845,12 @@ export interface DevicePlacement {
   kind: 'midi';
   /** The library device's uuid — what the show's wires address. */
   deviceId: string;
-  /** Parked when false (wires kept, inert). Omitted ⇒ enabled. */
+  /** Lights / displays: output off when false. Unused for MIDI. */
   enabled?: boolean;
-  /** The device's name and template when it was included: all a machine
-   *  WITHOUT that device has to show ("missing: Twister #2") and draw. */
+  /** The device's name and template when it was placed: all a machine
+   *  WITHOUT that device has to show ("missing: Twister #2"). */
   label?: string;
   templateId?: string;
-}
-
-/** A placement's wire namespace (`midi:<deviceId>`). */
-export function placementInstanceKey(p: DevicePlacement): string {
-  return `midi:${p.deviceId}`;
 }
 
 /**

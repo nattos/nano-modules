@@ -155,16 +155,18 @@ the end (the sketch's image is its LAST linear stage). A timeline track with NO 
 faders for `<arr-io-strip>` ports; routes are drawn by `arr-overlay` to the inspector's field
 hit-boxes (the inspector registers the lookup — there are no field anchors otherwise).
 
-**Devices** (the devices push): a show INCLUDES library devices — `Composition.devices`
-(`DevicePlacement`, lock-step with `comp_model.h`), one row each under the tracks
-(`<arr-device-lane>`), enabled or parked. A MIDI control wire is an ordinary sketch wire from
-`midi:<uuid>`; the builder keeps it only while that device's placement is ENABLED (`externalSrcs` in
-`sketch_build.h` — a parked or un-included device leaves its fields at their authored values), and
-`CompExecutor::setExternalScalars` / `setInjectedScalars` carry the values (the injected table is
-keyed by the BUILT sketch's bare keys, never namespaced). The worker engine gets the table
-`midiController` lowers from the COMPOSITION's sketches (`state/arr-midi.ts`); the native compositor
-reads CoreMIDI itself and only takes the library + on-screen simulation over the bridge
-(`CompEngine.mirrorMidi`).
+**Devices** (the devices push): the arrangement's main area switches between the timeline and the
+Devices panel — Remote Control's own `<devices-tab>`, mounted over a `DevicesHost`
+(`views/devices/devices-host.ts`: sketches, wire edits, W mode, the gesture machine, filters; the
+editor's host is `editor-devices-host.ts`, the arrangement's `state/arr-devices-host.ts`). Both views
+stay MOUNTED (the inactive one `visibility: hidden`) so a wire dragged across the `Timeline | Devices`
+switch keeps its source; mid-gesture, hovering the switch flips the view. A MIDI control wire is an
+ordinary sketch wire from `midi:<uuid>` and works with or without a placement — `Composition.devices`
+(`DevicePlacement`) only puts a device on the timeline as a row. `CompExecutor::setExternalScalars` /
+`setInjectedScalars` carry the values (the injected table is keyed by the BUILT sketch's bare keys,
+never namespaced). The worker engine gets the table `midiController` lowers from the COMPOSITION's
+sketches (`state/arr-midi.ts`); the native compositor reads CoreMIDI itself and only takes the
+library + on-screen simulation over the bridge (`CompEngine.mirrorMidi`).
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 
