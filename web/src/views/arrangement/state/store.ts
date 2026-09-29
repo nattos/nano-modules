@@ -9,7 +9,7 @@
 
 import { makeAutoObservable, runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import type { StateDiff, PluginInfo } from '../../../engine-types';
-import type { FieldConnectInfo } from '../../../sketch-types';
+import type { FieldConnectInfo, Wire as SketchWire } from '../../../sketch-types';
 import { isDeviceOff } from '../../../sketch-types';
 import {
   Composition,
@@ -178,7 +178,7 @@ export interface Selection {
   path: string;
 }
 
-export type RightTab = 'inspector' | 'workspace' | 'settings' | 'export' | 'debug';
+export type RightTab = 'inspector' | 'devices' | 'workspace' | 'settings' | 'export' | 'debug';
 
 /** A resolved composite layer (the monitor draws these bottom→top). */
 export interface CompositeLayer {
@@ -4918,14 +4918,19 @@ export class ArrangementStore {
     });
   }
 
+  /** Every wire in the show a device drives, with the sketch it lives in. */
+  deviceWires(deviceId: string): { sketchId: string; wire: SketchWire }[] {
+    const key = `midi:${deviceId}`;
+    const out: { sketchId: string; wire: SketchWire }[] = [];
+    for (const [sketchId, sk] of Object.entries(compositionSketches(this.composition))) {
+      for (const w of sk.wires ?? []) if (w.src.instanceKey === key) out.push({ sketchId, wire: w });
+    }
+    return out;
+  }
+
   /** How many wires in the show a device drives. */
   deviceWireCount(deviceId: string): number {
-    const key = `midi:${deviceId}`;
-    let n = 0;
-    for (const sk of Object.values(compositionSketches(this.composition))) {
-      for (const w of sk.wires ?? []) if (w.src.instanceKey === key) n++;
-    }
-    return n;
+    return this.deviceWires(deviceId).length;
   }
 
   /** A MIDI control → an INPUT field (any sketch in the show) or a track's

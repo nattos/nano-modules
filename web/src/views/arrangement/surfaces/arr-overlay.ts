@@ -16,7 +16,7 @@ import { store } from '../state/store';
 import { anchorRect, AnchorKeys } from './anchor-registry';
 import { createGenericInspector, type InspectorFieldDef } from '../../../widgets/generic-inspector';
 import { PORT_OUT, type Route, type RouteEnd } from '../model/composition';
-import { beginPortClickConnect, portConnect, portDir, portName, revealRouteField, routeEndLabel, routeFieldRect } from './arr-io';
+import { beginPortClickConnect, portConnect, portDir, portName, revealRouteField, routeEndLabel, routeFieldRect, sketchFieldRect, sketchWireDestLabel } from './arr-io';
 import type { FieldBinding, ContinuousEditHandle } from '../../../widgets/field-editor';
 
 // Wire (tap) options, rendered through the SAME generic field editors the effect IDE
@@ -42,6 +42,9 @@ interface WireDesc {
   /** A Composition I/O route (drawn in ROUTE colour; click opens the route
    *  popup, dbl-click deletes). */
   route?: { id: string; delayed: boolean; live: boolean };
+  /** A MIDI device wire (a sketch wire from `midi:<uuid>`): click selects the
+   *  device (its inspector lists + disconnects its wires), dbl-click deletes. */
+  midi?: { sketchId: string; wireId: string; placementId: string; parked: boolean };
   color: string;
   a: Pt; // source (data-out)
   b: Pt; // dest (data-in)
@@ -135,6 +138,7 @@ export class ArrOverlay extends MobxLitElement {
     svg path.arc.route.delayed { stroke-dasharray: 2 3; }
     svg path.arc.route.inert { opacity: 0.35; }
     svg path.arc.route.sel { stroke: #46d18c !important; stroke-width: 3; }
+    svg path.arc.midi.inert { opacity: 0.35; }
     svg path.connect {
       fill: none; stroke: #46d18c; stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none;
     }
@@ -293,10 +297,35 @@ export class ArrOverlay extends MobxLitElement {
     return out;
   }
 
+  /** MIDI device wires (W mode): from the control in the device's row (or
+   *  the row's header while its bank isn't shown) to the inspector field. */
+  private computeDeviceWires(out: WireDesc[]) {
+    for (const p of store.devicePlacements) {
+      for (const { sketchId, wire } of store.deviceWires(p.deviceId)) {
+        const b = sketchFieldRect(sketchId, wire.dest.instanceKey, wire.dest.field);
+        if (!b) continue;
+        const ctl = anchorRect(AnchorKeys.deviceControl(p.deviceId, wire.src.field));
+        const row = ctl ? null : anchorRect(AnchorKeys.deviceRow(p.deviceId));
+        const a: Pt | null = ctl
+          ? { x: (ctl.left + ctl.right) / 2, y: (ctl.top + ctl.bottom) / 2 }
+          : row ? { x: row.right, y: (row.top + row.bottom) / 2 } : null;
+        if (!a) continue;
+        out.push({
+          id: 'midi:' + wire.id, color: WRITER, a,
+          b: { x: b.left, y: (b.top + b.bottom) / 2 },
+          clipPath: '', label: `${wire.src.field} → ${sketchWireDestLabel(sketchId, wire)}`,
+          target: {}, popup: false,
+          midi: { sketchId, wireId: wire.id, placementId: p.id, parked: p.enabled === false },
+        });
+      }
+    }
+  }
+
   private computeWires(chips: ChipDesc[] = []): WireDesc[] {
     const routes = this.computeRoutes(chips);
     if (!store.wiresMode) return routes;
     const out: WireDesc[] = routes;
+    this.computeDeviceWires(out);
     for (const track of store.composition.tracks) {
       if (track.kind !== 'rail' || !track.railId) continue;
       const railRect = anchorRect(AnchorKeys.rail(track.railId));
@@ -410,9 +439,11 @@ export class ArrOverlay extends MobxLitElement {
         pip.setAttribute('class', 'pip');
         pip.setAttribute('r', '3.5');
         const routeId = w.route?.id;
+        const midi = w.midi;
         const onClick = (e: PointerEvent) => {
           e.stopPropagation();
           if (routeId) { store.openRoutePopup(routeId, e.clientX + 8, e.clientY + 8); return; }
+          if (midi) { store.setSelection([`device/${midi.placementId}`]); return; }
           store.selectWire(w.id, w.clipPath, w.target);
         };
         // Double-click a modulation wire (export/read, not the warp link) to
@@ -420,6 +451,7 @@ export class ArrOverlay extends MobxLitElement {
         const onDblClick = (e: Event) => {
           e.stopPropagation();
           if (routeId) { store.removeRoute(routeId); return; }
+          if (midi) { store.removeSketchWire(midi.sketchId, midi.wireId); return; }
           if (w.popup === false) return;
           store.deleteWire(w.id);
         };
@@ -429,6 +461,7 @@ export class ArrOverlay extends MobxLitElement {
         pip.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
           if (routeId) { store.openRoutePopup(routeId, e.clientX + 8, e.clientY + 8); return; }
+          if (midi) { store.setSelection([`device/${midi.placementId}`]); return; }
           store.selectWire(w.id, w.clipPath, w.target);
           if (w.popup !== false) {
             store.openTapPopup({ wireId: w.id, x: e.clientX + 8, y: e.clientY + 8, label: w.label });
@@ -445,7 +478,14 @@ export class ArrOverlay extends MobxLitElement {
       g.arc.setAttribute('d', d);
       g.arc.setAttribute('class', 'arc'
         + (w.route ? ' route' + (w.route.delayed ? ' delayed' : '') + (w.route.live ? '' : ' inert') : '')
+        + (w.midi ? ' midi' + (w.midi.parked ? ' inert' : '') : '')
         + ((w.route ? store.routePopup?.routeId === w.route.id : store.selectedWireId === w.id) ? ' sel' : ''));
+      if (w.midi) {
+        g.pip.innerHTML = '';
+        const t = document.createElementNS(NS, 'title');
+        t.textContent = w.label + (w.midi.parked ? ' — parked (the device is off in this show)' : '');
+        g.pip.appendChild(t);
+      }
       if (w.route) {
         g.pip.innerHTML = '';
         const t = document.createElementNS(NS, 'title');
@@ -470,7 +510,10 @@ export class ArrOverlay extends MobxLitElement {
   private syncConnectBand(svg: SVGSVGElement) {
     const c = portConnect.state;
     const port = c?.info.trackPort;
-    const r = port ? anchorRect(AnchorKeys.port(port.trackId, port.portId)) : null;
+    const ctl = c?.info.deviceControl;
+    const r = port ? anchorRect(AnchorKeys.port(port.trackId, port.portId))
+      : ctl ? anchorRect(AnchorKeys.deviceControl(ctl.deviceInstanceId, ctl.controlId))
+      : null;
     if (!c || !r) { if (this.band) this.band.style.display = 'none'; return; }
     if (!this.band) {
       this.band = document.createElementNS(NS, 'path');
@@ -479,6 +522,7 @@ export class ArrOverlay extends MobxLitElement {
     }
     const a = { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
     this.band.style.display = '';
+    this.band.style.stroke = ctl ? WRITER : '';
     this.band.setAttribute('d', `M ${a.x} ${a.y} L ${c.pointerX} ${c.pointerY}`);
   }
 

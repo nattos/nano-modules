@@ -11,11 +11,11 @@
  *     inspector's field hit-box, when that sketch is the one inspected.
  */
 
-import type { Sketch } from '../../../sketch-types';
+import type { Sketch, Wire } from '../../../sketch-types';
 import type { PluginInfo } from '../../../widgets/column-adapter';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { store } from '../state/store';
-import { PORT_IN, PORT_OUT, type RouteEnd, type Track } from '../model/composition';
+import { LAYER_TARGET_ID, PORT_IN, PORT_OUT, type RouteEnd, type Track } from '../model/composition';
 import { catalogEffect } from '../engine/effect-catalog';
 import { anchorRect, AnchorKeys } from './anchor-registry';
 
@@ -55,6 +55,35 @@ export function beginPortClickConnect(trackId: string, portId: string, dir: 'in'
   // Start the band AT the pip (beginFromFieldClick seeds the pointer from
   // viewportY alone) — it follows the cursor from the first move.
   if (portConnect.state) { portConnect.state.pointerX = cx; portConnect.state.pointerY = cy; }
+}
+
+/** Pick a MIDI control up for CLICK-to-connect from the inspector's list, as a
+ *  lane mask click does (the band starts at the control's anchor). */
+export function beginDeviceControlClick(deviceId: string, endpoint: string) {
+  const r = anchorRect(AnchorKeys.deviceControl(deviceId, endpoint));
+  const cx = r ? (r.left + r.right) / 2 : 0;
+  const cy = r ? (r.top + r.bottom) / 2 : 0;
+  portConnect.beginFromFieldClick('', `device/${deviceId}/${endpoint}`, {
+    sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: true,
+    viewportY: cy, schemaDef: null,
+    deviceControl: { deviceInstanceId: deviceId, controlId: endpoint },
+  });
+  if (portConnect.state) { portConnect.state.pointerX = cx; portConnect.state.pointerY = cy; }
+}
+
+/** "Track · Device.field" (clip sketches name the clip; a layer wire names
+ *  the track's opacity) — where a sketch wire lands. */
+export function sketchWireDestLabel(sketchId: string, w: Wire): string {
+  const [kind, trackId, clipId] = sketchId.split('/');
+  const t = store.laneById(trackId);
+  const tn = t ? store.trackDisplayName(t) : '?';
+  const clip = kind === 'clip' ? t?.clips.find((c) => c.id === clipId) : undefined;
+  const owner = clip ? `${tn}/${clip.name}` : tn;
+  if (w.dest.instanceKey === LAYER_TARGET_ID) return `${owner} · opacity`;
+  const devs = clip ? clip.sketch.devices : t?.sketch.devices;
+  const dev = devs?.find((d) => d.id === w.dest.instanceKey);
+  const dn = dev ? (catalogEffect(dev.moduleType)?.name ?? dev.name) : '?';
+  return `${owner} · ${dn}.${w.dest.field}`;
 }
 
 /** A port's display name. */
@@ -100,11 +129,16 @@ export function setInspectorFieldLookup(fn: FieldLookup | null) {
 
 /** Viewport rect of a route's FIELD end, or null when it isn't on screen. */
 export function routeFieldRect(e: Extract<RouteEnd, { kind: 'field' }>): DOMRect | null {
+  return sketchFieldRect(routeFieldSketchId(e), e.deviceId, e.field);
+}
+
+/** Viewport rect of a device field's hit-box in the inspector (when that
+ *  sketch is the one inspected), or null. */
+export function sketchFieldRect(sketchId: string, deviceId: string, field: string): DOMRect | null {
   if (!inspectorLookup) return null;
-  const sketchId = routeFieldSketchId(e);
-  const idx = store.sketchForId(sketchId)?.devices.findIndex((d) => d.id === e.deviceId) ?? -1;
+  const idx = store.sketchForId(sketchId)?.devices.findIndex((d) => d.id === deviceId) ?? -1;
   if (idx < 0) return null;
-  const el = inspectorLookup(sketchId, idx, e.field);
+  const el = inspectorLookup(sketchId, idx, field);
   if (!el || !el.isConnected) return null;
   const r = el.getBoundingClientRect();
   return r.width > 0 || r.height > 0 ? r : null;

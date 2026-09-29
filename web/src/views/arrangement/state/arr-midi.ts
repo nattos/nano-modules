@@ -26,14 +26,16 @@ export async function bootArrangementMidi(): Promise<void> {
   booted = true;
   midiController.bindSketchSource(() => compositionSketches(store.composition));
   midiController.bindEnginePush((json) => engineBridge.setExternalScalars(json));
-  midiController.bindBridge({
-    library: (instances) => engineBridge.mirrorMidi('library', instances),
-    sim: (table) => engineBridge.mirrorMidi('sim', table),
-  });
   engineBridge.onDocShipped = () => midiController.pushExternalScalars();
   try {
     await midiController.loadLibrary();
   } catch (err) {
     console.warn('[arr-midi] failed to load the MIDI device library', err);
   }
+  // After the load: binding mirrors the library at once, and a mirror of the
+  // not-yet-loaded (empty) library would be ignored by the compositor anyway.
+  midiController.bindBridge({
+    library: (instances) => engineBridge.mirrorMidi('library', instances),
+    sim: (table) => engineBridge.mirrorMidi('sim', table),
+  });
 }

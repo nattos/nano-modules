@@ -31,6 +31,10 @@ import './arr-mixer-strip';
 import './arr-io-strip';
 import './arr-rail-lane';
 import './arr-scene';
+import './arr-device-lane';
+import { midiController } from '../../../state/midi-controller';
+import { appState } from '../../../state/app-state';
+import type { DevicePlacement } from '../model/composition';
 import { WireConnect } from '../../../widgets/taps-connect';
 import './arr-automation-editor';
 import '../../../widgets/ui-icon';
@@ -288,6 +292,20 @@ export class ArrGrid extends MobxLitElement {
     .lane.rail {
       background: rgba(70, 194, 194, 0.03);
     }
+    /* Device rows (below the tracks). */
+    .row.device.first { border-top: 2px solid var(--app-tint-4); }
+    .lane.device { background: rgba(255, 140, 0, 0.03); }
+    .row.device.parked .lane.device { opacity: 0.45; }
+    .devico { --icon-size: 11px; color: #ff8c00; flex-shrink: 0; }
+    .devstat {
+      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+      background: var(--app-tint-4);
+    }
+    .devstat.live { background: var(--app-cat-source, #57b47a); }
+    .devstat.missing { background: var(--app-error, #e06c6c); }
+    .sb.devon { --icon-size: 10px; margin-left: auto; }
+    .sb.devon.on { border-color: #ff8c00; color: #ff8c00; background: rgba(255, 140, 0, 0.12); }
+    .devwires { font-size: 8px; color: var(--app-text-color2); }
     .row.beatwarp {
       border-top: 1px solid var(--app-tint-3);
     }
@@ -547,6 +565,9 @@ export class ArrGrid extends MobxLitElement {
     // Wire anchors for the main bus lane and (when shown) the beat-warp lane.
     setAnchor(AnchorKeys.mainbus(), this.renderRoot.querySelector('.lane.group'));
     setAnchor(AnchorKeys.beatwarp(), this.renderRoot.querySelector('.beatwarp-lane'));
+    for (const h of this.renderRoot.querySelectorAll<HTMLElement>('.header[data-device-row]')) {
+      setAnchor(AnchorKeys.deviceRow(h.dataset.deviceRow!), h);
+    }
     const tgt = store.consumeScrollTarget();
     if (tgt) this.scrollClipIntoView(tgt);
   }
@@ -648,6 +669,7 @@ export class ArrGrid extends MobxLitElement {
       if (store.automationMode) h += t.automation.length * AUTO_LANE_HEIGHT;
     }
     if (store.automationMode) h += ROW_HEIGHT; // beat-warp row
+    h += store.devicePlacements.length * ROW_HEIGHT; // device rows
     return h;
   }
 
@@ -684,6 +706,7 @@ export class ArrGrid extends MobxLitElement {
         <div class="rows">
           ${tracks.map((t) => this.renderTrack(t))}
           ${store.automationMode ? this.renderBeatWarpRow() : ''}
+          ${store.devicePlacements.map((p, i) => this.renderDeviceRow(p, i === 0))}
           ${this.reorderActive ? this.renderReorderLine() : ''}
           <!-- Trailing space so the timeline scrolls DOWN past the main bus (bring
                the bottom-most lanes up to the top of the viewport). -->
@@ -705,6 +728,50 @@ export class ArrGrid extends MobxLitElement {
       move: (ev) => store.setHeaderWidth(ev.clientX - left),
     });
   };
+
+  /**
+   * A device the show includes (store.devicePlacements), below the tracks:
+   * header = name, status (live / offline / missing from this machine's
+   * library), the enable switch; lane = the device's controls
+   * (<arr-device-lane>). Clicking the header selects it (the inspector shows
+   * the device).
+   */
+  private renderDeviceRow(p: DevicePlacement, first: boolean) {
+    const inst = midiController.instance(p.deviceId);
+    const name = inst?.name ?? p.label ?? 'Missing device';
+    const enabled = p.enabled !== false;
+    const status = !inst ? 'missing' : appState.local.midi.connected[p.deviceId] ? 'live' : 'offline';
+    const statusTitle = status === 'missing'
+      ? 'Not in this machine’s device library — its wires are inert'
+      : status === 'live' ? 'Connected' : 'Not connected (on-screen controls still drive it)';
+    const path = `device/${p.id}`;
+    const selected = store.isSelected(path);
+    return html`
+      <div class="row device ${first ? 'first' : ''} ${enabled ? '' : 'parked'}" data-device-id=${p.deviceId}>
+        <div
+          class="header ${selected ? 'selected' : ''}"
+          data-device-row=${p.deviceId}
+          @pointerdown=${(e: PointerEvent) => { e.stopPropagation(); store.setSelection([path]); }}
+        >
+          <div class="h-top" style="padding-left: var(--app-sp-3)">
+            <ui-icon class="devico" icon="la-sliders-h"></ui-icon>
+            <span class="devstat ${status}" title=${statusTitle}></span>
+            <span class="tname" title=${name}>${name}</span>
+            <button
+              class="sb devon ${enabled ? 'on' : ''}"
+              title=${enabled ? 'Enabled — click to park (its wires stay, inert)' : 'Parked — click to enable'}
+              @pointerdown=${(e: PointerEvent) => { e.stopPropagation(); store.setDeviceEnabled(p.id, !enabled); }}
+            ><ui-icon icon="la-power-off"></ui-icon></button>
+          </div>
+          <div class="h-bottom" style="padding-left: var(--app-sp-3)">
+            <span class="dchip">MIDI</span>
+            <span class="devwires">${store.deviceWireCount(p.deviceId)} wires</span>
+          </div>
+        </div>
+        <div class="lane device"><arr-device-lane .placementId=${p.id}></arr-device-lane></div>
+      </div>
+    `;
+  }
 
   private renderTimeToolbar() {
     // Always visible, pinned to the bottom of the timeline (above the clip

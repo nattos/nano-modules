@@ -139,7 +139,7 @@ Arrangement UI suites run on both through `test/comp-backend.ts` (`forEachCompBa
 `nano_compositor` first); tests read the monitor through `engineBridge.sampleComposite`
 (`test/arr-test-helpers.ts`), never the canvas.
 `COMPOSITOR.md` maps what is built (decode pump, namespacing, native export) and holds the
-roadmap: M3 outputs, M4 Windows, M5 remote, MIDI/Art-Net into the comp.
+roadmap: M3 outputs, M4 Windows, M5 remote, and the devices push (D1 MIDI shipped; lights, displays).
 
 The WHOLE composition folds into ONE executor sketch (`native/src/sketch/comp/sketch_build.h`, the
 only implementation — its existing output is pinned byte-for-byte by the `build*.json` goldens).
@@ -154,6 +154,17 @@ the end (the sketch's image is its LAST linear stage). A timeline track with NO 
 **clipless layer**: its own sketch is its content. UI: I/O mode (`store.ioMode`) swaps header
 faders for `<arr-io-strip>` ports; routes are drawn by `arr-overlay` to the inspector's field
 hit-boxes (the inspector registers the lookup — there are no field anchors otherwise).
+
+**Devices** (the devices push): a show INCLUDES library devices — `Composition.devices`
+(`DevicePlacement`, lock-step with `comp_model.h`), one row each under the tracks
+(`<arr-device-lane>`), enabled or parked. A MIDI control wire is an ordinary sketch wire from
+`midi:<uuid>`; the builder keeps it only while that device's placement is ENABLED (`externalSrcs` in
+`sketch_build.h` — a parked or un-included device leaves its fields at their authored values), and
+`CompExecutor::setExternalScalars` / `setInjectedScalars` carry the values (the injected table is
+keyed by the BUILT sketch's bare keys, never namespaced). The worker engine gets the table
+`midiController` lowers from the COMPOSITION's sketches (`state/arr-midi.ts`); the native compositor
+reads CoreMIDI itself and only takes the library + on-screen simulation over the bridge
+(`CompEngine.mirrorMidi`).
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 

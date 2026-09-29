@@ -152,11 +152,28 @@ library's concept of a template that *looks like* the hardware:
 **Decided: no per-output sketch for now.** Per-output colour correction is attractive, but it
 complicates the UI. Revisit later.
 
-**Open: where placements live in the UI.** Wires must reach fields almost everywhere. The options:
-- **the bottom panel:** never hosts sketches, so it's awkward;
-- **the timeline area:** the most natural place, but wires to layers are hard from there;
-- **the layer inspector:** the right side panel exposes device inputs and outputs next to the
-  layer's own fields.
+**Decided (2026-09-29): the model has four layers**, with the same words for every kind:
+- **template**: in code, a parametric shape (`light.strip` {segments, px per segment, colour
+  format}, `display.screen`, the MIDI drivers);
+- **type**: in the library, a template with its parameters filled in ("24 V bar: 12 seg × 5 px,
+  RGBW");
+- **unit**: in the library, one physical thing, i.e. its address plus the corrections that belong
+  to that hardware. A projector's usable region is matched by EDID and applies whichever slot it
+  fills;
+- **rig**: in the library, slots with a default layout and a default unit per slot ("four bars as
+  vertical strips").
+
+A show holds **placements** (include + enable). A placement follows the library until the show edits
+it, then becomes a per-show copy (lazy fork).
+- **Swap** exchanges units between slots.
+- **Identify and test patterns** are transient.
+- **A light samples the main output** unless a route feeds its input.
+- The custom 24 V hardware speaks Art-Net / DMX.
+
+**Decided: placements live in device ROWS under the tracks.** Each row's lane is a live picture of
+the device (a MIDI controller's controls), its inspector is the device's editor, and a "Devices"
+right tab is the library. D1 (MIDI) shipped this way. The order is D2 lights, D3 displays, D4 inputs
+(Art-Net in, FFT).
 
 #### The present API (`GPUBackend`)
 
@@ -261,31 +278,32 @@ async readback as Art-Net, at output resolution. It fits after Syphon and Art-Ne
 
 ---
 
-### MIDI and Art-Net *into* the comp (the item deferred from M2)
+### MIDI and Art-Net *into* the comp — SHIPPED for MIDI (devices D1, 2026-09-29)
 
-**Not parity work.** Neither engine does this today:
-- `CompExecutor` never forwards `setExternalScalars` (MIDI device wires, `midi:<uuid>` keys) or
-  `setInjectedScalars` (in-chain `control.artnet` cards) to its internal `SketchExecutor`s;
-- the arrangement has no UI for authoring a MIDI wire.
+What was built:
+- **Authoring**: device placements (`Composition.devices`), device rows under the tracks, a
+  "Devices" right tab over the shared library, and W-mode wires from a control to any input field or
+  a track's fader. See the arrangement PRD ("Devices").
+- **The builder** keeps a `midi:<uuid>` wire only while that device's placement is enabled
+  (`Builder::externalSrcs`), at every fold site.
+- **The executor**: `CompExecutor::setExternalScalars` / `setInjectedScalars` forward both tables to
+  the composite executor and survive `resetInternalExecutor`. **Decided: the injected table is keyed
+  by the BUILT sketch's bare keys** (`clip_<clip>_<dev>`); the namespace prefixes the shared instance
+  pool, never the sketch. Pinned by `test_comp_render` `[comp_devices]`.
+- **The hosts**:
+  - Native: `renderComp` feeds `MidiHost` (with `pollMidi`) and `ArtNetHost` behind the barrel's
+    version gates. The Art-Net listener opens only once the build holds a `control.artnet` card, and
+    it re-reads on a structure change.
+  - Web: the arrangement page runs `midiController` against its own document and pushes the lowered
+    table to the worker (`comp_set_external_scalars`). Toward the native compositor it mirrors only
+    the library and the simulation (`/global/midi_devices`, `/global/midi_sim`).
 
-**What it would take:**
-1. **Authoring** comes with the devices push (see M3 § devices). MIDI controllers, an Art-Net input
-   and later an audio/FFT source are devices added to the composition, and their outputs are wire
-   sources like any port. A `control.artnet` card inside a clip's sketch needs no new authoring; it
-   only needs the values delivered.
-2. **The executor.** `CompExecutor` passes both tables through to its internal executors each
-   frame. Trap to check: injected-scalar keys are chain instance keys, and the comp's executors now
-   carry a namespace prefix. Decide whether the tables are keyed bare or prefixed, and pin it with a
-   test, or `control.artnet` in a clip goes silent the way follow actions did.
-3. **The hosts.**
-   - Native: feed from `MidiHost` / `ArtNetHost` with the same version gate the barrels use
-     (`lastMidiVersion` / `lastArtnetVersion` in `barrel_runtime.cpp`). It's cheap when static.
-   - Web: feed from the worker's existing Web MIDI / udp-bridge paths.
-
-   Both are lock-step through the shared executor, as the sketch editor already is.
-4. **Latency is the native engine's advantage here.** No postMessage hop, and the MIDI thread is in
-   the same process. Measure input→photon once present exists (M3). It is a selling point worth a
-   number.
+Still open:
+- **Art-Net into the web arrangement.** The worker can take the table (`comp_set_injected_scalars`),
+  but nothing feeds it yet. That arrives with the Art-Net input device (D4).
+- **Latency is the native engine's advantage here.** There's no postMessage hop, and the MIDI thread
+  is in the same process. Measure input→photon once present exists (M3); it's a selling point worth
+  a number.
 
 ---
 

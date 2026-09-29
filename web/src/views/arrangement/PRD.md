@@ -347,8 +347,26 @@ clips).
   to select it and click it again to pick it up (click-to-connect). Routes whose far end isn't on
   screen show as chips. A port's popup renames it, sets the output (normal / nowhere), and lists its
   routes; clicking a route wire opens its popup (both ends, live / late / inert, Disconnect).
-- **Next** (designed for, not built): device rows (displays, lights, MIDI) whose ports are just
-  another route end; same-frame ordering (render producers first); scalar ports.
+- **Next** (designed for, not built): light and display devices whose inputs are just another route
+  end; same-frame ordering (render producers first); scalar ports.
+
+## Devices — *as-built (D1: MIDI)*
+
+The devices push: every external thing a show touches is a device, DEFINED once in this machine's
+library and INCLUDED per show (plan: COMPOSITOR.md § devices; lights and displays follow).
+
+- **Placements** (`Composition.devices`). A show includes library devices; each is a row under the
+  tracks — header (status: connected / offline / missing from this machine's library; the enable
+  switch), lane (the shown bank's controls, live, draggable to simulate). A PARKED device keeps its
+  wires but they go inert; removing one removes its wires (one undo).
+- **Wiring.** In W mode every control gesture (turn / press / shift) wears the output mask: drag it
+  onto an input field in any clip, track or main-bus sketch in the inspector, or onto a track's
+  fader; or click it to pick it up. Wiring a control includes its device. Wires draw from the control
+  to the field; the device's inspector lists them (click a destination to show it, × to disconnect)
+  above the controller's full surface.
+- **Devices tab** (right panel). This machine's library: include a device, define a plugged-in
+  controller as a template that recognises it, or make one from a template with no hardware.
+  Mappings, colours and aliases stay in the editor's Devices tab (the library is shared).
 
 ## Automation (track-level and clip-level)
 

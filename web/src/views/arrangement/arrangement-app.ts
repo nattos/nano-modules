@@ -504,7 +504,10 @@ export class ArrangementApp extends MobxLitElement {
         store.deleteTime(); // ripple-delete the time box
         return;
       }
-      if (store.primaryPath?.startsWith('track/')) {
+      if (store.primaryPath?.startsWith('device/')) {
+        e.preventDefault();
+        store.removeDevicePlacement(store.primaryPath.split('/')[1]); // + its wires (undoable)
+      } else if (store.primaryPath?.startsWith('track/')) {
         e.preventDefault();
         store.deleteSelectedTracks(); // a focused track → delete it (never the bus)
       } else if (store.hasTimeSelection) {
