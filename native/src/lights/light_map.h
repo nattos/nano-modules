@@ -56,7 +56,8 @@ struct Fixture {
   std::string slotId;
   int universe = 0;          // 15-bit Art-Net port address (net:subnet:universe)
   int channel = 1;           // 1-based start channel, as a desk shows it
-  std::string dest = "broadcast";  // 'broadcast' | ip | ip:port
+  std::string dest = "broadcast";  // 'broadcast' | ip | ip:port (the page's network already applied)
+  std::string iface;               // network interface to send from; "" = auto (the OS picks)
   Format format = Format::RGB;
   float gamma = 1.0f;
   std::vector<std::array<float, 4>> footprints;  // u0, v0, u1, v1 per pixel
@@ -98,6 +99,7 @@ inline Plan parsePlan(const nlohmann::json& j) {
         f.universe = std::clamp(fj.value("universe", 0), 0, 0x7fff);
         f.channel = std::clamp(fj.value("channel", 1), 1, kUniverseSize);
         f.dest = fj.value("dest", std::string("broadcast"));
+        f.iface = fj.value("iface", std::string());
         f.format = parseFormat(fj.value("format", std::string("rgb")));
         f.gamma = std::clamp(fj.value("gamma", 1.0f), 0.1f, 5.0f);
         if (fj.contains("footprints") && fj["footprints"].is_array()) {
@@ -162,8 +164,9 @@ inline std::vector<Rgb> sampleFootprints(const uint8_t* rgba, int w, int h, cons
   return out;
 }
 
-/// DMX frames being assembled: (dest, universe) → 512 channels.
-using UniverseKey = std::pair<std::string, int>;
+/// DMX frames being assembled: (interface, dest, universe) → 512 channels.
+/// The same type as artnet::DmxFrames.
+using UniverseKey = std::tuple<std::string, std::string, int>;
 using Frames = std::map<UniverseKey, std::array<uint8_t, kUniverseSize>>;
 
 inline uint8_t toByte(float v, float gamma) {
@@ -176,7 +179,7 @@ inline uint8_t toByte(float v, float gamma) {
 /// channel 512 are dropped (the page warns about the address, it never spills
 /// into the next universe). RGBW takes white out of the colour: w = min(r,g,b).
 inline void encodeFixture(const Fixture& f, const std::vector<Rgb>& colors, Frames& frames) {
-  auto& u = frames[{f.dest, f.universe}];  // value-initialised: all zero
+  auto& u = frames[{f.iface, f.dest, f.universe}];  // value-initialised: all zero
   const int cpp = channelsPerPixel(f.format);
   for (size_t i = 0; i < colors.size(); i++) {
     const int base = f.channel - 1 + (int)i * cpp;

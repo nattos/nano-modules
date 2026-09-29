@@ -82,17 +82,87 @@ TEST_CASE("ArtDmx and ArtSync layout", "[artnet_sender]") {
 
 TEST_CASE("destinations: broadcast, ip, ip:port, and the redirect", "[artnet_sender]") {
   sockaddr_in a{};
-  REQUIRE(ArtNetSender::resolveDest("broadcast", nullptr, &a));
+  const std::vector<artnet::NetIface> none;
+  auto res = [&](const std::string& dest, const char* redirect = nullptr) {
+    return ArtNetSender::resolveDest("", dest, redirect, none, &a, nullptr);
+  };
+  REQUIRE(res("broadcast"));
   CHECK(a.sin_addr.s_addr == htonl(0xffffffffu));
   CHECK(ntohs(a.sin_port) == 6454);
-  REQUIRE(ArtNetSender::resolveDest("10.1.2.3", nullptr, &a));
+  REQUIRE(res("10.1.2.3"));
   CHECK(ntohs(a.sin_port) == 6454);
-  REQUIRE(ArtNetSender::resolveDest("10.1.2.3:7000", nullptr, &a));
+  REQUIRE(res("10.1.2.3:7000"));
   CHECK(ntohs(a.sin_port) == 7000);
-  CHECK_FALSE(ArtNetSender::resolveDest("not an ip", nullptr, &a));
-  REQUIRE(ArtNetSender::resolveDest("broadcast", "127.0.0.1:9999", &a));
+  CHECK_FALSE(res("not an ip"));
+  REQUIRE(res("broadcast", "127.0.0.1:9999"));
   CHECK(a.sin_addr.s_addr == htonl(0x7f000001u));
   CHECK(ntohs(a.sin_port) == 9999);
+}
+
+TEST_CASE("destinations on a named interface: its OWN broadcast, never the global one",
+          "[artnet_sender]") {
+  std::vector<artnet::NetIface> ifs(3);
+  ifs[0] = {"en7", "10.0.5.20", "255.255.255.0", "10.0.5.255", true, false};
+  ifs[1] = {"lo0", "127.0.0.1", "255.0.0.0", "", true, true};
+  ifs[2] = {"en9", "2.0.0.5", "255.0.0.0", "2.255.255.255", false, false};
+  sockaddr_in a{};
+  std::string err;
+  REQUIRE(ArtNetSender::resolveDest("en7", "broadcast", nullptr, ifs, &a, &err));
+  char buf[INET_ADDRSTRLEN] = {};
+  ::inet_ntop(AF_INET, &a.sin_addr, buf, sizeof buf);
+  CHECK(std::string(buf) == "10.0.5.255");
+  CHECK(ntohs(a.sin_port) == 6454);
+  // Unicast goes where it says, from that interface.
+  REQUIRE(ArtNetSender::resolveDest("en7", "10.0.5.40:7000", nullptr, ifs, &a, &err));
+  CHECK(ntohs(a.sin_port) == 7000);
+  // Unknown, down, or no broadcast address: an error, not 255.255.255.255.
+  CHECK_FALSE(ArtNetSender::resolveDest("en5", "broadcast", nullptr, ifs, &a, &err));
+  CHECK(err.find("en5") != std::string::npos);
+  CHECK_FALSE(ArtNetSender::resolveDest("en9", "broadcast", nullptr, ifs, &a, &err));
+  CHECK(err.find("down") != std::string::npos);
+  CHECK_FALSE(ArtNetSender::resolveDest("lo0", "broadcast", nullptr, ifs, &a, &err));
+  CHECK(err.find("broadcast") != std::string::npos);
+  // The redirect still wins over everything.
+  REQUIRE(ArtNetSender::resolveDest("en5", "broadcast", "127.0.0.1:9999", ifs, &a, &err));
+  CHECK(ntohs(a.sin_port) == 9999);
+}
+
+TEST_CASE("lists this machine's interfaces (loopback among them)", "[artnet_sender]") {
+  const auto ifs = ArtNetSender::interfaces();
+  bool loop = false;
+  for (const auto& i : ifs) loop = loop || (i.loopback && i.address == "127.0.0.1");
+  CHECK(loop);
+  const auto j = ArtNetSender::interfacesJson(ifs);
+  REQUIRE(j.is_array());
+  CHECK(j.size() == ifs.size());
+}
+
+TEST_CASE("sends from a socket bound to the named interface", "[artnet_sender]") {
+  // Loopback only: lo0 (macOS) / lo (Linux), unicast to our own listener.
+  REQUIRE(std::getenv("NANO_ARTNET_REDIRECT") == nullptr);
+  std::string lo;
+  for (const auto& i : ArtNetSender::interfaces()) if (i.loopback && i.up) lo = i.name;
+  REQUIRE(!lo.empty());
+  Listener rx;
+  ArtNetSender tx(40.0);
+  artnet::DmxFrames frames;
+  frames[{lo, rx.dest(), 4}].fill(0);
+  frames[{lo, rx.dest(), 4}][0] = 77;
+  tx.submit(frames);
+  int dmx = 0;
+  for (const auto& p : rx.collect(300)) if (opcode(p) == 0x5000 && p[14] == 4 && p[18] == 77) dmx++;
+  CHECK(dmx >= 5);
+  CHECK_FALSE(tx.stats().contains("error"));
+
+  // A missing interface sends nothing and says why.
+  artnet::DmxFrames gone;
+  gone[{"nano-no-such-if0", rx.dest(), 4}].fill(0);
+  tx.submit(gone);
+  rx.collect(60);
+  CHECK(rx.collect(200).empty());
+  const auto st = tx.stats();
+  REQUIRE(st.contains("error"));
+  CHECK(st["error"].get<std::string>().find("nano-no-such-if0") != std::string::npos);
 }
 
 TEST_CASE("sends the latest frames at a fixed rate, then ArtSync", "[artnet_sender]") {
@@ -101,10 +171,10 @@ TEST_CASE("sends the latest frames at a fixed rate, then ArtSync", "[artnet_send
   ArtNetSender tx(40.0);
 
   artnet::DmxFrames frames;
-  frames[{rx.dest(), 1}].fill(0);
-  frames[{rx.dest(), 1}][0] = 200;
-  frames[{rx.dest(), 2}].fill(0);
-  frames[{rx.dest(), 2}][3] = 100;
+  frames[{"", rx.dest(), 1}].fill(0);
+  frames[{"", rx.dest(), 1}][0] = 200;
+  frames[{"", rx.dest(), 2}].fill(0);
+  frames[{"", rx.dest(), 2}][3] = 100;
   tx.submit(frames);
   // Nobody submits again for half a second — the stalled render thread — and
   // the cadence must hold anyway.

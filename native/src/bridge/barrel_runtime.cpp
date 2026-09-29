@@ -362,6 +362,10 @@ struct BarrelRuntime::Impl {
     double lastLightsReport = -1;
     nlohmann::json lastLightStatus;
     double lastLightStatusReport = -1;
+    // This machine's network interfaces (what a light's NETWORK can pick),
+    // re-listed every 2 s and reported when they change.
+    nlohmann::json lastNetIfaces;
+    double lastNetIfacesPoll = -10;
     std::unique_ptr<CompHost> comp;
     // The comp's plugin key: its instances live under compKey + "/".
     std::string compKey;
@@ -2448,6 +2452,14 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
           pe.lastLightStatusReport = pe.compElapsed;
           pe.lastLightStatus = st;
           rep["lightStatus"] = std::move(st);
+        }
+      }
+      if (pe.compResync || pe.compElapsed - pe.lastNetIfacesPoll >= 2.0) {
+        pe.lastNetIfacesPoll = pe.compElapsed;
+        auto ifs = artnet::ArtNetSender::interfacesJson(artnet::ArtNetSender::interfaces());
+        if (pe.compResync || ifs != pe.lastNetIfaces) {
+          pe.lastNetIfaces = ifs;
+          rep["netIfaces"] = std::move(ifs);
         }
       }
       pe.compResync = false;

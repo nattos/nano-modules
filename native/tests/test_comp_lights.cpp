@@ -107,7 +107,7 @@ struct Capture : bridge::LightSink {
   /// full channel on 254.
   std::vector<int> channels(int ch, int n) {
     std::lock_guard<std::mutex> lk(mu);
-    auto it = last.find({"127.0.0.1:1", 3});
+    auto it = last.find({"", "127.0.0.1:1", 3});
     if (it == last.end()) return {};
     std::vector<int> out;
     for (int i = 0; i < n; i++) out.push_back(q(it->second[ch - 1 + i]));

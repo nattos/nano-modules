@@ -127,6 +127,25 @@ describe('light library', () => {
     expect(lightController.rig(rig.id)!.slots[0].layout.w).toBe(0.5);
   });
 
+  it('a bar\'s network: Auto is stored as none; switch all puts the rig on one; swap carries it', () => {
+    const rig = lightController.newRig({
+      typeId: 'bar', count: 3, start: { universe: 0, channel: 1, dest: 'broadcast' },
+    })!;
+    const n = lightController.newNetwork();
+    expect(n).toMatchObject({ kind: 'network', iface: '' });
+    lightController.editNetwork(n.id, { iface: ' en7 ', rebase: '10.0.5.0/24' });
+    expect(lightController.network(n.id)).toMatchObject({ iface: 'en7', rebase: '10.0.5.0/24' });
+    lightController.editSlot(rig.id, rig.slots[0].id, { address: { network: n.id } });
+    expect(lightController.rig(rig.id)!.slots[0].address.network).toBe(n.id);
+    lightController.swapSlots(rig.id, rig.slots[0].id, rig.slots[1].id);
+    expect(lightController.rig(rig.id)!.slots.map((s) => s.address.network)).toEqual([undefined, n.id, undefined]);
+    lightController.setRigNetwork(rig.id, n.id);
+    expect(lightController.networkUsers(n.id)).toHaveLength(3);
+    lightController.setRigNetwork(rig.id, 'net.auto');
+    expect(lightController.rig(rig.id)!.slots.every((s) => !('network' in s.address))).toBe(true);
+    expect(lightController.networkUsers('net.auto')).toHaveLength(3);
+  });
+
   it('swapping two slots exchanges where they SEND, not where they sample', () => {
     const rig = lightController.newRig({
       typeId: 'bar', count: 4, start: { universe: 0, channel: 1, dest: 'broadcast' },

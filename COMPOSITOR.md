@@ -259,10 +259,19 @@ As built:
 - **`bridge/comp_lights.h` `LightRunner`**, owned by `CompHost`: after each submitted frame, one
   async Lanczos readback per source texture (long edge 256–1024, sized so the thinnest footprint
   spans ~2 texels); the callback maps and hands the DMX to a sink.
-- **`artnet/artnet_sender`**: its own socket, latest-wins, a 40 Hz thread (ArtDmx per universe, one
-  ArtSync per destination). `NANO_ARTNET_REDIRECT=host:port` sends everything to one place — the
-  test compositors (ctest, `comp-backend.ts`) always set it.
-- **Report**: `comp_report.lights` (the colours each light shows, ≤30 Hz) and `lightStatus`.
+- **`artnet/artnet_sender`**: latest-wins, a 40 Hz thread (ArtDmx per universe, one ArtSync per
+  destination). Frames are keyed (interface, destination, universe): `""` is Auto (one unbound
+  socket, `broadcast` = 255.255.255.255), a named interface gets its own socket bound to it
+  (`IP_BOUND_IF` on macOS) and `broadcast` becomes that interface's directed broadcast — an
+  unknown / down / broadcast-less interface is an error in `lightStatus`, never the global
+  broadcast. `NANO_ARTNET_REDIRECT=host:port` sends everything to one place from the unbound
+  socket — the test compositors (ctest, `comp-backend.ts`) always set it.
+- **Networks** (page-side): a library row choosing the interface and patching destinations on site
+  (rebase unicast onto a subnet, exact overrides); `light-plan.ts` resolves each fixture to its
+  final `dest` + `iface`, so the compositor never sees a network.
+- **Report**: `comp_report.lights` (the colours each light shows, ≤30 Hz), `lightStatus`, and
+  `netIfaces` (this machine's IPv4 interfaces, for a network's picker; on connect + on change).
+  Windows lists none yet, so only Auto works there.
 - Tests: `test_light_map`, `test_artnet_sender` (loopback), `test_comp_lights` (GPU, capture sink),
   `test_compositor_protocol` (the process transmits to the redirect), e2e `arrangement-lights`.
 - Not yet: ArtPoll discovery, a logical-canvas mode (render at the grid instead of sampling a big

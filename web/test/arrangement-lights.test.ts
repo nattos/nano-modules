@@ -57,6 +57,20 @@ async function clickDeep(sel: string) {
   await page.mouse.click(c.x, c.y);
 }
 
+/** Set a <select> anywhere in the shadow tree and fire its change. */
+async function selectDeep(sel: string, value: string) {
+  await waitDeep(sel);
+  await page.evaluate((selector: string, v: string) => {
+    const stack: (Document | ShadowRoot)[] = [document];
+    while (stack.length) {
+      const root = stack.pop()!;
+      const hit = root.querySelector(selector) as HTMLSelectElement | null;
+      if (hit) { hit.value = v; hit.dispatchEvent(new Event('change', { bubbles: true })); return; }
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot);
+    }
+  }, sel, value);
+}
+
 /** Fresh show: one clipless track holding a solid colour, a second one (sent
  *  nowhere) holding another; no devices, no routes. The light library starts
  *  empty in memory (earlier runs' rows stay in this profile's storage). */
@@ -188,6 +202,26 @@ describe('Arrangement lights (GPU)', () => {
     expect(layout[0].y).toBeLessThan(layout[1].y);
   });
 
+  it('networks: "+ network", a bar put on it, then "switch all" for the rest of the rig', async () => {
+    await resetShow([1, 0, 0], [0, 1, 0]);
+    const { rig } = await makeRig(4);
+    await clickDeep('[data-light-action="add-network"]');
+    const netId = await page.evaluate(() => (window as any).lightController.networks[0]?.id);
+    expect(netId).toBeTruthy();
+    await waitDeep(`[data-light-card="${netId}"][selected]`);
+    await waitDeep('[data-light-action="add-override"]');
+    // Its bar picker on the rig: bar 1 → the network, and the offer appears.
+    await clickDeep(`[data-light-card="${rig}"]`);
+    await selectDeep('[data-light-net="0"]', netId);
+    expect(await page.evaluate((id: string) =>
+      (window as any).lightController.rig(id).slots[0].address.network, rig)).toBe(netId);
+    await clickDeep('[data-light-action="net-all"]');
+    expect(await page.evaluate((id: string) => (window as any).lightController.rig(id).slots
+      .map((s: any) => s.address.network), rig)).toEqual([netId, netId, netId, netId]);
+    // …and the offer is gone.
+    expect(await deepCentre('[data-light-action="net-all"]')).toBeNull();
+  });
+
   it('layout: dragging a strip moves it in THIS show, as one undo point', async () => {
     await resetShow([1, 0, 0], [0, 1, 0]);
     const { rig, pid } = await makeRig(4);
@@ -281,6 +315,9 @@ describe('Arrangement lights (GPU)', () => {
         const { pid } = await makeRig(2);
         // The main output is red: RGBW (255, 0, 0, 0).
         await waitFor([255, 0, 0, 0], 'the composite');
+        // The compositor lists this machine's interfaces (for a network's picker).
+        await page.waitForFunction(() => ((window as any).lightController.netIfaces ?? [])
+          .some((i: any) => i.loopback && i.address === '127.0.0.1'), { timeout: 5_000 });
         // The UI draws what it sends.
         await page.waitForFunction((p: string) => {
           const v = (window as any).lightController.values[p];

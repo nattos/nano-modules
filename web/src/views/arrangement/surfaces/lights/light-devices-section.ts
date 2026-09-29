@@ -6,6 +6,9 @@
  *               "in show" toggle includes it (a timeline row, output on);
  *               placed, its input pip takes a route.
  *   MISSING   — rigs the show includes that this machine doesn't have.
+ *   NETWORKS  — Auto (built in) and the user's: which interface bars are sent
+ *               from, and on-site destination patches ("in use": the ones a
+ *               placed rig's bars use).
  *   TYPES     — the library's light types (hidden under "in use").
  *   TEMPLATES — the code templates (the panel's templates filter).
  *   DELETED   — soft-deleted rigs and types (the deleted filter).
@@ -18,7 +21,8 @@ import { html, css, nothing, svg } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../../mobx-lit-element';
 import {
-  LIGHT_TEMPLATES, LIGHT_FORMATS, slotChannels, type LightRig, type LightType,
+  AUTO_NETWORK_ID, LIGHT_TEMPLATES, LIGHT_FORMATS, slotChannels,
+  type LightNetwork, type LightRig, type LightType,
 } from '../../../../lights/light-types';
 import { devicesUi } from '../../../devices/devices-ui';
 import { lightController } from '../../state/light-controller';
@@ -62,6 +66,11 @@ export class LightDevicesSection extends MobxLitElement {
       text-transform: uppercase; letter-spacing: 0.06em;
     }
     .include:hover, .include.on { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
+    .builtin {
+      flex: 0 0 auto; font-size: var(--app-fs-xs); color: var(--app-text-color2);
+      border: 1px solid var(--app-tint-3); border-radius: 1px; padding: 0 4px;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
     .pip { display: flex; margin-top: 6px; min-width: 0; }
     .meta { margin-top: 4px; font-size: var(--app-fs-xs); color: var(--app-text-color2); }
     .bar { display: block; width: 100%; height: 18px; }
@@ -74,6 +83,12 @@ export class LightDevicesSection extends MobxLitElement {
       || lightController.rig(p.deviceId)!.deleted);
     const types = lightController.types;
     const gone = lightController.library.filter((r) => r.deleted);
+    const usedNets = new Set<string>();
+    for (const p of store.lightPlacements) {
+      for (const s of lightController.rig(p.deviceId)?.slots ?? []) usedNets.add(s.address.network ?? AUTO_NETWORK_ID);
+    }
+    const nets = [lightController.network(AUTO_NETWORK_ID)!, ...lightController.networks]
+      .filter((n) => !this.inUse || usedNets.has(n.id));
     return html`
       <div>
         <div class="group-label">Lights
@@ -90,6 +105,12 @@ export class LightDevicesSection extends MobxLitElement {
             : 'No lights yet — "+ rig" starts from the LED strip template.'}</div>` : nothing}
         </div>
       </div>
+      ${nets.length ? html`<div>
+        <div class="group-label">Networks
+          <button class="chip" data-light-action="add-network" title="A network: which interface to send from, and on-site patches"
+            @click=${() => devicesUi.selectCard(lightController.newNetwork().id)}>+ network</button></div>
+        <div class="cards">${nets.map((n) => this.renderNetworkCard(n))}</div>
+      </div>` : nothing}
       ${!this.inUse && types.length ? html`<div>
         <div class="group-label">Light types</div>
         <div class="cards">${types.map((t) => this.renderTypeCard(t))}</div>
@@ -152,6 +173,28 @@ export class LightDevicesSection extends MobxLitElement {
         <light-rig-surface .rigId=${rig.id} .placementId=${placementId ?? ''}></light-rig-surface>
         ${placementId ? html`<div class="pip"><light-input-pip .placementId=${placementId}
           .scope=${'devices'}></light-input-pip></div>` : nothing}
+      </device-card>`;
+  }
+
+  private renderNetworkCard(n: LightNetwork) {
+    const ifs = lightController.netIfaces;
+    const cur = n.iface ? ifs?.find((i) => i.name === n.iface) : undefined;
+    const up = !n.iface || !!cur?.up;
+    const where = n.id === AUTO_NETWORK_ID ? 'the system picks'
+      : !n.iface ? 'any interface'
+      : cur ? `${n.iface} · ${cur.address}${cur.up ? '' : ' · down'}`
+      : ifs ? `${n.iface} · not on this machine` : n.iface;
+    const patches = (n.rebase ? 1 : 0) + (n.overrides?.length ?? 0);
+    const bars = lightController.networkUsers(n.id).length;
+    return html`
+      <device-card .name=${n.name}
+        .subtitle=${`${where}${patches ? ` · ${patches} patch${patches === 1 ? '' : 'es'}` : ''}`}
+        .status=${up ? 'connected' : 'disconnected'}
+        data-light-card=${n.id}
+        ?selected=${devicesUi.selectedCardId === n.id}
+        @click=${() => this.select(n.id)}>
+        ${n.id === AUTO_NETWORK_ID ? html`<span slot="head" class="builtin">built in</span>` : nothing}
+        <div class="meta">${bars ? `sends ${bars} bar${bars === 1 ? '' : 's'}` : 'no bars on it'}</div>
       </device-card>`;
   }
 

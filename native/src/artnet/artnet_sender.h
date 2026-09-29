@@ -12,8 +12,16 @@
 // An empty submit stops sending (an output switched off goes quiet rather
 // than blacking the fixtures out: something else may be driving them).
 //
-// NANO_ARTNET_REDIRECT=host:port sends EVERYTHING there instead. The test
-// compositor always sets it, so no test ever puts a packet on the LAN.
+// Each universe is sent FROM a network interface: "" is auto (one unbound
+// socket; the OS picks the route, and `broadcast` is 255.255.255.255), a name
+// ("en0") gets a socket bound to that interface, and `broadcast` becomes ITS
+// directed broadcast — a named interface never falls back to the global one.
+// The page's NETWORK devices choose the interface (and already rewrote the
+// destination: rebase / overrides — light-types.ts resolveNetworkDest).
+//
+// NANO_ARTNET_REDIRECT=host:port sends EVERYTHING there instead, from the
+// unbound socket whatever the interface. The test compositor always sets it,
+// so no test ever puts a packet on the LAN.
 
 #pragma once
 
@@ -22,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -31,9 +40,19 @@ struct sockaddr_in;
 
 namespace artnet {
 
-/// (destination, 15-bit port address) → 512 channels. The same type as
-/// lights::Frames (light_map.h), which is what feeds it.
-using DmxFrames = std::map<std::pair<std::string, int>, std::array<uint8_t, 512>>;
+/// (interface, destination, 15-bit port address) → 512 channels. The same
+/// type as lights::Frames (light_map.h), which is what feeds it.
+using DmxFrames = std::map<std::tuple<std::string, std::string, int>, std::array<uint8_t, 512>>;
+
+/// An IPv4 network interface of this machine.
+struct NetIface {
+  std::string name;       // "en0"
+  std::string address;    // "192.168.1.20"
+  std::string netmask;    // "255.255.255.0"
+  std::string broadcast;  // "192.168.1.255" ("" when it has none: loopback, p2p)
+  bool up = false;
+  bool loopback = false;
+};
 
 class ArtNetSender {
  public:
@@ -47,7 +66,7 @@ class ArtNetSender {
   void submit(const DmxFrames& frames);
 
   /// `{"sending":bool, "pps":int, "error":string?}` — packets sent over the
-  /// last second, and the last send error (cleared by a good send).
+  /// last second, and the last send error (cleared by a round without one).
   nlohmann::json stats() const;
 
   /// ArtDmx for one universe (full 512 channels; sequence 1..255).
@@ -55,9 +74,17 @@ class ArtNetSender {
                                            const uint8_t* data, int length);
   /// ArtSync: tells nodes to latch every ArtDmx they've buffered.
   static std::vector<uint8_t> encodeArtSync();
-  /// 'broadcast' | 'a.b.c.d' | 'a.b.c.d:port' → an address (port 6454 unless
-  /// given). `redirect` ("host:port", e.g. NANO_ARTNET_REDIRECT) wins when set.
-  static bool resolveDest(const std::string& dest, const char* redirect, sockaddr_in* out);
+  /// Where a universe goes: 'broadcast' | 'a.b.c.d' | 'a.b.c.d:port' → an
+  /// address (port 6454 unless given). On a named `iface`, broadcast is that
+  /// interface's own; an unknown / down / broadcast-less interface is an error
+  /// (`*err`), never the global broadcast. `redirect` ("host:port", e.g.
+  /// NANO_ARTNET_REDIRECT) wins over everything when set.
+  static bool resolveDest(const std::string& iface, const std::string& dest, const char* redirect,
+                          const std::vector<NetIface>& ifaces, sockaddr_in* out, std::string* err);
+
+  /// This machine's IPv4 interfaces, by name (empty on Windows for now).
+  static std::vector<NetIface> interfaces();
+  static nlohmann::json interfacesJson(const std::vector<NetIface>& ifaces);
 
  private:
   struct Impl;

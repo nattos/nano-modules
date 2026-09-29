@@ -383,6 +383,12 @@ library and used per show (plan: COMPOSITOR.md § devices; lights and displays f
   a slot's address is the physical bar, so **swap** exchanges two slots' addresses (bars hung in each
   other's places) — in the rig, so every show using it is fixed. **Identify** walks one bar (pixel 0
   red, so its direction shows).
+- **Networks** (library too): which interface a bar's DMX leaves from, and on-site "monkey
+  patches" — rebase every unicast destination onto the venue's subnet, or swap single
+  destinations — without touching the rigs. **Auto** (built in) lets the system pick. Each bar
+  picks its network ("via", part of its address — a swap carries it); changing one bar's offers
+  to switch the rest of its rig. A named interface broadcasts on its own subnet; the interface
+  list comes from the native compositor.
 - **In a show**: a card's `add to show` places the rig (`Composition.devices`, kind `light`) — a row
   under the tracks whose lane draws the rig as the Devices view does (its bars where they sample,
   live, scaled to the row), a sending status and an output switch; selecting it shows the rig, its

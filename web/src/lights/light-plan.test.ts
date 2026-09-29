@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  consecutiveAddresses, defaultStripLayout, slotFootprints, validDest,
-  type LightRig, type LightType,
+  consecutiveAddresses, defaultStripLayout, parseCidr, resolveNetworkDest, slotFootprints, validDest,
+  type LightNetwork, type LightRig, type LightType,
 } from './light-types';
 import { buildLightPlan, rigWarnings } from './light-plan';
 import type { Composition } from '../views/arrangement/model/composition';
@@ -69,7 +69,69 @@ describe('light types', () => {
   });
 });
 
+function net(patch: Partial<LightNetwork>): LightNetwork {
+  return {
+    kind: 'network', id: 'venue', parentId: 'net.auto', name: 'Venue', forkedAt: 0, updatedAt: 0,
+    iface: 'en7', ...patch,
+  };
+}
+
+describe('networks', () => {
+  it('parses subnets', () => {
+    expect(parseCidr('10.0.5.0/24')).toEqual({ net: 0x0a000500, mask: 0xffffff00 });
+    expect(parseCidr('10.0.5.9/24')?.net).toBe(0x0a000500);
+    expect(parseCidr('10.0.5.0')).toBeNull();
+    expect(parseCidr('10.0.5.0/33')).toBeNull();
+  });
+
+  it('rebases unicast destinations, keeping host part and port; broadcast stays', () => {
+    const n = net({ rebase: '10.0.5.0/24' });
+    expect(resolveNetworkDest('192.168.1.40', n)).toBe('10.0.5.40');
+    expect(resolveNetworkDest('192.168.1.40:7000', n)).toBe('10.0.5.40:7000');
+    expect(resolveNetworkDest('broadcast', n)).toBe('broadcast');
+    expect(resolveNetworkDest('192.168.1.40', net({ rebase: '2.0.0.0/8' }))).toBe('2.168.1.40');
+    expect(resolveNetworkDest('192.168.1.40', net({ rebase: 'nonsense' }))).toBe('192.168.1.40');
+  });
+
+  it('overrides come first: exact, by ip (port kept), and broadcast', () => {
+    const n = net({
+      rebase: '10.0.5.0/24',
+      overrides: [
+        { from: '192.168.1.41', to: '10.9.9.9' },
+        { from: '192.168.1.42:7000', to: '10.9.9.8:7001' },
+        { from: 'broadcast', to: '2.255.255.255' },
+        { from: '', to: '1.1.1.1' },
+      ],
+    });
+    expect(resolveNetworkDest('192.168.1.41', n)).toBe('10.9.9.9');
+    expect(resolveNetworkDest('192.168.1.41:7000', n)).toBe('10.9.9.9:7000');
+    expect(resolveNetworkDest('192.168.1.42:7000', n)).toBe('10.9.9.8:7001');
+    expect(resolveNetworkDest('broadcast', n)).toBe('2.255.255.255');
+    expect(resolveNetworkDest('192.168.1.43', n)).toBe('10.0.5.43');
+    expect(resolveNetworkDest('192.168.1.43', undefined)).toBe('192.168.1.43');
+  });
+});
+
 describe('the light plan', () => {
+  it('sends each bar on its network: its interface, its patched destination', () => {
+    const r = rig(2);
+    r.slots[0].address = { ...r.slots[0].address, dest: '192.168.1.40', network: 'venue' };
+    const plan = buildLightPlan(comp([{ id: 'p1', kind: 'light', deviceId: 'rig' }]),
+      [bar, r, net({ rebase: '10.0.5.0/24' })]);
+    const [a, b] = plan.outputs[0].fixtures;
+    expect([a.iface, a.dest]).toEqual(['en7', '10.0.5.40']);
+    expect([b.iface, b.dest]).toEqual(['', 'broadcast']);  // Auto
+  });
+
+  it('a bar whose network is gone (or deleted) is sent on Auto, with a warning', () => {
+    const r = rig(1);
+    r.slots[0].address = { ...r.slots[0].address, network: 'venue' };
+    const lib = [bar, r, net({ deleted: true, rebase: '10.0.5.0/24' })];
+    const f = buildLightPlan(comp([{ id: 'p1', kind: 'light', deviceId: 'rig' }]), lib).outputs[0].fixtures[0];
+    expect([f.iface, f.dest]).toEqual(['', 'broadcast']);
+    expect(rigWarnings(r, lib)[0].message).toContain('network is gone');
+  });
+
   it('resolves placed rigs into fixtures, with the show layout over the rig default', () => {
     const r = rig(2);
     const plan = buildLightPlan(comp([

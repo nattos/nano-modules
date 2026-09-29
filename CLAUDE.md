@@ -167,7 +167,8 @@ ordinary sketch wire from `midi:<uuid>` and works with or without a placement â€
 never namespaced). The worker engine gets the table `midiController` lowers from the COMPOSITION's
 sketches (`state/arr-midi.ts`); the native compositor reads CoreMIDI itself and only takes the
 library + on-screen simulation over the bridge (`CompEngine.mirrorMidi`). **Lights** (D2): a library
-of types and rigs (`web/src/lights/`, `light-devices.json`; a rig slot = type + Art-Net address) placed
+of types, rigs and networks (`web/src/lights/`, `light-devices.json`; a rig slot = type + Art-Net
+address, whose network picks the interface and patches the destination on site) placed
 per show (`DevicePlacement` kind `light`, per-slot layout; a route `{kind:'device'}` from an out port
 picks what it samples, else the main output). The page resolves them into a flat plan
 (`light-plan.ts` â†’ `comp_lights`); the NATIVE compositor maps (`lights/light_map.h`, CompHost's

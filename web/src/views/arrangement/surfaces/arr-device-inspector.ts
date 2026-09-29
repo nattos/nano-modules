@@ -94,7 +94,10 @@ export class ArrDeviceInspector extends MobxLitElement {
           <div class="row"><label>Type</label><span class="val">${types.join(', ')}</span></div>
           <div class="bars">${rig.slots.map((s, i) => html`<div class="bar">
             <span class="n">${i + 1}</span><span>${addressLabel(s.address)}</span>
-            <span class="t">${s.reverse ? 'reversed' : ''}</span></div>`)}</div>
+            <span class="t">${[
+              s.address.network ? `via ${lightController.network(s.address.network)?.name ?? 'a missing network'}` : '',
+              s.reverse ? 'reversed' : '',
+            ].filter(Boolean).join(' · ')}</span></div>`)}</div>
           ${rigWarnings(rig, lightController.library).map((w) => html`<div class="warn">${w.message}</div>`)}`
         : html`<span class="muted">This show includes a rig this machine's library doesn't have, so
             nothing is sent for it.</span>`}

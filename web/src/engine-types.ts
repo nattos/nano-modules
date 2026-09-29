@@ -335,6 +335,9 @@ export interface CompFrameInfo {
   lights?: Record<string, string>;
   /** …and the transmitter's status (on a change, else once a second). */
   lightStatus?: { sending: boolean; pps: number; error?: string };
+  /** …and this machine's IPv4 network interfaces (what a light NETWORK can
+   *  send from) — on connect and when they change. */
+  netIfaces?: { name: string; address: string; netmask: string; broadcast: string; up: boolean; loopback: boolean }[];
 }
 
 // --- Worker events (worker → main) ---

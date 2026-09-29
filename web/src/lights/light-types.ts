@@ -6,8 +6,15 @@
  *   - TYPE (library): a template with its parameters filled in ("24 V bar:
  *     12 px × 5 LEDs, RGB"). Customised by forking, as MIDI templates are.
  *   - RIG (library): SLOTS, each a type plus an ADDRESS (universe, start
- *     channel, destination) and a default layout — "four bars as vertical
- *     strips". A lone bar is a one-slot rig.
+ *     channel, destination, network) and a default layout — "four bars as
+ *     vertical strips". A lone bar is a one-slot rig.
+ *
+ * And NETWORKS (library): which interface a bar's DMX leaves from, plus
+ * on-site "monkey patches" to its destinations — rebase every unicast
+ * address onto the venue's subnet, or swap single destinations — without
+ * touching the rigs. The built-in AUTO network lets the OS pick (and sends
+ * `broadcast` to 255.255.255.255); a slot names a network in its address, so a
+ * swap carries it along.
  *
  * There is no separate "unit": a slot's address IS the physical bar. Swapping
  * two slots exchanges their addresses (and types), which is how a rig hung in
@@ -47,6 +54,8 @@ export interface LightAddress {
   channel: number;
   /** 'broadcast', a node's IP, or 'ip:port'. */
   dest: string;
+  /** The network it's sent on (a LightNetwork id); absent = Auto. */
+  network?: string;
 }
 
 export interface LightTemplate {
@@ -111,7 +120,30 @@ export interface LightRig extends RowBase {
   slots: LightSlot[];
 }
 
-export type LightRow = LightType | LightRig;
+/** A destination swap: 'broadcast' | ip | ip:port → the same. An `ip`
+ *  `from` also matches that ip on any port (the port is kept unless `to`
+ *  names one). */
+export interface NetworkOverride { from: string; to: string }
+
+export interface LightNetwork extends RowBase {
+  kind: 'network';
+  /** The interface to send from ('en0'); '' = auto (the OS picks). */
+  iface: string;
+  /** Rebase unicast destinations onto this subnet ('10.0.5.0/24'): each keeps
+   *  its host part (192.168.1.40 → 10.0.5.40). Absent / '' = off. */
+  rebase?: string;
+  /** Checked before the rebase; the first match wins. */
+  overrides?: NetworkOverride[];
+}
+
+export const AUTO_NETWORK_ID = 'net.auto';
+
+/** The built-in network: no interface chosen, destinations as the rigs say. */
+export const AUTO_NETWORK: LightNetwork = {
+  kind: 'network', id: AUTO_NETWORK_ID, name: 'Auto', parentId: '', forkedAt: 0, updatedAt: 0, iface: '',
+};
+
+export type LightRow = LightType | LightRig | LightNetwork;
 
 /** Channels one slot of `type` occupies. */
 export function slotChannels(type: Pick<LightType, 'pixels' | 'format'>): number {
@@ -165,6 +197,56 @@ export function slotFootprints(r: SlotRect, pixels: number, vertical: boolean,
     }
   }
   return out;
+}
+
+function ipToInt(ip: string): number | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (!m) return null;
+  const o = m.slice(1, 5).map(Number);
+  if (o.some((x) => x > 255)) return null;
+  return ((o[0] << 24) >>> 0) + (o[1] << 16) + (o[2] << 8) + o[3];
+}
+
+function intToIp(n: number): string {
+  return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+}
+
+/** 'a.b.c.d/n' (n 1..32) → its network + mask, else null. */
+export function parseCidr(s: string): { net: number; mask: number } | null {
+  const m = /^\s*([\d.]+)\/(\d{1,2})\s*$/.exec(s);
+  if (!m) return null;
+  const ip = ipToInt(m[1]);
+  const bits = Number(m[2]);
+  if (ip === null || bits < 1 || bits > 32) return null;
+  const mask = bits === 32 ? 0xffffffff : (~((1 << (32 - bits)) - 1)) >>> 0;
+  return { net: (ip & mask) >>> 0, mask };
+}
+
+/**
+ * Where a destination really goes on `network`: its first matching override,
+ * else its rebase (unicast only — `broadcast` is the interface's to resolve),
+ * else as the rig says.
+ */
+export function resolveNetworkDest(dest: string, network: LightNetwork | undefined): string {
+  if (!network) return dest;
+  const d = dest.trim() || 'broadcast';
+  const colon = d.lastIndexOf(':');
+  const host = colon >= 0 ? d.slice(0, colon) : d;
+  const port = colon >= 0 ? d.slice(colon + 1) : '';
+  for (const o of network.overrides ?? []) {
+    const from = o.from.trim();
+    const to = o.to.trim();
+    if (!from || !to) continue;
+    if (from === d) return to;
+    if (port && from === host) return to.includes(':') || to === 'broadcast' ? to : `${to}:${port}`;
+  }
+  const cidr = network.rebase ? parseCidr(network.rebase) : null;
+  const ip = ipToInt(host);
+  if (cidr && ip !== null) {
+    const moved = intToIp(((cidr.net & cidr.mask) | (ip & ~cidr.mask)) >>> 0);
+    return port ? `${moved}:${port}` : moved;
+  }
+  return d;
 }
 
 /** "u 3 · ch 41" (and the destination when it isn't broadcast). */

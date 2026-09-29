@@ -410,7 +410,9 @@ export class EngineBridge {
    *  (the comp transport owns the beat while playing). */
   private handleCompInfo(info: CompFrameInfo) {
     this.lastCompInfo = info;
-    if (info.lights || info.lightStatus) lightController.setTelemetry(info.lights, info.lightStatus);
+    if (info.lights || info.lightStatus || info.netIfaces) {
+      lightController.setTelemetry(info.lights, info.lightStatus, info.netIfaces);
+    }
     this.hasContent = info.hasContent;
     if (info.videoInjects !== undefined) this.engineVideoInjects = info.videoInjects;
     if (info.videoSkipped !== undefined) this.engineVideoSkipped = info.videoSkipped;

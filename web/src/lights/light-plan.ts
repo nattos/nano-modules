@@ -12,15 +12,18 @@
 
 import type { Composition, DevicePlacement } from '../views/arrangement/model/composition';
 import {
-  slotChannels, slotFootprints, type LightFormat, type LightRig, type LightRow, type LightType,
-  type SlotRect,
+  AUTO_NETWORK, AUTO_NETWORK_ID, resolveNetworkDest, slotChannels, slotFootprints,
+  type LightFormat, type LightNetwork, type LightRig, type LightRow, type LightType, type SlotRect,
 } from './light-types';
 
 export interface LightPlanFixture {
   slotId: string;
   universe: number;
   channel: number;
+  /** Where it goes — the slot's destination with its network's patches applied. */
   dest: string;
+  /** The interface it's sent from; '' = auto. */
+  iface: string;
   format: LightFormat;
   gamma: number;
   footprints: [number, number, number, number][];
@@ -47,6 +50,14 @@ export function libraryType(library: readonly LightRow[], id: string): LightType
   return r?.kind === 'type' ? r : undefined;
 }
 
+/** A slot's network: Auto for none, else the library's (undefined when that
+ *  network is gone or deleted — the plan then sends on Auto, and warns). */
+export function libraryNetwork(library: readonly LightRow[], id: string | undefined): LightNetwork | undefined {
+  if (!id || id === AUTO_NETWORK_ID) return AUTO_NETWORK;
+  const r = library.find((x) => x.id === id);
+  return r?.kind === 'network' && !r.deleted ? r : undefined;
+}
+
 export function libraryRig(library: readonly LightRow[], id: string): LightRig | undefined {
   const r = library.find((x) => x.id === id);
   return r?.kind === 'rig' ? r : undefined;
@@ -66,11 +77,13 @@ export function rigFixtures(rig: LightRig, library: readonly LightRow[],
   for (const slot of rig.slots) {
     const type = libraryType(library, slot.typeId);
     if (!type) continue;
+    const net = libraryNetwork(library, slot.address.network) ?? AUTO_NETWORK;
     out.push({
       slotId: slot.id,
       universe: slot.address.universe,
       channel: slot.address.channel,
-      dest: slot.address.dest || 'broadcast',
+      dest: resolveNetworkDest(slot.address.dest || 'broadcast', net),
+      iface: net.iface,
       format: type.format,
       gamma: type.gamma,
       footprints: slotFootprints(slotRectIn(placement, slot), type.pixels, type.vertical !== false, !!slot.reverse),
@@ -94,7 +107,7 @@ export function buildLightPlan(comp: Composition, library: readonly LightRow[]):
 /**
  * Address problems in a rig: a slot running past channel 512 (its tail is
  * dropped, never spilled into the next universe), two slots sharing channels,
- * a slot whose type is gone.
+ * a slot whose type or network is gone.
  */
 export function rigWarnings(rig: LightRig, library: readonly LightRow[]): LightWarning[] {
   const out: LightWarning[] = [];
@@ -105,13 +118,17 @@ export function rigWarnings(rig: LightRig, library: readonly LightRow[]): LightW
       out.push({ rigId: rig.id, slotId: slot.id, message: `Slot ${i + 1}: its type is missing` });
       return;
     }
+    if (!libraryNetwork(library, slot.address.network)) {
+      out.push({ rigId: rig.id, slotId: slot.id,
+        message: `Slot ${i + 1}: its network is gone — it's sent on Auto` });
+    }
     const from = slot.address.channel;
     const to = from + slotChannels(type) - 1;
     if (to > 512) {
       out.push({ rigId: rig.id, slotId: slot.id,
         message: `Slot ${i + 1} runs past channel 512 (ends at ${to}); the pixels past it aren't sent` });
     }
-    spans.push({ slotId: slot.id, key: `${slot.address.dest || 'broadcast'}/${slot.address.universe}`, from, to });
+    spans.push({ slotId: slot.id, key: `${slot.address.network ?? ''}/${slot.address.dest || 'broadcast'}/${slot.address.universe}`, from, to });
   });
   for (let i = 0; i < spans.length; i++) {
     for (let j = i + 1; j < spans.length; j++) {

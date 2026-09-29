@@ -1,6 +1,6 @@
 /**
  * LightController — the arrangement page's light devices (the devices push,
- * D2): the per-machine LIBRARY of types and rigs (lights/light-types.ts), the
+ * D2): the per-machine LIBRARY of types, rigs and networks (lights/light-types.ts), the
  * PLAN it resolves with the show for the engine, identify / test patterns, and
  * the engine's telemetry (the colours each light is showing, the transmitter's
  * status) for the UI.
@@ -17,10 +17,14 @@
 
 import { makeObservable, observable, action, runInAction, toJS } from 'mobx';
 import {
-  consecutiveAddresses, defaultStripLayout, lightTemplate, LIGHT_TEMPLATES,
-  type LightAddress, type LightRig, type LightRow, type LightSlot, type LightType,
+  AUTO_NETWORK_ID, consecutiveAddresses, defaultStripLayout, lightTemplate, LIGHT_TEMPLATES,
+  type LightAddress, type LightNetwork, type LightRig, type LightRow, type LightSlot, type LightType,
+  type NetworkOverride,
 } from '../../../lights/light-types';
-import { buildLightPlan, libraryRig, libraryType, type LightPlan } from '../../../lights/light-plan';
+import {
+  buildLightPlan, libraryNetwork, libraryRig, libraryType, type LightPlan,
+} from '../../../lights/light-plan';
+import type { CompFrameInfo } from '../../../engine-types';
 import { loadLightLibrary, saveLightRow, watchLightLibrary } from '../../../state/light-device-store';
 import { store } from './store';
 
@@ -34,10 +38,18 @@ export interface LightStatus {
   error?: string;
 }
 
+export type NetIface = NonNullable<CompFrameInfo['netIfaces']>[number];
+
 /** What the engine seam takes (arr-lights.ts binds engineBridge). */
 export interface LightEngineSink {
   plan(plan: LightPlan): void;
   test(placementId: string, slotId: string, pattern: LightPattern | ''): void;
+}
+
+/** `a` on network `id` (Auto is stored as no network). */
+function withNetwork(a: LightAddress, id: string | undefined): LightAddress {
+  const { network: _drop, ...rest } = a;
+  return id && id !== AUTO_NETWORK_ID ? { ...rest, network: id } : rest;
 }
 
 function uuid(): string {
@@ -54,6 +66,9 @@ export class LightController {
   status: LightStatus | null = null;
   /** A running test pattern per placement (UI highlight). */
   testing: Record<string, { slotId: string; pattern: LightPattern }> = {};
+  /** This machine's network interfaces, as the native compositor last
+   *  reported them (null: this engine can't say). */
+  netIfaces: NetIface[] | null = null;
 
   private sink: LightEngineSink | null = null;
   private lastPlanJson = '';
@@ -66,6 +81,7 @@ export class LightController {
       values: observable.ref,
       status: observable.ref,
       testing: observable,
+      netIfaces: observable.ref,
       setTelemetry: action,
     });
   }
@@ -115,7 +131,9 @@ export class LightController {
   }
 
   /** The engine's report: colours (base64 RGB per placement) and status. */
-  setTelemetry(lights: Record<string, string> | undefined, status: LightStatus | undefined): void {
+  setTelemetry(lights: Record<string, string> | undefined, status: LightStatus | undefined,
+               netIfaces?: NetIface[]): void {
+    if (netIfaces) this.netIfaces = netIfaces;
     if (lights) {
       const next: Record<string, Uint8Array> = {};
       for (const [pid, b64] of Object.entries(lights)) {
@@ -137,6 +155,27 @@ export class LightController {
 
   get rigs(): LightRig[] {
     return this.library.filter((r): r is LightRig => r.kind === 'rig' && !r.deleted);
+  }
+
+  /** The user's networks (Auto is built in: `network(undefined)`). */
+  get networks(): LightNetwork[] {
+    return this.library.filter((r): r is LightNetwork => r.kind === 'network' && !r.deleted);
+  }
+
+  /** A slot's network: Auto for none; undefined when it's gone. */
+  network(id: string | undefined): LightNetwork | undefined {
+    return libraryNetwork(this.library, id);
+  }
+
+  /** Every bar sent on network `id` (Auto: those naming none). */
+  networkUsers(id: string): { rig: LightRig; index: number }[] {
+    const out: { rig: LightRig; index: number }[] = [];
+    for (const rig of this.rigs) {
+      rig.slots.forEach((s, index) => {
+        if ((s.address.network ?? AUTO_NETWORK_ID) === id) out.push({ rig, index });
+      });
+    }
+    return out;
   }
 
   type(id: string): LightType | undefined {
@@ -231,6 +270,51 @@ export class LightController {
     return row;
   }
 
+  /** A new network — a copy of `from` (another network, or Auto). */
+  newNetwork(from: string = AUTO_NETWORK_ID): LightNetwork {
+    const src = this.network(from);
+    const now = Date.now();
+    const row: LightNetwork = {
+      kind: 'network', id: uuid(), parentId: from,
+      name: this.uniqueName(src && src.id !== AUTO_NETWORK_ID ? `${src.name} copy` : 'Network'),
+      iface: src?.iface ?? '',
+      ...(src?.rebase ? { rebase: src.rebase } : {}),
+      ...(src?.overrides?.length ? { overrides: src.overrides.map((o) => ({ ...o })) } : {}),
+      forkedAt: now, updatedAt: now,
+    };
+    this.add(row);
+    return row;
+  }
+
+  editNetwork(id: string, patch: { name?: string; iface?: string; rebase?: string; overrides?: NetworkOverride[] }): void {
+    const n = this.row(id);
+    if (!n || n.kind !== 'network') return;
+    runInAction(() => {
+      if (patch.name !== undefined && patch.name.trim()) n.name = patch.name.trim();
+      if (patch.iface !== undefined) n.iface = patch.iface.trim();
+      if (patch.rebase !== undefined) {
+        if (patch.rebase.trim()) n.rebase = patch.rebase.trim(); else delete n.rebase;
+      }
+      if (patch.overrides !== undefined) {
+        if (patch.overrides.length) n.overrides = patch.overrides.map((o) => ({ from: o.from.trim(), to: o.to.trim() }));
+        else delete n.overrides;
+      }
+      n.updatedAt = Date.now();
+    });
+    this.changed(n);
+  }
+
+  /** Every bar of a rig on one network (the "switch all" after changing one). */
+  setRigNetwork(rigId: string, networkId: string): void {
+    const r = this.rig(rigId);
+    if (!r) return;
+    runInAction(() => {
+      for (const s of r.slots) s.address = withNetwork(s.address, networkId);
+      r.updatedAt = Date.now();
+    });
+    this.changed(r);
+  }
+
   renameRig(id: string, name: string): void {
     const r = this.rig(id);
     if (!r || !name.trim()) return;
@@ -252,7 +336,7 @@ export class LightController {
         a.universe = Math.max(0, Math.min(0x7fff, Math.round(a.universe)));
         a.channel = Math.max(1, Math.min(512, Math.round(a.channel)));
         a.dest = (a.dest ?? '').trim() || 'broadcast';
-        s.address = a;
+        s.address = withNetwork(a, a.network);
       }
       r.updatedAt = Date.now();
     });

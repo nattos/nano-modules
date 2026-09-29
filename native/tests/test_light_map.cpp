@@ -86,20 +86,20 @@ TEST_CASE("encode: channel order, RGBW white extraction, gamma, start channel", 
   const std::vector<Rgb> colors = {{1.0f, 0.5f, 0.0f}, {1, 1, 1}};
   Frames frames;
   encodeFixture(strip(2, 0.5f, Format::GRB), colors, frames);
-  auto u = frames.at({"broadcast", 0});
+  auto u = frames.at({"", "broadcast", 0});
   CHECK(u[0] == 128); CHECK(u[1] == 255); CHECK(u[2] == 0);   // G R B
   CHECK(u[3] == 255); CHECK(u[4] == 255); CHECK(u[5] == 255);
 
   frames.clear();
   encodeFixture(strip(2, 0.5f, Format::RGBW, 1.0f, 41), {{1, 1, 0.25f}, {1, 1, 1}}, frames);
-  u = frames.at({"broadcast", 0});
+  u = frames.at({"", "broadcast", 0});
   CHECK(u[39] == 0);                                           // nothing before ch 41
   CHECK(u[40] == 191); CHECK(u[41] == 191); CHECK(u[42] == 0); CHECK(u[43] == 64);
   CHECK(u[44] == 0); CHECK(u[45] == 0); CHECK(u[46] == 0); CHECK(u[47] == 255);
 
   frames.clear();
   encodeFixture(strip(1, 0.5f, Format::RGB, 2.5f), {{0.5f, 1, 0}}, frames);
-  u = frames.at({"broadcast", 0});
+  u = frames.at({"", "broadcast", 0});
   CHECK(u[0] == 45);   // 255 * 0.5^2.5
   CHECK(u[1] == 255);
 }
@@ -107,7 +107,7 @@ TEST_CASE("encode: channel order, RGBW white extraction, gamma, start channel", 
 TEST_CASE("pixels past channel 512 are dropped, never spilled", "[light_map]") {
   Frames frames;
   encodeFixture(strip(3, 0.5f, Format::RGBW, 1.0f, 505), {{1, 0, 0}, {1, 0, 0}, {1, 0, 0}}, frames);
-  const auto& u = frames.at({"broadcast", 0});
+  const auto& u = frames.at({"", "broadcast", 0});
   CHECK(u[504] == 255);   // first pixel: channels 505..508
   CHECK(u[508] == 255);   // second: 509..512
   CHECK(frames.size() == 1);

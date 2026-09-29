@@ -9,7 +9,12 @@
  *     neighbours when bars went up in the wrong order; identify one), and —
  *     when the show includes it — the output switch, what it samples, the
  *     per-show LAYOUT editor and the test patterns.
+ *   - NETWORK: the interface its bars are sent from, and its on-site patches
+ *     (rebase unicast destinations onto a subnet, swap single destinations);
+ *     Auto (built in) explains itself and offers "new network".
  *   - a MISSING rig (the show includes one this machine doesn't have).
+ *
+ * Changing one bar's network offers to put the rest of its rig on it too.
  *
  * Library edits go through lightController (persisted, per machine); show
  * edits through the store (undoable).
@@ -19,8 +24,8 @@ import { html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../../mobx-lit-element';
 import {
-  addressLabel, LIGHT_FORMATS, lightTemplate, validDest,
-  type LightFormat, type LightRig, type LightTemplate, type LightType,
+  addressLabel, AUTO_NETWORK_ID, LIGHT_FORMATS, lightTemplate, parseCidr, resolveNetworkDest, validDest,
+  type LightFormat, type LightNetwork, type LightRig, type LightTemplate, type LightType,
 } from '../../../../lights/light-types';
 import { rigWarnings } from '../../../../lights/light-plan';
 import { devicesUi } from '../../../devices/devices-ui';
@@ -94,10 +99,16 @@ export class LightDetails extends MobxLitElement {
     .slot .line input.dest { flex: 1; width: auto; }
     .swap { align-self: center; margin: -2px 0 -2px 18px; font-size: 10px; padding: 0 5px; }
     .spacer { flex: 1; }
+    .offer { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 4px 18px;
+      padding: 4px 6px; border: 1px solid var(--app-hi-color2); border-radius: 1px;
+      font-size: var(--app-fs-xs); color: var(--app-text-color1); background: rgba(65, 105, 225, 0.08); }
+    .offer span { flex: 1 1 140px; }
   `;
 
   /** The slot picked in the layout editor / slot list. */
   @state() private slotSel = '';
+  /** After one bar's network changed: offer the rest of its rig the same. */
+  @state() private netOffer: { rigId: string; slotId: string; networkId: string } | null = null;
   /** New-rig form (per type card). */
   @state() private rigForm = { count: 4, universe: 0, channel: 1, dest: 'broadcast' };
 
@@ -119,9 +130,99 @@ export class LightDetails extends MobxLitElement {
     if (id.startsWith(MISSING_PREFIX)) return this.renderMissing(id.slice(MISSING_PREFIX.length));
     const tpl = lightTemplate(id);
     if (tpl) return this.renderTemplate(tpl);
+    if (id === AUTO_NETWORK_ID) return this.renderNetwork(lightController.network(id)!);
     const row = lightController.row(id);
     if (!row) return nothing;
+    if (row.kind === 'network') return this.renderNetwork(row);
     return row.kind === 'type' ? this.renderType(row) : this.renderRig(row);
+  }
+
+  // ── Network ─────────────────────────────────────────────────────────────
+
+  private renderNetwork(n: LightNetwork) {
+    const auto = n.id === AUTO_NETWORK_ID;
+    const users = lightController.networkUsers(n.id);
+    const byRig = new Map<string, { name: string; bars: number[] }>();
+    for (const u of users) {
+      const e = byRig.get(u.rig.id) ?? { name: u.rig.name, bars: [] };
+      e.bars.push(u.index + 1);
+      byRig.set(u.rig.id, e);
+    }
+    const usedBy = users.length ? html`<div class="note">Sends ${users.length} bar${users.length === 1 ? '' : 's'}:
+      ${[...byRig.values()].map((e, i) => html`${i ? ', ' : ''}${e.name} (${e.bars.join(', ')})`)}</div>`
+      : html`<div class="note">No bars use it yet — pick it on a rig's bars ("via").</div>`;
+    if (auto) {
+      return html`
+        <div class="head"><span class="title">Auto</span><span class="kind">network</span></div>
+        <div class="sec">
+          <div class="note">The system picks the interface, and <b>broadcast</b> goes to
+            255.255.255.255. A network of your own chooses the interface (broadcast then goes to
+            that interface's subnet) and can patch destinations on site without touching the rigs.</div>
+          ${usedBy}
+          <div class="btns"><button class="primary" data-light-action="new-network" @click=${() =>
+            devicesUi.selectCard(lightController.newNetwork().id)}>new network</button></div>
+        </div>`;
+    }
+    const ifs = lightController.netIfaces;
+    const cur = ifs?.find((i) => i.name === n.iface);
+    const rebaseOk = !n.rebase || !!parseCidr(n.rebase);
+    const overrides = n.overrides ?? [];
+    const setOverride = (i: number, k: 'from' | 'to', v: string) => lightController.editNetwork(n.id, {
+      overrides: overrides.map((o, j) => (j === i ? { ...o, [k]: v } : o)),
+    });
+    return html`
+      <div class="head">
+        <input class="name" .value=${n.name} @change=${(e: Event) =>
+          lightController.editNetwork(n.id, { name: (e.target as HTMLInputElement).value })}>
+        <span class="kind">network</span>
+      </div>
+      <div class="sec">
+        <div class="row"><label>interface</label>
+          ${ifs ? html`<select data-light-field="iface" @change=${(e: Event) =>
+              lightController.editNetwork(n.id, { iface: (e.target as HTMLSelectElement).value })}>
+              <option value="" ?selected=${!n.iface}>auto — the system picks</option>
+              ${ifs.filter((i) => !i.loopback || i.name === n.iface).map((i) => html`<option value=${i.name}
+                ?selected=${i.name === n.iface}>${i.name} · ${i.address}${i.up ? '' : ' (down)'}</option>`)}
+              ${n.iface && !cur ? html`<option value=${n.iface} selected>${n.iface} — not on this machine</option>` : nothing}
+            </select>`
+          : html`<input data-light-field="iface" placeholder="auto" .value=${n.iface}
+              title="An interface name, e.g. en0 — blank lets the system pick"
+              @change=${(e: Event) => lightController.editNetwork(n.id, { iface: (e.target as HTMLInputElement).value })}>`}
+        </div>
+        ${!n.iface ? html`<div class="note">No interface chosen: the system picks, as Auto does.</div>`
+          : !ifs ? html`<div class="note">The interface list comes from the native compositor.</div>`
+          : !cur ? html`<div class="warn">${n.iface} isn't on this machine — its bars send nothing.</div>`
+          : !cur.up ? html`<div class="warn">${n.iface} is down — its bars send nothing.</div>`
+          : html`<div class="note">${cur.address}${cur.broadcast ? html` · broadcast goes to ${cur.broadcast}`
+              : ' · it has no broadcast address: give its bars IPs'}</div>`}
+      </div>
+      <div class="sec">
+        <h4>Patches — on-site fixes; the rigs stay as they are</h4>
+        <div class="row"><label>rebase to</label>
+          <input class="dest ${rebaseOk ? '' : 'bad'}" data-light-field="rebase" placeholder="e.g. 10.0.5.0/24"
+            .value=${n.rebase ?? ''} title="Move every unicast destination onto this subnet, keeping its host part"
+            @change=${(e: Event) => lightController.editNetwork(n.id, { rebase: (e.target as HTMLInputElement).value })}>
+        </div>
+        ${n.rebase && rebaseOk ? html`<div class="note">e.g. 192.168.1.40 → ${resolveNetworkDest('192.168.1.40', { ...n, overrides: [] })}</div>` : nothing}
+        ${overrides.map((o, i) => html`<div class="row" data-light-override=${i}>
+          <input class="dest ${validDest(o.from) || !o.from ? '' : 'bad'}" placeholder="from" .value=${o.from}
+            title="A destination as the rigs say it: broadcast, an IP (any port), or ip:port"
+            @change=${(e: Event) => setOverride(i, 'from', (e.target as HTMLInputElement).value)}>
+          <span class="k">→</span>
+          <input class="dest ${validDest(o.to) || !o.to ? '' : 'bad'}" placeholder="to" .value=${o.to}
+            @change=${(e: Event) => setOverride(i, 'to', (e.target as HTMLInputElement).value)}>
+          <button title="Remove this override" @click=${() => lightController.editNetwork(n.id,
+            { overrides: overrides.filter((_, j) => j !== i) })}>✕</button>
+        </div>`)}
+        <div class="btns"><button data-light-action="add-override" title="Send one destination somewhere else"
+          @click=${() => lightController.editNetwork(n.id, { overrides: [...overrides, { from: '', to: '' }] })}>+ override</button></div>
+      </div>
+      <div class="sec">${usedBy}</div>
+      <div class="sec"><div class="btns">
+        <button @click=${() => devicesUi.selectCard(lightController.newNetwork(n.id).id)}>duplicate</button>
+        <span class="spacer"></span>
+        <button @click=${() => lightController.setDeleted(n.id, !n.deleted)}>${n.deleted ? 'restore' : 'delete'}</button>
+      </div></div>`;
   }
 
   // ── Template / type ─────────────────────────────────────────────────────
@@ -295,6 +396,7 @@ export class LightDetails extends MobxLitElement {
     const types = lightController.types;
     const destOk = validDest(s.address.dest);
     const num = (v: string) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+    const netId = s.address.network ?? AUTO_NETWORK_ID;
     const identifying = pid && lightController.testing[pid]?.pattern === 'identify'
       && lightController.testing[pid]?.slotId === s.id;
     return html`<div class="slot ${this.slotSel === s.id ? 'sel' : ''}" data-light-slot=${i}
@@ -326,6 +428,40 @@ export class LightDetails extends MobxLitElement {
         <input class="dest ${destOk ? '' : 'bad'}" title="broadcast, a node's IP, or ip:port" .value=${s.address.dest}
           @change=${(e: Event) => lightController.editSlot(rig.id, s.id, { address: { dest: (e.target as HTMLInputElement).value } })}>
       </div>
+      <div class="line">
+        <span class="n"></span>
+        <span class="k">via</span>
+        <select data-light-net=${i} title="The network it's sent on" @click=${(e: Event) => e.stopPropagation()}
+          @change=${(e: Event) => this.onSlotNetwork(rig, s.id, (e.target as HTMLSelectElement).value)}>
+          <option value=${AUTO_NETWORK_ID} ?selected=${netId === AUTO_NETWORK_ID}>Auto</option>
+          ${lightController.networks.map((n) => html`<option value=${n.id} ?selected=${n.id === netId}>${n.name}</option>`)}
+          ${lightController.network(netId) ? nothing : html`<option selected disabled>missing network</option>`}
+        </select>
+      </div>
+    </div>
+    ${this.renderNetOffer(rig, s.id)}`;
+  }
+
+  private onSlotNetwork(rig: LightRig, slotId: string, networkId: string) {
+    lightController.editSlot(rig.id, slotId, { address: { network: networkId } });
+    const others = rig.slots.filter((x) => x.id !== slotId && (x.address.network ?? AUTO_NETWORK_ID) !== networkId);
+    this.netOffer = others.length ? { rigId: rig.id, slotId, networkId } : null;
+  }
+
+  /** "Put the other N bars on it too?" under the bar just changed. */
+  private renderNetOffer(rig: LightRig, slotId: string) {
+    const o = this.netOffer;
+    if (!o || o.rigId !== rig.id || o.slotId !== slotId) return nothing;
+    const others = rig.slots.filter((x) => x.id !== slotId && (x.address.network ?? AUTO_NETWORK_ID) !== o.networkId);
+    if (!others.length) return nothing;
+    const name = lightController.network(o.networkId)?.name ?? 'it';
+    return html`<div class="offer">
+      <span>Put the other ${others.length} bar${others.length === 1 ? '' : 's'} on ${name} too?</span>
+      <button class="primary" data-light-action="net-all" @click=${() => {
+        lightController.setRigNetwork(rig.id, o.networkId);
+        this.netOffer = null;
+      }}>switch all</button>
+      <button @click=${() => { this.netOffer = null; }}>no</button>
     </div>`;
   }
 

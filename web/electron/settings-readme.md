@@ -98,12 +98,18 @@ Devices tab (they are soft-deleted, so wires keep their provenance).
 ### `light-devices.json` — the light device library
 
 An array of rows, each a light TYPE (`{"kind":"type", "pixels", "ledsPerPixel",
-"format": "rgb"|"grb"|"bgr"|"rgbw"|"grbw", "gamma", …}`) or a RIG
+"format": "rgb"|"grb"|"bgr"|"rgbw"|"grbw", "gamma", "vertical", …}`), a RIG
 (`{"kind":"rig", "slots": [{ "typeId", "address": { "universe", "channel",
-"dest" }, "reverse", "layout": { "x", "y", "w", "h" } }], …}`). `universe` is
-the Art-Net port address (0-based, as the node is set), `channel` 1-based,
-`dest` `"broadcast"`, an IP or `ip:port`; `layout` is the slot's default
-sampling rect in the frame (0–1, top-left origin). Used by the arrangement app
+"dest", "network" }, "reverse", "layout": { "x", "y", "w", "h" } }], …}`) or a
+NETWORK (`{"kind":"network", "iface", "rebase", "overrides": [{ "from", "to" }], …}`).
+`universe` is the Art-Net port address (0-based, as the node is set), `channel`
+1-based, `dest` `"broadcast"`, an IP or `ip:port`; `network` a network row's id
+(absent: Auto — the system picks the interface); `layout` is the slot's default
+sampling rect in the frame (0–1, top-left origin). A network's `iface` is an
+interface name (`"en0"`, `""` = auto; broadcast then goes to that interface's
+subnet), `rebase` a subnet (`"10.0.5.0/24"`) every unicast destination is moved
+onto keeping its host part, and `overrides` exact destination swaps checked
+first (an IP `from` matches any port). Used by the arrangement app
 (its Devices view) and applied live; a show stores only which rigs it includes
 and where each slot samples in that show.
 

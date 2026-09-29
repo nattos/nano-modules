@@ -29,7 +29,7 @@ export function validLightRows(doc: unknown): LightRow[] {
       if (!r || typeof r !== 'object') return false;
       const row = r as { id?: unknown; kind?: unknown; slots?: unknown };
       if (typeof row.id !== 'string') return false;
-      if (row.kind === 'type') return true;
+      if (row.kind === 'type' || row.kind === 'network') return true;
       return row.kind === 'rig' && Array.isArray(row.slots);
     })
     .map((r) => (r.kind === 'type' && typeof r.vertical !== 'boolean' ? { ...r, vertical: true } : r))
