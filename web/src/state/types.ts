@@ -216,6 +216,8 @@ export interface UserSettings {
   deviceFilters: {
     connected: boolean; disconnected: boolean; unrecognized: boolean;
     templates: boolean; deleted: boolean;
+    /** Only the devices this project uses (wired in its sketches). */
+    inUse?: boolean;
   };
   /** Height (px) of the Devices tab's floating output monitor (aspect-locked). */
   devicesMonitorHeight: number;

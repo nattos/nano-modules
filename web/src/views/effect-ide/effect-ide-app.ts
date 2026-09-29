@@ -22,6 +22,7 @@ import './ide-debug-info';
 import '../app-settings';
 import '../../widgets/sketch-monitor';
 import '../../widgets/snackbars';
+import '../devices/editor-devices-host';  // the Devices panel's host (before the tab)
 import '../devices/devices-tab';
 import '../devices/devices-float-monitor';
 import '../canvas/sketch-canvas-view';

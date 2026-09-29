@@ -19,12 +19,11 @@ import { html, css, nothing } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
-import { appController } from '../../state/controller';
 import { midiController } from '../../state/midi-controller';
 import { allDeviceTemplates } from '../../midi/device-registry';
 import type { DeviceInstance, DeviceTemplate, PhysicalIdentity } from '../../midi/midi-types';
 import { devicesUi } from './devices-ui';
-import { ghostScan } from './ghost-scan';
+import { devicesHost, devicesInUse, hostGhosts, type DeviceFilters } from './devices-host';
 import type { GhostDevice } from './device-wires-model';
 
 import './device-card';
@@ -32,6 +31,7 @@ import './device-surface';
 import './device-control-details';
 
 const FILTER_LABELS = {
+  inUse: 'in use',
   connected: 'connected',
   disconnected: 'disconnected',
   unrecognized: 'unrecognized',
@@ -173,7 +173,7 @@ export class DevicesTab extends MobxLitElement {
     // Composition-wide ghost scan: in Live mode this prefetches every live
     // instance's sketch so missing-device counts cover ALL 14 instances, not
     // just the one loaded in the editor. No-op in playground (no bridge).
-    void ghostScan.refresh();
+    void devicesHost().refreshScan();
   }
 
   disconnectedCallback() {
@@ -182,8 +182,9 @@ export class DevicesTab extends MobxLitElement {
   }
 
   private toggleFilter(key: FilterKey) {
-    const current = appState.local.userSettings.deviceFilters;
-    appController.setUserSetting('deviceFilters', { ...current, [key]: !current[key] });
+    const host = devicesHost();
+    const current: DeviceFilters = host.filters();
+    host.setFilters({ ...current, [key]: !current[key] });
   }
 
   private onCardClick(id: string, forkable: boolean) {
@@ -301,14 +302,18 @@ export class DevicesTab extends MobxLitElement {
 
   render() {
     const midi = appState.local.midi;
-    const filters = appState.local.userSettings.deviceFilters;
+    const host = devicesHost();
+    const filters = host.filters();
     const define = devicesUi.defineMode;
-    const ghosts = ghostScan.ghosts();
+    const ghosts = hostGhosts(host);
+    // "in use": only the devices this project wires (or shows on its timeline).
+    const used = filters.inUse ? devicesInUse(host) : null;
+    const inUse = (i: DeviceInstance) => !used || used.has(i.id);
 
-    const live = midi.library.filter(i => !i.deleted);
+    const live = midi.library.filter(i => !i.deleted && inUse(i));
     const connected = live.filter(i => midi.connected[i.id]);
     const disconnected = live.filter(i => !midi.connected[i.id]);
-    const deleted = midi.library.filter(i => i.deleted);
+    const deleted = midi.library.filter(i => i.deleted && inUse(i));
     const templates = allDeviceTemplates();
 
     const groups = [
@@ -344,10 +349,10 @@ export class DevicesTab extends MobxLitElement {
       ghosts.length > 0 ? html`
         <div>
           <div class="group-label">Missing devices — wired in the composition
-            <button class="chip" ?disabled=${ghostScan.scanning}
+            <button class="chip" ?disabled=${host.scanning()}
               title="Re-scan every live instance's sketch for wires to unknown devices"
-              @click=${() => ghostScan.refresh()}>
-              ${ghostScan.scanning ? 'scanning…' : 'rescan'}
+              @click=${() => host.refreshScan()}>
+              ${host.scanning() ? 'scanning…' : 'rescan'}
             </button>
           </div>
           <div class="cards">${ghosts.map(g => this.renderMissingCard(g))}</div>
@@ -359,7 +364,9 @@ export class DevicesTab extends MobxLitElement {
         <div class="title">Devices</div>
         <div class="spacer"></div>
         ${(Object.keys(FILTER_LABELS) as FilterKey[]).map(key => html`
-          <button class="chip" ?data-on=${filters[key]} @click=${() => this.toggleFilter(key)}>
+          <button class="chip" ?data-on=${!!filters[key]} data-filter=${key}
+            title=${key === 'inUse' ? `Only devices ${host.usageLabel}` : ''}
+            @click=${() => this.toggleFilter(key)}>
             ${FILTER_LABELS[key]}
           </button>
         `)}

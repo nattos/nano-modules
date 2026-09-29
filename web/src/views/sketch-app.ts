@@ -24,6 +24,7 @@ import '../widgets/snackbars';
 import './organize-tab';
 import './app-settings';
 import './reconcile-dialog';
+import './devices/editor-devices-host';  // the Devices panel's host (before the tab)
 import './devices/devices-tab';
 import './devices/devices-float-monitor';
 import './canvas/sketch-canvas-view';

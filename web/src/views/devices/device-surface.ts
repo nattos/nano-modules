@@ -26,7 +26,8 @@ import { midiController } from '../../state/midi-controller';
 import { getDeviceTemplate } from '../../midi/device-registry';
 import type { ControlGesture, DeviceControlDef, DeviceTemplate } from '../../midi/midi-types';
 import type { FieldConnectInfo } from '../../sketch-types';
-import { tapsConnect, WireConnect } from '../../widgets/taps-connect';
+import { WireConnect } from '../../widgets/taps-connect';
+import { devicesHost } from './devices-host';
 import { DeviceAnchorKeys, setDeviceAnchor } from './device-anchors';
 import { devicesUi } from './devices-ui';
 
@@ -209,13 +210,13 @@ export class DeviceSurface extends MobxLitElement {
   private onHitPointerDown(e: PointerEvent, endpoint: string) {
     e.stopPropagation();
     const el = e.currentTarget as HTMLElement;
-    tapsConnect.beginFromFieldDrag(
+    devicesHost().connect().beginFromFieldDrag(
       e, el, '', `device/${this.deviceId}/${endpoint}`, this.connectInfo(endpoint, el));
   }
 
   private onHitClick(e: MouseEvent, endpoint: string) {
     e.stopPropagation();
-    if (tapsConnect.consumeClickSuppression()) return;
+    if (devicesHost().connect().consumeClickSuppression()) return;
     // A gesture in flight completes here (the device is the writer);
     // otherwise the click PICKS UP this control as the source.
     if (WireConnect.active) {
@@ -223,7 +224,7 @@ export class DeviceSurface extends MobxLitElement {
       return;
     }
     const el = e.currentTarget as HTMLElement;
-    tapsConnect.beginFromFieldClick(
+    devicesHost().connect().beginFromFieldClick(
       '', `device/${this.deviceId}/${endpoint}`, this.connectInfo(endpoint, el));
   }
 
@@ -335,7 +336,7 @@ export class DeviceSurface extends MobxLitElement {
           if (!devicesUi.defineMode) e.stopPropagation();
         }}>
         ${this.shownControls().map(def => this.renderControl(def))}
-        ${this.interactive && appState.local.tappingMode
+        ${this.interactive && devicesHost().wiresMode()
           ? this.shownControls().map(def => this.renderHitZones(def))
           : nothing}
         ${layout.banks > 1 ? html`

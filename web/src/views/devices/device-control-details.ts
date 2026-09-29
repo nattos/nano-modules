@@ -25,7 +25,7 @@ import { allDeviceTemplates, getDeviceTemplate } from '../../midi/device-registr
 import type { ControlGesture, ControlMapping } from '../../midi/midi-types';
 import { devicesUi } from './devices-ui';
 import { deviceColorCss } from './device-surface';
-import { ghostScan } from './ghost-scan';
+import { devicesHost, hostGhosts } from './devices-host';
 import './device-wires-panel';
 
 @customElement('device-control-details')
@@ -296,7 +296,7 @@ export class DeviceControlDetails extends MobxLitElement {
   /** Anchor directly above the floating output monitor, growing upward —
    *  capped so a long wires list scrolls instead of running off-screen. */
   private anchorAboveMonitor() {
-    const bottom = appState.local.userSettings.devicesMonitorHeight + 24;
+    const bottom = devicesHost().detailsBottomInset() + 24;
     this.style.bottom = `${bottom}px`;
     this.style.maxHeight = `calc(100vh - ${bottom + 60}px)`;
   }
@@ -329,7 +329,7 @@ export class DeviceControlDetails extends MobxLitElement {
    *     (DeviceInstance.knownAs).
    */
   private renderGhostCard(deviceId: string) {
-    const ghost = ghostScan.ghost(deviceId);
+    const ghost = hostGhosts(devicesHost()).find((g) => g.deviceId === deviceId);
     if (!ghost) return nothing;
     this.anchorAboveMonitor();
     const candidates = appState.local.midi.library.filter(i => !i.deleted);
