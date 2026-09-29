@@ -3,12 +3,13 @@
  * selected in the Devices view (the lights' and MIDI panels' twin, same
  * place, same selection):
  *
- *   - ON THIS MACHINE (the library): which screen fills the slot —
- *     automatic, or one picked from the screens the compositor sees (a
- *     remembered one that isn't connected stays listed) — rehearse in a
- *     window instead, identify, rename.
+ *   - ON THIS MACHINE (the library): where it goes — fullscreen on a screen
+ *     (automatic, or one picked from the screens the compositor sees; a
+ *     remembered one that isn't connected stays listed), a rehearsal window,
+ *     or a Syphon server — identify, rename.
  *   - IN THIS SHOW (when placed): the output switch, how the frame fits
- *     (Fit / Fill / Stretch) and what it shows (the main output, or a route).
+ *     (Fit / Fill / Stretch; not for Syphon, whose frame is the show's) and
+ *     what it shows (the main output, or a route).
  *
  * Library edits go through displayController (persisted, per machine); show
  * edits through the store (undoable).
@@ -18,7 +19,7 @@ import { html, css, nothing } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../../mobx-lit-element';
 import {
-  BUILTIN_DISPLAY_COUNT, DISPLAY_FITS, displayOrdinal, type DisplaySlot,
+  BUILTIN_DISPLAY_COUNT, DISPLAY_FITS, DISPLAY_MODES, displayMode, displayOrdinal, type DisplaySlot,
 } from '../../../../displays/display-types';
 import { devicesUi } from '../../../devices/devices-ui';
 import { devicesHost } from '../../../devices/devices-host';
@@ -106,15 +107,16 @@ export class DisplayDetails extends MobxLitElement {
   private renderMachine(slot: DisplaySlot) {
     const screens = displayController.screens;
     const outputs = engineBridge.outputsDisplays;
-    const auto = screens ? displayController.screenFor({ ...slot, screen: undefined, window: false }) : null;
+    const mode = displayMode(slot);
+    const auto = screens ? displayController.screenFor({ ...slot, screen: undefined, mode: undefined }) : null;
     const remembered = slot.screen && !screens?.some((s) => s.uuid === slot.screen!.uuid) ? slot.screen : null;
     const n = displayOrdinal(slot.id);
-    const where = slot.window ? null : screens ? displayController.screenFor(slot) : null;
+    const where = mode !== 'fullscreen' ? null : screens ? displayController.screenFor(slot) : null;
     return html`
       <div class="sec">
         <h4>On this machine</h4>
         <div class="row"><label>screen</label>
-          <select data-display-field="screen" ?disabled=${slot.window === true || !screens} @change=${(e: Event) => {
+          <select data-display-field="screen" ?disabled=${mode !== 'fullscreen' || !screens} @change=${(e: Event) => {
             const uuid = (e.target as HTMLSelectElement).value;
             const s = screens?.find((x) => x.uuid === uuid) ?? (remembered?.uuid === uuid ? remembered : null);
             displayController.bindScreen(slot.id, s ? { uuid: s.uuid, name: s.name } : null);
@@ -126,25 +128,22 @@ export class DisplayDetails extends MobxLitElement {
             ${remembered ? html`<option value=${remembered.uuid} selected>${remembered.name} — not connected</option>` : nothing}
           </select></div>
         <div class="row"><label>as</label>
-          <div class="btns">
-            <button class=${slot.window ? '' : 'on'} data-display-mode="fullscreen"
-              title="Fullscreen on its screen"
-              @click=${() => displayController.setWindow(slot.id, false)}>fullscreen</button>
-            <button class=${slot.window ? 'on' : ''} data-display-mode="window"
-              title="Rehearse in a normal window instead — no projector needed"
-              @click=${() => displayController.setWindow(slot.id, true)}>window</button>
-          </div></div>
+          <div class="btns">${DISPLAY_MODES.map((m) => html`<button class=${mode === m.id ? 'on' : ''}
+            data-display-mode=${m.id} title=${m.title}
+            @click=${() => displayController.setMode(slot.id, m.id)}>${m.label}</button>`)}</div></div>
         <div class="btns">
-          <button data-display-action="identify" ?disabled=${!outputs}
+          <button data-display-action="identify" ?disabled=${!outputs || mode === 'syphon'}
             title="Show this display's name on its screen for a moment"
             @click=${() => displayController.identify(slot.id)}>identify</button>
         </div>
         <div class="note">${!outputs
           ? 'Displays need the native compositor (the desktop app); this engine renders the show but opens no screens.'
-          : slot.window ? 'Opens as a normal window (close it to turn the display off).'
+          : mode === 'window' ? 'Opens as a normal window (close it to turn the display off).'
+          : mode === 'syphon' ? html`A Syphon server named <b>${slot.name}</b> (app “Nano Modules”), at the
+              show’s full resolution — Resolume, MadMapper, OBS… list it. No screen.`
           : where ? html`Fullscreen on <b>${where.name}</b>.`
           : 'No screen for it — plug one in, pick one, or rehearse in a window.'}
-          ${!slot.window && !slot.screen ? ' Automatic never picks the main screen (the menu bar’s).' : ''}</div>
+          ${mode === 'fullscreen' && !slot.screen ? ' Automatic never picks the main screen (the menu bar’s).' : ''}</div>
       </div>`;
   }
 
@@ -162,10 +161,10 @@ export class DisplayDetails extends MobxLitElement {
           <button class=${enabled ? 'on' : ''} data-display-action="enable"
             @click=${() => store.setDisplayEnabled(pid, !enabled)}>${enabled ? 'on' : 'off'}</button>
           <span class="note">${where.text}</span></div>
-        <div class="row"><label>fit</label>
+        ${displayMode(slot) === 'syphon' ? nothing : html`<div class="row"><label>fit</label>
           <div class="btns">${DISPLAY_FITS.map((f) => html`<button class=${fit === f.id ? 'on' : ''}
             data-display-fit=${f.id} title=${f.title}
-            @click=${() => store.setDisplayFit(pid, f.id)}>${f.label}</button>`)}</div></div>
+            @click=${() => store.setDisplayFit(pid, f.id)}>${f.label}</button>`)}</div></div>`}
         <div class="row"><label>shows</label>
           <device-input-pip .placementId=${pid} .scope=${'devices'}></device-input-pip>
           ${route ? html`<button title="Show the main output again"

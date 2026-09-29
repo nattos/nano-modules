@@ -19,7 +19,7 @@ import { engineBridge } from '../engine/engine-bridge';
 import { lightController } from '../state/light-controller';
 import { displayController } from '../state/display-controller';
 import { outputMaster } from '../state/output-master';
-import { DISPLAY_FITS } from '../../../displays/display-types';
+import { DISPLAY_FITS, displayMode } from '../../../displays/display-types';
 import { displayWhere } from './displays/display-where';
 import { store } from '../state/store';
 import type { DevicePlacement } from '../model/composition';
@@ -134,10 +134,10 @@ export class ArrDeviceInspector extends MobxLitElement {
           <span class="val muted">${slot ? displayWhere(slot, p.id).text : ''}</span>
           <button class=${on ? 'on' : ''} data-inspector-display-enable
             @click=${() => store.setDisplayEnabled(p.id, !on)}>${on ? 'on' : 'off'}</button></div>
-        <div class="row"><label>Fit</label>
+        ${slot && displayMode(slot) === 'syphon' ? nothing : html`<div class="row"><label>Fit</label>
           <span class="fits">${DISPLAY_FITS.map((f) => html`<button class=${fit === f.id ? 'on' : ''}
             data-inspector-display-fit=${f.id} title=${f.title}
-            @click=${() => store.setDisplayFit(p.id, f.id)}>${f.label}</button>`)}</span></div>
+            @click=${() => store.setDisplayFit(p.id, f.id)}>${f.label}</button>`)}</span></div>`}
         <div class="row"><label>Shows</label>
           <span class="val">${route ? routeEndLabel(route.src) : 'main output'}</span>
           ${route ? html`<button title="Show the main output again"

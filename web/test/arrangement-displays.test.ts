@@ -257,11 +257,13 @@ describe('Arrangement displays (GPU)', () => {
     const pid = await place();
     await selectCard('display.1');
     await clickDeep('[data-display-mode="window"]');
-    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').window)).toBe(true);
+    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBe('window');
     expect(await page.evaluate(() => (window as any).displayController.lastPlan.outputs))
-      .toMatchObject([{ placementId: pid, slotId: 'display.1', window: true, fit: 'fit', enabled: true }]);
+      .toMatchObject([{ placementId: pid, slotId: 'display.1', mode: 'window', fit: 'fit', enabled: true }]);
+    await clickDeep('[data-display-mode="syphon"]');
+    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBe('syphon');
     await clickDeep('[data-display-mode="fullscreen"]');
-    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').window)).toBeUndefined();
+    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBeUndefined();
   });
 
   it('output starts off; the Devices header switch turns it on; ⌘⇧D turns it off', async () => {
@@ -322,6 +324,22 @@ describe('Arrangement displays (GPU)', () => {
     void pid;
     await page.evaluate(() => (window as any).arrangementStore.setTransportMode('live'));
   });
+
+  nativeOnly(backend, 'a page can’t publish Syphon')(
+    'Syphon: a display published at the show’s full resolution, no screen needed', async () => {
+      await resetShow([1, 0, 0], [0, 1, 0]);
+      await page.evaluate(() => (window as any).displayController.setMode('display.2', 'syphon'));
+      const pid = await page.evaluate(() => (window as any).arrangementStore.includeDevice(
+        'display.2', { kind: 'display', label: 'Display 2' }));
+      await page.evaluate(() => (window as any).outputMaster.set(true));
+      await page.waitForFunction((p: string) => {
+        const st = (window as any).displayController.status[p];
+        return st?.state === 'syphon' && st.width === 1920 && st.height === 1080;
+      }, { timeout: 10_000 }, pid);
+      // The frame IS the show's: no bars.
+      await waitProbe(pid, (p) => red(p.mid) && red(p.top), 'syphon frame');
+      await page.evaluate(() => (window as any).displayController.setMode('display.2', 'fullscreen'));
+    });
 
   nativeOnly(backend, 'a page can’t open screens')(
     'presents: Display 1 on the projector — Fit letterboxes, Stretch fills, routed, off', async () => {

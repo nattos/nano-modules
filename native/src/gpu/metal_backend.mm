@@ -1255,12 +1255,34 @@ public:
     return handle;
   }
 
+  int32_t createSurfacePresentTarget(void* ioSurface) override {
+    IOSurfaceRef surf = (IOSurfaceRef)ioSurface;
+    if (!surf) return -1;
+    const size_t w = IOSurfaceGetWidth(surf), h = IOSurfaceGetHeight(surf);
+    if (w == 0 || h == 0) return -1;
+    MTLTextureDescriptor* desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:w height:h mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite |
+                 MTLTextureUsageRenderTarget;
+    desc.storageMode = MTLStorageModeShared;
+    // The texture holds its own reference to the surface.
+    id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc iosurface:surf plane:0];
+    if (!tex) return -1;
+    PresentTarget t;
+    t.texHandle = alloc(ResourceType::Texture, tex);
+    const int32_t handle = nextPresentTarget_++;
+    presentTargets_[handle] = std::move(t);
+    return handle;
+  }
+
   int32_t presentTargetTexture(int32_t target) override {
     auto it = presentTargets_.find(target);
     return it == presentTargets_.end() ? -1 : it->second.texHandle;
   }
 
-  bool presentScaled(int32_t target, int32_t src, PresentFit fit) override {
+  bool presentScaled(int32_t target, int32_t src, PresentFit fit,
+                     std::function<void()> done) override {
     auto it = presentTargets_.find(target);
     if (it == presentTargets_.end()) return false;
     PresentTarget& t = it->second;
@@ -1323,7 +1345,14 @@ public:
       if (drawable) [cb presentDrawable:drawable];
       auto inFlight = t.inFlight;
       inFlight->fetch_add(1);
-      [cb addCompletedHandler:^(id<MTLCommandBuffer>) { inFlight->fetch_sub(1); }];
+      __block auto cbDone = std::move(done);
+      [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+        inFlight->fetch_sub(1);
+        if (cbDone && [finished status] != MTLCommandBufferStatusError) {
+          // Off Metal's completion queue, as the readbacks are.
+          dispatch_async(previewReadbackQueue(), ^{ cbDone(); });
+        }
+      }];
       [cb commit];
       // A CPU readback of an offscreen target must wait for this, not only
       // the frame (queue order: this commits after it).

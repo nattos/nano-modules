@@ -411,7 +411,7 @@ library and used per show (plan: COMPOSITOR.md § devices).
   (`display-devices.json`) says which screen fills it: automatic — Display N takes the Nth screen
   that isn't the main one, so a fresh machine never covers the editor — or a picked screen
   (remembered by its UUID; if it's gone, automatic stands in), or **window**: rehearse in a normal
-  window, no projector needed. No screen for it = it stays dark, nothing else breaks.
+  window, no projector needed, or **syphon** (below). No screen for it = it stays dark, nothing else breaks.
 - **In a show**: `add to show` places it (kind `display`) — a row under the tracks whose lane draws
   the screen with the frame fitted on it, an on/off switch, and an input pip. It shows the **main
   output** unless a route feeds it (as for lights). **Fit / Fill / Stretch** is the show's (Fit
@@ -424,7 +424,10 @@ library and used per show (plan: COMPOSITOR.md § devices).
 - **The master output switch** (the Devices panel's header) is OFF at every launch and never saved:
   nothing projects or transmits until you turn output on. **⌘⇧D** (Disable Output, as in Resolume)
   turns it off from anywhere — even with a fullscreen output covering the editor.
-- *Later:* Syphon; a crop / usable region per projector; Windows.
+- **Syphon**: instead of a screen, a display can be a Syphon server ("Nano Modules" – the slot's
+  name) that Resolume, MadMapper, OBS… read — the show's frame at full resolution.
+- The cursor hides while it's over a fullscreen output.
+- *Later:* a crop / usable region per projector; Windows.
 
 ## Automation (track-level and clip-level)
 

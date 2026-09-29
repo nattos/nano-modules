@@ -423,9 +423,9 @@ TEST_CASE("compositor: a display device presents offscreen for a fake screen",
   c.send({{"action", "comp_control"}, {"op", "seek"}, {"beat", 2}});
   c.send({{"action", "comp_displays"}, {"plan", {{"outputs", json::array({{
       {"placementId", "d1"}, {"slotId", "display.1"}, {"name", "Display 1"}, {"enabled", true},
-      {"screenUuid", ""}, {"ordinal", 1}, {"window", false}, {"fit", "fit"}}})}}}});
+      {"screenUuid", ""}, {"ordinal", 1}, {"mode", "fullscreen"}, {"fit", "fit"}}})}}}});
   c.send({{"action", "comp_display_identify"}, {"label", "Display 1"}, {"screenUuid", ""},
-          {"ordinal", 1}, {"window", false}});
+          {"ordinal", 1}, {"mode", "fullscreen"}});
 
   // The screens reach the page; Display 1 lands on the PROJECTOR (never the
   // main screen on its own), presenting red with black bars.
@@ -465,7 +465,7 @@ TEST_CASE("compositor: a display device presents offscreen for a fake screen",
   // Switched off: it closes.
   c.send({{"action", "comp_displays"}, {"plan", {{"outputs", json::array({{
       {"placementId", "d1"}, {"slotId", "display.1"}, {"name", "Display 1"}, {"enabled", false},
-      {"screenUuid", ""}, {"ordinal", 1}, {"window", false}, {"fit", "fit"}}})}}}});
+      {"screenUuid", ""}, {"ordinal", 1}, {"mode", "fullscreen"}, {"fit", "fit"}}})}}}});
   bool off = false;
   for (int i = 0; i < 20 && !off; i++) {
     c.send({{"action", "comp_step"}, {"frames", 1}, {"dtSec", 1.0 / 60}});

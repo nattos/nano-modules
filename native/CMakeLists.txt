@@ -21,6 +21,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(APPLE)
   enable_language(OBJCXX)
   set(CMAKE_OBJCXX_STANDARD 17)
+  # Plain Objective-C for vendored .m sources (third_party/syphon); without it
+  # a .m falls through to Objective-C++ and C-style code stops compiling.
+  enable_language(OBJC)
   # Silence macOS OpenGL deprecation warnings
   add_compile_definitions(GL_SILENCE_DEPRECATION)
 endif()
@@ -1482,21 +1485,43 @@ if(NANO_HAS_GPU_BACKEND)
   # the engine (process-global runtime state). The editor reaches it over the
   # bridge WebSocket (tools/nano_compositor.cpp has the protocol).
   if(TARGET comp_host)
+    # Syphon's protocol core (third_party/syphon, vendored, BSD): the process
+    # publishes display outputs as Syphon servers. Never in libbridge_server —
+    # Resolume loads that next to its own Syphon.framework.
+    file(GLOB SYPHON_CORE_SOURCES ${CMAKE_SOURCE_DIR}/third_party/syphon/*.m
+      ${CMAKE_SOURCE_DIR}/third_party/syphon/*.c)
+    add_library(syphon_core STATIC ${SYPHON_CORE_SOURCES})
+    target_include_directories(syphon_core PUBLIC ${CMAKE_SOURCE_DIR}/third_party/syphon
+      ${CMAKE_SOURCE_DIR}/third_party/syphon/include)
+    target_compile_options(syphon_core PRIVATE -fobjc-arc -w
+      -include ${CMAKE_SOURCE_DIR}/third_party/syphon/Syphon_Prefix.pch)
+    target_link_libraries(syphon_core PUBLIC "-framework Cocoa" "-framework IOSurface")
+
     add_executable(nano_compositor tools/nano_compositor.cpp
-      tools/compositor/display_windows_mac.mm)
+      tools/compositor/display_windows_mac.mm tools/compositor/syphon_outputs_mac.mm)
     target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src
       ${CMAKE_SOURCE_DIR}/tools)
     # The display windows are AppKit, under ARC; they live in the PROCESS, never
     # in libbridge_server (the barrel inside Resolume must not open windows).
     set_source_files_properties(tools/compositor/display_windows_mac.mm
-      PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-    target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json
+      tools/compositor/syphon_outputs_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json syphon_core
       "-framework AppKit" "-framework QuartzCore" "-framework CoreGraphics" "-framework Carbon")
     # Staged (web/scripts/stage_resources.sh → <root>/bin/) with its own
     # libbridge_server beside it: find that one, not the build tree's.
     if(APPLE)
       set_target_properties(nano_compositor PROPERTIES
         BUILD_RPATH "@executable_path;${CMAKE_BINARY_DIR}")
+    endif()
+
+    # Syphon outputs end to end in one process (server → client → pixels).
+    if(TARGET Catch2::Catch2WithMain)
+      add_executable(test_syphon_outputs tests/test_syphon_outputs.mm
+        tools/compositor/syphon_outputs_mac.mm)
+      target_include_directories(test_syphon_outputs PRIVATE ${CMAKE_SOURCE_DIR}/tools)
+      target_compile_options(test_syphon_outputs PRIVATE -fobjc-arc)
+      target_link_libraries(test_syphon_outputs PRIVATE syphon_core Catch2::Catch2WithMain)
+      catch_discover_tests(test_syphon_outputs)
     endif()
 
     # The process, driven over its WebSocket as the editor drives it.

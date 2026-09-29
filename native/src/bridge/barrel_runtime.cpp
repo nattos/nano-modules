@@ -2232,17 +2232,25 @@ class CallbackDisplays : public DisplaySurfaces {
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& w : wants) {
       arr.push_back({{"placementId", w.placementId}, {"slotId", w.slotId}, {"name", w.name},
-                     {"screenUuid", w.screenUuid}, {"window", w.window},
-                     {"windowFrame", w.windowFrame}});
+                     {"screenUuid", w.screenUuid}, {"mode", displayModeName(w.mode)},
+                     {"windowFrame", w.windowFrame}, {"w", w.width}, {"h", w.height}});
     }
     p_.reconcile(p_.ctx, arr.dump().c_str());
   }
   Surface surfaceFor(const std::string& placementId) override {
     if (!p_.surface_for) return {};
-    int32_t w = 0, h = 0;
-    void* layer = p_.surface_for(p_.ctx, placementId.c_str(), &w, &h);
-    if (!layer) return {};
-    return {layer, w, h};
+    int32_t w = 0, h = 0, kind = 0;
+    void* native = p_.surface_for(p_.ctx, placementId.c_str(), &w, &h, &kind);
+    if (!native) return {};
+    Surface s;
+    s.kind = kind == 1 ? Surface::IOSurface : Surface::Layer;
+    s.native = native;
+    s.width = w;
+    s.height = h;
+    return s;
+  }
+  void publish(const std::string& placementId) override {
+    if (p_.publish) p_.publish(p_.ctx, placementId.c_str());
   }
   void identify(const std::string& label, const std::string& screenUuid, bool window) override {
     if (p_.identify) p_.identify(p_.ctx, label.c_str(), screenUuid.c_str(), window ? 1 : 0);

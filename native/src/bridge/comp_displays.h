@@ -18,7 +18,11 @@
 // Screen binding (resolveScreen): the slot's remembered screen by UUID; else
 // Display N takes the Nth screen that is NOT the main one, so a fresh machine
 // never covers the editor; else there's no screen and the display is inert (an
-// unplugged cable). A window-mode display ignores screens.
+// unplugged cable). A window-mode or Syphon display ignores screens.
+//
+// Modes: FULLSCREEN on a screen, WINDOW (rehearsal), SYPHON (a Syphon server
+// the provider runs; its frame is the render size, and the provider publishes
+// each one once the GPU has finished writing it).
 //
 // Owned by CompHost; driven on the render thread only.
 
@@ -50,6 +54,10 @@ struct DisplayScreen {
 std::vector<DisplayScreen> parseDisplayScreens(const nlohmann::json& j);
 nlohmann::json displayScreensJson(const std::vector<DisplayScreen>& screens);
 
+enum class DisplayMode { Fullscreen, Window, Syphon };
+DisplayMode parseDisplayMode(const std::string& s);
+const char* displayModeName(DisplayMode m);
+
 /// One output of the page's plan (display-plan.ts DisplayPlan.outputs).
 struct DisplayOutput {
   std::string placementId;
@@ -58,7 +66,7 @@ struct DisplayOutput {
   bool enabled = true;
   std::string screenUuid;  // this machine's binding; '' = automatic
   int ordinal = 1;         // Display N
-  bool window = false;
+  DisplayMode mode = DisplayMode::Fullscreen;
   nlohmann::json windowFrame;  // {x, y, w, h} (screen points) or null
   gpu::GPUBackend::PresentFit fit = gpu::GPUBackend::PresentFit::Fit;
 };
@@ -73,12 +81,14 @@ struct DisplayWant {
   std::string placementId;
   std::string slotId;
   std::string name;
-  std::string screenUuid;  // resolved; '' in window mode
-  bool window = false;
+  std::string screenUuid;  // resolved (fullscreen only)
+  DisplayMode mode = DisplayMode::Fullscreen;
   nlohmann::json windowFrame;
+  int width = 0, height = 0;  // Syphon: the frame size (the render size)
   bool operator==(const DisplayWant& o) const {
     return placementId == o.placementId && slotId == o.slotId && name == o.name &&
-           screenUuid == o.screenUuid && window == o.window && windowFrame == o.windowFrame;
+           screenUuid == o.screenUuid && mode == o.mode && windowFrame == o.windowFrame &&
+           width == o.width && height == o.height;
   }
 };
 
@@ -91,15 +101,20 @@ class DisplaySurfaces {
   /// The outputs that should be up now; everything else closes. Latest wins,
   /// and may apply later (windows open on the main thread).
   virtual void reconcile(const std::vector<DisplayWant>& wants) = 0;
-  /// A placement's surface once it is up: a native layer (`CAMetalLayer*`),
-  /// or — layer null — an offscreen target of width × height. All zero: not
-  /// (yet) there.
+  /// A placement's surface once it is up: a window's `CAMetalLayer*`, a
+  /// Syphon server's `IOSurfaceRef`, or (native null) an offscreen target of
+  /// width × height. Width/height zero and native null: not (yet) there.
   struct Surface {
-    void* layer = nullptr;
+    enum Kind { Offscreen, Layer, IOSurface };
+    Kind kind = Offscreen;
+    void* native = nullptr;
     int width = 0;
     int height = 0;
   };
   virtual Surface surfaceFor(const std::string& placementId) = 0;
+  /// A frame for `placementId`'s Syphon server is complete (the GPU is done
+  /// writing its IOSurface): tell its clients. Any thread.
+  virtual void publish(const std::string& placementId) { (void)placementId; }
   /// Paint `label` over a screen (or in a window) for a few seconds.
   virtual void identify(const std::string& label, const std::string& screenUuid, bool window) = 0;
   /// What happened since the last call: [{type:'closed', placementId},
@@ -144,14 +159,16 @@ class DisplayRunner {
   bool active() const { return !outputs_.empty(); }
 
   /// After a SUBMITTED frame: present every enabled output. `composite` is
-  /// what the executor rendered into (hasContent false ⇒ it is blank: black).
-  void afterFrame(comp::CompExecutor& cx, int32_t composite, bool hasContent);
+  /// what the executor rendered into (hasContent false ⇒ it is blank: black);
+  /// width × height is the render size (a Syphon frame's size).
+  void afterFrame(comp::CompExecutor& cx, int32_t composite, int width, int height,
+                  bool hasContent);
 
-  /// Identify a slot (placed or not): {label, screenUuid, ordinal, window}.
+  /// Identify a slot (placed or not): {label, screenUuid, ordinal, mode}.
   void identify(const nlohmann::json& m);
 
   /// placementId → {state, screen?, width, height, fps[, probe]}. `state`:
-  /// 'showing' | 'window' | 'opening' | 'no-screen' | 'off' | 'disarmed'
+  /// 'showing' | 'window' | 'syphon' | 'opening' | 'no-screen' | 'off' | 'disarmed'
   /// (the master switch is off) | 'no-output'.
   /// `probe` (offscreen targets only): 16×16 RGB of what was presented, for
   /// tests.
@@ -166,7 +183,8 @@ class DisplayRunner {
  private:
   struct Target {
     int32_t handle = -1;
-    void* layer = nullptr;
+    DisplaySurfaces::Surface::Kind kind = DisplaySurfaces::Surface::Offscreen;
+    void* native = nullptr;
     int width = 0, height = 0;
     int presented = 0;       // this second
     double fps = 0;

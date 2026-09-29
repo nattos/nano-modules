@@ -152,12 +152,18 @@ typedef struct NanoDisplayProvider {
   char* (*screens_json)(void* ctx);
   /// Bumps whenever the screens change (hotplug).
   uint64_t (*screens_version)(void* ctx);
-  /// JSON [{placementId, slotId, name, screenUuid, window, windowFrame}]: the
-  /// outputs that should be up; everything else closes. Latest wins.
+  /// JSON [{placementId, slotId, name, screenUuid, mode: "fullscreen" |
+  /// "window" | "syphon", windowFrame, w, h}]: the outputs that should be up
+  /// (a Syphon one at w × h); everything else closes. Latest wins.
   void (*reconcile)(void* ctx, const char* wants_json);
-  /// A placement's CAMetalLayer* once its window is up, else NULL; *w/*h its
-  /// drawable size in pixels.
-  void* (*surface_for)(void* ctx, const char* placement_id, int32_t* w, int32_t* h);
+  /// A placement's surface once it is up, else NULL: a window's CAMetalLayer*
+  /// (*kind 0) or a Syphon server's IOSurfaceRef (*kind 1); *w/*h its size in
+  /// pixels.
+  void* (*surface_for)(void* ctx, const char* placement_id, int32_t* w, int32_t* h,
+                       int32_t* kind);
+  /// A frame of `placement_id`'s Syphon server is complete (the GPU is done
+  /// writing its IOSurface): tell its clients. Called off the render thread.
+  void (*publish)(void* ctx, const char* placement_id);
   /// Paint `label` over a screen (or in the placement's window) for a moment.
   void (*identify)(void* ctx, const char* label, const char* screen_uuid, int32_t window);
   /// JSON array of what the viewer did since the last call:

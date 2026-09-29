@@ -148,7 +148,8 @@ class CompHost {
   /// Present this frame to every enabled display. Call after the frame is
   /// SUBMITTED, like runLights.
   void runDisplays() {
-    displays_->afterFrame(*cx_, lastOut_, (lastFlags_ & comp::kCompHasContent) != 0);
+    displays_->afterFrame(*cx_, lastOut_, cfg_.width, cfg_.height,
+                          (lastFlags_ & comp::kCompHasContent) != 0);
   }
 
   /// Frames stepped, and how many of them held on unready video (Precise).

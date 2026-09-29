@@ -20,6 +20,7 @@
  * and the cheap ops since that document.
  */
 
+import type { DisplayIdentify } from '../../../displays/display-types';
 import type { CompFrameInfo, PluginInfo, StateDiff, TracePoint } from '../../../engine-types';
 import { previewGpu, type PreviewFrame } from '../../../preview-gpu';
 import { previewSurfaces, type SurfaceSink } from '../../../preview-surfaces';
@@ -232,7 +233,7 @@ export class RemoteCompEngine implements CompEngine {
     this.displayPlan = plan;
     this.action('comp_displays', { plan });
   }
-  identifyDisplay(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }): void {
+  identifyDisplay(msg: DisplayIdentify): void {
     this.action('comp_display_identify', msg);
   }
 

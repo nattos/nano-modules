@@ -236,8 +236,8 @@ As built (the design notes follow, below):
   screen list) presents offscreen — ctest, `comp-backend.ts`, and hidden Electron launches set it.
   `test_comp_displays` (fit/fill/stretch pixels, routes, binding), `test_compositor_protocol`,
   e2e `arrangement-displays`.
-- Not yet: Syphon (next, small), Windows (D3D11 swap chains, M4), hiding the cursor over a
-  fullscreen output, a crop / usable region per projector, per-output colour.
+- Not yet: Windows (D3D11 swap chains, M4), a crop / usable region per projector, per-output
+  colour.
 
 #### The present API (`GPUBackend`) — design notes
 
@@ -286,7 +286,25 @@ need the main thread, so:
   **Decided:** while any output is enabled and the transport is in Precise, the **Live button flashes**
   as a nudge. Nothing switches automatically, and there is no dialog.
 
-#### Syphon
+#### Syphon — SHIPPED (2026-09-30)
+
+As built: a display slot's MODE is fullscreen, window, or **syphon** (this machine's library). A
+Syphon display is a server named after the slot, listed under the app "Nano Modules" (the process
+sets its name), publishing the show's frame at the render size (full resolution while a display
+is live). Syphon's protocol core is VENDORED unmodified (`native/third_party/syphon`, BSD —
+server/client base, messaging; no GL/Metal renderers) as `syphon_core`, linked only into the
+`nano_compositor` process and its tests — never `libbridge_server` (Resolume loads its own
+Syphon.framework). `tools/compositor/syphon_outputs_mac.mm` runs the servers on the main thread
+(Syphon swaps its surface and publishes without a lock); the runner presents into the server's
+IOSurface (`createSurfacePresentTarget`) and `presentScaled`'s completion publishes (hopping to
+the main thread). ⌘⇧D stops them too. Tests: `test_syphon_outputs` (a private server → an
+in-process client → the pixels), `test_comp_displays` (render size, a publish per frame),
+e2e native leg (offscreen redirect).
+
+Also shipped with it: the cursor hides over a fullscreen output (the window server's
+"SetsCursorInBackground" connection property — private, looked up at run time).
+
+The original notes:
 
 - The Metal backend already renders into IOSurface-backed textures for the preview ring.
   `SyphonMetalServer` (Syphon.framework, BSD) publishes a texture from our `MTLDevice`

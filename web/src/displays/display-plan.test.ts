@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { emptyComposition } from '../views/arrangement/model/composition';
 import type { Composition } from '../views/arrangement/model/composition';
 import { buildDisplayPlan } from './display-plan';
+import { validDisplayRows } from '../state/display-device-store';
 import {
   librarySlot, librarySlots, resolveDisplayScreen, type DisplayScreen, type DisplaySlot,
 } from './display-types';
@@ -17,7 +18,7 @@ describe('display slots', () => {
     expect(librarySlots([]).map((s) => s.name)).toEqual(['Display 1', 'Display 2']);
     const rows: DisplaySlot[] = [
       { kind: 'display', id: 'display.4', name: 'Side wall', updatedAt: 1 },
-      { kind: 'display', id: 'display.1', name: 'Main', updatedAt: 1, window: true },
+      { kind: 'display', id: 'display.1', name: 'Main', updatedAt: 1, mode: 'window' },
       { kind: 'display', id: 'display.3', name: 'Gone', updatedAt: 1, deleted: true },
     ];
     expect(librarySlots(rows).map((s) => s.name)).toEqual(['Main', 'Display 2', 'Side wall']);
@@ -42,6 +43,16 @@ describe('display slots', () => {
   });
 });
 
+describe('stored display rows', () => {
+  it('a row from before modes (window: true) is a window', () => {
+    const rows = validDisplayRows([
+      { kind: 'display', id: 'display.1', name: 'A', updatedAt: 1, window: true },
+      { kind: 'display', id: 'display.2', name: 'B', updatedAt: 1, window: false },
+    ]);
+    expect(rows.map((r) => [r.mode, 'window' in r])).toEqual([['window', false], [undefined, false]]);
+  });
+});
+
 describe('display plan', () => {
   const comp = (): Composition => {
     const c = emptyComposition();
@@ -57,16 +68,16 @@ describe('display plan', () => {
   it('resolves each display against the library; MIDI and lights are not displays', () => {
     const lib: DisplaySlot[] = [{
       kind: 'display', id: 'display.1', name: 'Main', updatedAt: 1,
-      screen: { uuid: 'B', name: 'Projector' }, window: true, windowFrame: { x: 10, y: 20, w: 800, h: 450 },
+      screen: { uuid: 'B', name: 'Projector' }, mode: 'window', windowFrame: { x: 10, y: 20, w: 800, h: 450 },
     }];
     const plan = buildDisplayPlan(comp(), lib, true);
     expect(plan.armed).toBe(true);
     expect(buildDisplayPlan(comp(), lib, false).armed).toBe(false);
     expect(plan.outputs).toEqual([
       { placementId: 'p1', slotId: 'display.1', name: 'Main', enabled: true, screenUuid: 'B', ordinal: 1,
-        window: true, windowFrame: { x: 10, y: 20, w: 800, h: 450 }, fit: 'fit' },
+        mode: 'window', windowFrame: { x: 10, y: 20, w: 800, h: 450 }, fit: 'fit' },
       { placementId: 'p2', slotId: 'display.3', name: 'Display 3', enabled: false, screenUuid: '', ordinal: 3,
-        window: false, fit: 'fill' },
+        mode: 'fullscreen', fit: 'fill' },
     ]);
   });
 });

@@ -411,6 +411,12 @@ public:
     (void)w; (void)h;
     return -1;
   }
+  // A target over an existing BGRA8 IOSurface (`IOSurfaceRef` on Metal) —
+  // someone else's, e.g. a Syphon server's. The target keeps it alive.
+  virtual int32_t createSurfacePresentTarget(void* ioSurface) {
+    (void)ioSurface;
+    return -1;
+  }
   // The offscreen target's texture (a texture handle, owned by the target);
   // -1 for a layer target.
   virtual int32_t presentTargetTexture(int32_t target) {
@@ -421,9 +427,12 @@ public:
   // letterboxes; Fill crops; Stretch ignores aspect), present. `src` <= 0
   // presents black. Never blocks on the display: with two presents still in
   // flight it SKIPS and returns false (a slow screen must not stall the
-  // render loop). Call after the frame's submit.
-  virtual bool presentScaled(int32_t target, int32_t src, PresentFit fit) {
-    (void)target; (void)src; (void)fit;
+  // render loop). Call after the frame's submit. `done` (optional) runs off
+  // the render thread once the GPU has FINISHED writing the target — only then
+  // may another process be told to read it (Syphon's publish).
+  virtual bool presentScaled(int32_t target, int32_t src, PresentFit fit,
+                             std::function<void()> done = nullptr) {
+    (void)target; (void)src; (void)fit; (void)done;
     return false;
   }
   virtual void releasePresentTarget(int32_t target) { (void)target; }

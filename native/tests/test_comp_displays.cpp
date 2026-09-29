@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <vector>
@@ -80,11 +81,11 @@ json mkDoc(bool route) {
   return doc;
 }
 
-json mkPlan(const std::string& fit = "fit", bool enabled = true, bool window = false) {
+json mkPlan(const std::string& fit = "fit", bool enabled = true, const std::string& mode = "fullscreen") {
   json o = {{"placementId", "d1"}, {"slotId", "display.1"}, {"name", "Display 1"},
-            {"enabled", enabled}, {"screenUuid", ""}, {"ordinal", 1}, {"window", window},
+            {"enabled", enabled}, {"screenUuid", ""}, {"ordinal", 1}, {"mode", mode},
             {"fit", fit}};
-  if (window) o["windowFrame"] = {{"x", 0}, {"y", 0}, {"w", 32}, {"h", 32}};
+  if (mode == "window") o["windowFrame"] = {{"x", 0}, {"y", 0}, {"w", 32}, {"h", 32}};
   return {{"outputs", json::array({o})}};
 }
 
@@ -252,14 +253,14 @@ TEST_CASE("displays: no screen is an unplugged cable; a window opens anyway", "[
   CHECK(h->displays().status()["d1"]["state"] == "no-screen");
 
   // Rehearsing in a window: no screen needed.
-  h->displays().setPlan(mkPlan("fit", true, /*window=*/true));
+  h->displays().setPlan(mkPlan("fit", true, "window"));
   hx.frames(*h);
   auto st = h->displays().status()["d1"];
   CHECK(st["state"] == "window");
   CHECK(st["width"] == 32);
 
   // Identify reaches the provider (the window, here).
-  h->displays().identify({{"label", "Display 1"}, {"window", true}});
+  h->displays().identify({{"label", "Display 1"}, {"mode", "window"}});
   const auto ev = h->displays().takeEvents();
   REQUIRE(ev.size() == 1);
   CHECK(ev[0]["type"] == "identified");
@@ -284,4 +285,41 @@ TEST_CASE("displays: presenting never waits on the screen", "[comp_displays]") {
   CHECK(shown >= 1);
   CHECK(ms < 500);
   hx.backend->releasePresentTarget(t);
+}
+
+namespace {
+/// Fake screens + counts Syphon publishes (the real server is the process's).
+struct CountingDisplays : bridge::OffscreenDisplays {
+  using bridge::OffscreenDisplays::OffscreenDisplays;
+  std::atomic<int> published{0};
+  void publish(const std::string&) override { published++; }
+};
+}  // namespace
+
+TEST_CASE("displays: a Syphon output is the render size, needs no screen, publishes each frame",
+          "[comp_displays]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+  CountingDisplays none(std::vector<DisplayScreen>{});  // no screens at all
+  auto h = hx.host();
+  h->displays().setSurfaces(&none);
+  h->loadDocument(mkDoc(false));
+  h->displays().setPlan(mkPlan("fit", true, "syphon"));
+  // The frame is published only once the GPU has written it.
+  REQUIRE(hx.framesUntil(*h, [&] {
+    const int32_t tex = h->displays().targetTexture("d1");
+    if (tex <= 0) return false;
+    const auto px = hx.backend->readbackTexture(tex, kW, kH);
+    const size_t i = ((size_t)(kH / 2) * kW + kW / 2) * 4;
+    return px[i + 2] > 240 && px[i + 1] < 16;  // BGRA red
+  }));
+  // Every completed present publishes (a busy one is skipped, not queued).
+  CHECK(hx.framesUntil(*h, [&] { return none.published.load() >= 3; }));
+  auto st = h->displays().status()["d1"];
+  CHECK(st["state"] == "syphon");
+  CHECK(st["width"] == kW);
+  CHECK(st["height"] == kH);
+  // Identify has nothing to paint a Syphon output on.
+  h->displays().identify({{"label", "Display 1"}, {"mode", "syphon"}});
+  CHECK(h->displays().takeEvents().empty());
 }

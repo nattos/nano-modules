@@ -3,7 +3,7 @@
  * inspector and the details panel to say it the same way.
  */
 
-import type { DisplayScreen, DisplaySlot } from '../../../../displays/display-types';
+import { displayMode, type DisplayScreen, type DisplaySlot } from '../../../../displays/display-types';
 import { engineBridge } from '../../engine/engine-bridge';
 import { displayController } from '../../state/display-controller';
 import { outputMaster } from '../../state/output-master';
@@ -34,6 +34,8 @@ export function displayWhere(slot: DisplaySlot, placementId?: string): DisplayWh
         return { text: st.screen ? screenLabel(st.screen) : `${st.width}×${st.height}`, state: 'live' };
       case 'window':
         return { text: `window · ${st.width}×${st.height}`, state: 'live' };
+      case 'syphon':
+        return { text: `Syphon · “${slot.name}” · ${st.width}×${st.height}`, state: 'live' };
       case 'no-screen':
         return { text: 'no screen for it', state: 'none' };
       case 'no-output':
@@ -42,7 +44,8 @@ export function displayWhere(slot: DisplaySlot, placementId?: string): DisplayWh
         return { text: 'opening…', state: 'off' };
     }
   }
-  if (slot.window) return { text: 'rehearses in a window', state: 'idle' };
+  if (displayMode(slot) === 'window') return { text: 'rehearses in a window', state: 'idle' };
+  if (displayMode(slot) === 'syphon') return { text: `Syphon server “${slot.name}”`, state: 'idle' };
   if (!displayController.screens) {
     return { text: slot.screen ? slot.screen.name : 'automatic screen', state: 'idle' };
   }

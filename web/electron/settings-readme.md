@@ -119,11 +119,13 @@ and where each slot samples in that show.
 
 An array of display slots, one per slot this machine has configured:
 `{"kind":"display", "id":"display.1", "name", "screen": {"uuid", "name"},
-"window": true, "windowFrame": {"x","y","w","h"}}`. `id` is the portable slot a
+"mode": "window" | "syphon", "windowFrame": {"x","y","w","h"}}`. `id` is the portable slot a
 show places (`display.<n>`; Display 1 and 2 exist without a row). `screen` is the
 screen that fills it on THIS machine, by its CGDisplay UUID (absent: automatic —
-Display N takes the Nth screen that isn't the main one); `window` rehearses it in
-a normal window instead, last seen at `windowFrame` (screen points). Used by the
+Display N takes the Nth screen that isn't the main one). `mode` absent is
+fullscreen on that screen; `"window"` rehearses it in a normal window, last seen
+at `windowFrame` (screen points); `"syphon"` publishes it as a Syphon server named
+after the slot. Used by the
 arrangement app (its Devices view) and applied live; a show stores only which
 slots it includes, their fit and what feeds them.
 

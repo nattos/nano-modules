@@ -22,6 +22,7 @@
  * paused and stepped seek-by-seek — same in-wasm builder, so export ≡ preview.
  */
 
+import type { DisplayIdentify } from '../../../displays/display-types';
 import { ArrEngine } from './arr-engine';
 import type { RemoteCompEngine } from './remote-comp-engine';
 import { releaseFrame, type CompEngine } from './comp-engine';
@@ -403,7 +404,7 @@ export class EngineBridge {
     this.syncResolution();
   }
 
-  identifyDisplay(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }) {
+  identifyDisplay(msg: DisplayIdentify) {
     this.engine?.identifyDisplay(msg);
   }
 

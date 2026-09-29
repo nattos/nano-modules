@@ -100,14 +100,18 @@ describe('display library', () => {
   it('the plan follows the show and the library; window mode rides along', () => {
     const pid = store.includeDevice('display.2', { kind: 'display' });
     displayController.pushPlan();
-    expect(sent.at(-1)!.outputs).toMatchObject([{ placementId: pid, ordinal: 2, window: false }]);
-    displayController.setWindow('display.2', true);
-    expect(sent.at(-1)!.outputs[0].window).toBe(true);
+    expect(sent.at(-1)!.outputs).toMatchObject([{ placementId: pid, ordinal: 2, mode: 'fullscreen' }]);
+    displayController.setMode('display.2', 'window');
+    expect(sent.at(-1)!.outputs[0].mode).toBe('window');
+    displayController.setMode('display.2', 'syphon');
+    expect(sent.at(-1)!.outputs[0].mode).toBe('syphon');
+    displayController.setMode('display.2', 'fullscreen');
+    expect(displayController.slot('display.2')!.mode).toBeUndefined();
   });
 
   it('the viewer closing a window turns the display off; a moved window is remembered', () => {
     const pid = store.includeDevice('display.1', { kind: 'display' });
-    displayController.setWindow('display.1', true);
+    displayController.setMode('display.1', 'window');
     displayController.setTelemetry(undefined, undefined, [
       { type: 'moved', slotId: 'display.1', frame: { x: 100.4, y: 50, w: 960, h: 540 } },
       { type: 'closed', placementId: pid },
@@ -151,6 +155,6 @@ describe('display library', () => {
   it('identify names the slot and where it binds', () => {
     displayController.bindScreen('display.2', { uuid: 'C', name: 'Monitor' });
     displayController.identify('display.2');
-    expect(identified).toEqual([{ label: 'Display 2', screenUuid: 'C', ordinal: 2, window: false }]);
+    expect(identified).toEqual([{ label: 'Display 2', screenUuid: 'C', ordinal: 2, mode: 'fullscreen' }]);
   });
 });

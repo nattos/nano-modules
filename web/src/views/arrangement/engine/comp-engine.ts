@@ -18,6 +18,7 @@
  * texture the preview module owns (never closed by the receiver).
  */
 
+import type { DisplayIdentify } from '../../../displays/display-types';
 import type { CompFrameInfo, PluginInfo, StateDiff, TracePoint, WorkerCommand } from '../../../engine-types';
 import type { PreviewFrame } from '../../../preview-gpu';
 import { isGpuPreviewFrame } from '../../../preview-gpu';
@@ -91,7 +92,7 @@ export interface CompEngine {
   /** The show's resolved display plan (displays/display-plan.ts). */
   setDisplayPlan(plan: unknown): void;
   /** Paint a slot's name over the screen it lands on, for a moment. */
-  identifyDisplay(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }): void;
+  identifyDisplay(msg: DisplayIdentify): void;
 
   /** Per-device texture traces, merged with the composite trace. */
   setExtraTracePoints(tps: TracePoint[]): void;

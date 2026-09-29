@@ -182,7 +182,9 @@ window). The page sends the plan (`comp_displays`); CompHost's `DisplayRunner` p
 (`native/tools/compositor/display_windows_mac.mm`, via `bridge_comp_set_display_provider` — never
 AppKit in the dylib). `nano_compositor`'s render thread owns the runtime (WAMR: wasm runs only on the
 thread that brought it up) and the main thread owns the windows. Tests never open a window:
-`NANO_DISPLAY_REDIRECT=offscreen` + `NANO_FAKE_SCREENS`.
+`NANO_DISPLAY_REDIRECT=offscreen` + `NANO_FAKE_SCREENS`. A slot's mode can be `syphon`: a Syphon
+server in the process, on the VENDORED protocol core (`native/third_party/syphon` → `syphon_core`,
+process-only — never the dylib, which Resolume loads beside its own Syphon).
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 

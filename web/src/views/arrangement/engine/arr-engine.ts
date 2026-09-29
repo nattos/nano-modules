@@ -13,6 +13,7 @@
  *   → setTracePoints([sketch_output]) → onTracedFrames → draw bitmap.
  */
 
+import type { DisplayIdentify } from '../../../displays/display-types';
 import { EngineProxy } from '../../../engine-proxy';
 import { initFontProvider, requestFont } from '../../../font-access';
 import type { Sketch } from '../../../sketch-types';
@@ -284,7 +285,7 @@ export class ArrEngine implements CompEngine {
   lightTest(_placementId: string, _slotId: string, _pattern: string) {}
   readonly outputsDisplays = false;
   setDisplayPlan(_plan: unknown) {}
-  identifyDisplay(_msg: { label: string; screenUuid: string; ordinal: number; window: boolean }) {}
+  identifyDisplay(_msg: DisplayIdentify) {}
   /** Transport + Precise-gate commands. */
   compControl(msg: CompControlMsg) {
     this.proxy.compControl(msg);

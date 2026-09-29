@@ -1,6 +1,7 @@
 // display_windows_mac.mm — see display_windows.h. Compiled under ARC.
 
 #include "compositor/display_windows.h"
+#include "compositor/syphon_outputs.h"
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -149,20 +150,26 @@ struct Screen {
 
 struct Want {
   std::string placementId, slotId, name, screenUuid;
-  bool window = false;
+  bool window = false;  // a rehearsal window
+  bool syphon = false;  // a Syphon server (no window at all)
+  int w = 0, h = 0;     // Syphon: the frame size
   json windowFrame;
 };
 
 class MacDisplayWindows final : public DisplayWindows {
  public:
   explicit MacDisplayWindows(double maxHz) : maxHz_(maxHz) {
+    // What Syphon clients list this process's servers under (unbundled, it
+    // would be "nano_compositor").
+    NSProcessInfo.processInfo.processName = @"Nano Modules";
     provider_.ctx = this;
     provider_.screens_json = [](void* c) { return self(c)->screensJson(); };
     provider_.screens_version = [](void* c) { return self(c)->screensVersion(); };
     provider_.reconcile = [](void* c, const char* w) { self(c)->reconcile(w); };
-    provider_.surface_for = [](void* c, const char* pid, int32_t* w, int32_t* h) {
-      return self(c)->surfaceFor(pid, w, h);
+    provider_.surface_for = [](void* c, const char* pid, int32_t* w, int32_t* h, int32_t* kind) {
+      return self(c)->surfaceFor(pid, w, h, kind);
     };
+    provider_.publish = [](void* c, const char* pid) { self(c)->publish(pid ? pid : ""); };
     provider_.identify = [](void* c, const char* label, const char* uuid, int32_t window) {
       self(c)->identify(label ? label : "", uuid ? uuid : "", window != 0);
     };
@@ -225,11 +232,12 @@ class MacDisplayWindows final : public DisplayWindows {
     NanoOutputDelegate* delegate = nil;
   };
   struct Surface {
-    CAMetalLayer* layer = nil;
+    id native = nil;  // a CAMetalLayer (kind 0) or an IOSurface (kind 1)
+    int kind = 0;
     int w = 0, h = 0;
   };
   struct Retired {
-    CAMetalLayer* layer = nil;
+    id native = nil;
     double at = 0;
   };
 
@@ -262,7 +270,11 @@ class MacDisplayWindows final : public DisplayWindows {
         x.slotId = w.value("slotId", std::string());
         x.name = w.value("name", std::string());
         x.screenUuid = w.value("screenUuid", std::string());
-        x.window = w.value("window", false);
+        const std::string mode = w.value("mode", std::string("fullscreen"));
+        x.window = mode == "window";
+        x.syphon = mode == "syphon";
+        x.w = w.value("w", 0);
+        x.h = w.value("h", 0);
         if (w.contains("windowFrame") && w["windowFrame"].is_object()) x.windowFrame = w["windowFrame"];
         if (!x.placementId.empty()) wants.push_back(std::move(x));
       }
@@ -274,13 +286,20 @@ class MacDisplayWindows final : public DisplayWindows {
     dispatch_async(dispatch_get_main_queue(), ^{ this->applyWants(); });
   }
 
-  void* surfaceFor(const char* pid, int32_t* w, int32_t* h) {
+  void* surfaceFor(const char* pid, int32_t* w, int32_t* h, int32_t* kind) {
     std::lock_guard<std::mutex> lk(mu_);
     const auto it = surfaces_.find(pid ? pid : "");
-    if (it == surfaces_.end() || !it->second.layer) return nullptr;
+    if (it == surfaces_.end() || !it->second.native) return nullptr;
     if (w) *w = it->second.w;
     if (h) *h = it->second.h;
-    return (__bridge void*)it->second.layer;
+    if (kind) *kind = it->second.kind;
+    return (__bridge void*)it->second.native;
+  }
+
+  /** A Syphon frame is complete (the render side, off its thread): publish
+   *  it on the main thread, where the server lives. */
+  void publish(const std::string& pid) {
+    dispatch_async(dispatch_get_main_queue(), ^{ this->syphon_.publish(pid); });
   }
 
   void identify(const std::string& label, const std::string& uuid, bool window) {
@@ -400,6 +419,17 @@ class MacDisplayWindows final : public DisplayWindows {
       if (wants.empty()) killed_ = false;
       else wants.clear();
     }
+    // Syphon outputs are servers, not windows.
+    std::vector<Want> syphonWants;
+    for (auto it = wants.begin(); it != wants.end();) {
+      if (it->syphon) {
+        syphonWants.push_back(std::move(*it));
+        it = wants.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    applySyphon(syphonWants);
     std::set<std::string> wanted;
     for (const auto& w : wants) wanted.insert(w.placementId);
     // A window the viewer closed stays down until the page drops it.
@@ -514,10 +544,37 @@ class MacDisplayWindows final : public DisplayWindows {
     killed_ = true;
     for (auto& [pid, o] : outs_) closeOut(o);
     outs_.clear();
+    applySyphon({});
     rePace();
     syncHotKey();
     updateCursor();
     pushEvent({{"type", "disableOutput"}});
+  }
+
+  /** Syphon servers for exactly `wants` (each at its frame size). */
+  void applySyphon(const std::vector<Want>& wants) {
+    std::set<std::string> wanted;
+    for (const auto& w : wants) wanted.insert(w.placementId);
+    for (const auto& pid : syphonKeys_) {
+      if (wanted.count(pid)) continue;
+      syphon_.close(pid);
+      std::lock_guard<std::mutex> lk(mu_);
+      if (auto s = surfaces_.find(pid); s != surfaces_.end()) {
+        retired_.push_back({s->second.native, nowSec()});
+        surfaces_.erase(s);
+      }
+    }
+    syphonKeys_ = wanted;
+    for (const auto& w : wants) {
+      IOSurfaceRef ref = syphon_.ensure(w.placementId, w.name, w.w, w.h);
+      if (!ref) continue;
+      id surf = (__bridge_transfer id)ref;  // ARC owns the +1
+      std::lock_guard<std::mutex> lk(mu_);
+      auto& cur = surfaces_[w.placementId];
+      if (cur.native == surf) continue;
+      if (cur.native) retired_.push_back({cur.native, nowSec()});
+      cur = {surf, 1, w.w, w.h};
+    }
   }
 
   bool openOut(const Want& w) {
@@ -590,7 +647,7 @@ class MacDisplayWindows final : public DisplayWindows {
     std::lock_guard<std::mutex> lk(mu_);
     auto s = surfaces_.find(o.want.placementId);
     if (s != surfaces_.end()) {
-      retired_.push_back({s->second.layer, nowSec()});
+      retired_.push_back({s->second.native, nowSec()});
       surfaces_.erase(s);
     }
   }
@@ -608,7 +665,7 @@ class MacDisplayWindows final : public DisplayWindows {
       layer.drawableSize = CGSizeMake(w, h);
     }
     std::lock_guard<std::mutex> lk(mu_);
-    surfaces_[o.want.placementId] = {layer, w, h};
+    surfaces_[o.want.placementId] = {layer, 0, w, h};
   }
 
   void viewerClosed(const std::string& pid) {
@@ -760,7 +817,9 @@ class MacDisplayWindows final : public DisplayWindows {
   id keyMonitor_ = nil;  // ⌘Q while one of our windows is in front
   EventHandlerRef hotKeyHandler_ = nullptr;
   bool killed_ = false;
-  bool cursorHidden_ = false;  // hidden by us (updateCursor): balance it  // ⌘⇧D pressed; cleared once the page sends no wants
+  bool cursorHidden_ = false;  // hidden by us (updateCursor): balance it
+  SyphonOutputs syphon_;
+  std::set<std::string> syphonKeys_;  // placements with a Syphon server  // ⌘⇧D pressed; cleared once the page sends no wants
   CADisplayLink* link_ = nil;
   NanoOutputView* linkView_ = nil;
   NanoLinkTarget* linkTarget_ = nil;

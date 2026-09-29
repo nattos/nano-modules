@@ -18,8 +18,9 @@
 
 import { makeObservable, observable, action, runInAction, toJS } from 'mobx';
 import {
-  displayOrdinal, displaySlotId, librarySlot, librarySlots, resolveDisplayScreen,
-  BUILTIN_DISPLAY_COUNT, type DisplayScreen, type DisplaySlot, type WindowFrame,
+  displayMode, displayOrdinal, displaySlotId, librarySlot, librarySlots, resolveDisplayScreen,
+  BUILTIN_DISPLAY_COUNT, type DisplayIdentify, type DisplayMode, type DisplayScreen, type DisplaySlot,
+  type WindowFrame,
 } from '../../../displays/display-types';
 import { buildDisplayPlan, type DisplayPlan } from '../../../displays/display-plan';
 import { loadDisplayLibrary, saveDisplayRow, watchDisplayLibrary } from '../../../state/display-device-store';
@@ -30,7 +31,7 @@ const SAVE_DEBOUNCE_MS = 300;
 
 /** One display's state, as the native compositor reports it. */
 export interface DisplayStatus {
-  /** 'showing' | 'window' | 'opening' | 'no-screen' | 'off' | 'disarmed'
+  /** 'showing' | 'window' | 'syphon' | 'opening' | 'no-screen' | 'off' | 'disarmed'
    *  (the master output switch is off) | 'no-output'. */
   state: string;
   screen?: DisplayScreen;
@@ -53,7 +54,7 @@ export type DisplayEvent =
 /** What the engine seam takes (arr-displays.ts binds engineBridge). */
 export interface DisplayEngineSink {
   plan(plan: DisplayPlan): void;
-  identify(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }): void;
+  identify(msg: DisplayIdentify): void;
 }
 
 export class DisplayController {
@@ -122,7 +123,7 @@ export class DisplayController {
     if (!slot) return;
     this.sink?.identify({
       label: slot.name, screenUuid: slot.screen?.uuid ?? '',
-      ordinal: displayOrdinal(slot.id), window: slot.window === true,
+      ordinal: displayOrdinal(slot.id), mode: displayMode(slot),
     });
   }
 
@@ -158,9 +159,10 @@ export class DisplayController {
   }
 
   /** Where a slot lands now: a connected screen, or null (a window, or no
-   *  screen — see `slot.window`). Null too when the engine can't say. */
+   *  screen, or not fullscreen — see `slot.mode`). Null too when the engine
+   *  can't say. */
   screenFor(slot: DisplaySlot): DisplayScreen | null {
-    if (!this.screens || slot.window) return null;
+    if (!this.screens || displayMode(slot) !== 'fullscreen') return null;
     const i = resolveDisplayScreen(slot, this.screens);
     return i >= 0 ? this.screens[i] : null;
   }
@@ -197,10 +199,10 @@ export class DisplayController {
     });
   }
 
-  /** Rehearse in a window (true) or go fullscreen on the screen (false). */
-  setWindow(id: string, on: boolean): void {
+  /** Fullscreen on its screen, a rehearsal window, or a Syphon server. */
+  setMode(id: string, mode: DisplayMode): void {
     this.edit(id, (r) => {
-      if (on) r.window = true; else delete r.window;
+      if (mode === 'fullscreen') delete r.mode; else r.mode = mode;
     });
   }
 

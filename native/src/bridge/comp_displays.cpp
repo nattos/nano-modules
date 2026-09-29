@@ -50,6 +50,20 @@ std::string base64(const std::vector<uint8_t>& bytes) {
 
 // ── Screens + plan ──────────────────────────────────────────────────────────
 
+DisplayMode parseDisplayMode(const std::string& s) {
+  if (s == "window") return DisplayMode::Window;
+  if (s == "syphon") return DisplayMode::Syphon;
+  return DisplayMode::Fullscreen;
+}
+
+const char* displayModeName(DisplayMode m) {
+  switch (m) {
+    case DisplayMode::Window: return "window";
+    case DisplayMode::Syphon: return "syphon";
+    default: return "fullscreen";
+  }
+}
+
 std::vector<DisplayScreen> parseDisplayScreens(const nlohmann::json& j) {
   std::vector<DisplayScreen> out;
   if (!j.is_array()) return out;
@@ -89,7 +103,7 @@ std::vector<DisplayOutput> parseDisplayPlan(const nlohmann::json& plan) {
     d.enabled = o.value("enabled", true);
     d.screenUuid = o.value("screenUuid", std::string());
     d.ordinal = std::max(1, o.value("ordinal", 1));
-    d.window = o.value("window", false);
+    d.mode = parseDisplayMode(o.value("mode", std::string("fullscreen")));
     if (o.contains("windowFrame") && o["windowFrame"].is_object()) d.windowFrame = o["windowFrame"];
     d.fit = parseFit(o.value("fit", std::string("fit")));
     out.push_back(std::move(d));
@@ -126,7 +140,10 @@ void OffscreenDisplays::reconcile(const std::vector<DisplayWant>& wants) {
   std::map<std::string, Surface> next;
   for (const auto& w : wants) {
     Surface s;
-    if (w.window) {
+    if (w.mode == DisplayMode::Syphon) {
+      s.width = w.width;
+      s.height = w.height;
+    } else if (w.mode == DisplayMode::Window) {
       s.width = kDefaultWindowW;
       s.height = kDefaultWindowH;
       if (w.windowFrame.is_object()) {
@@ -218,7 +235,9 @@ void DisplayRunner::identify(const nlohmann::json& m) {
   DisplayOutput o;
   o.screenUuid = m.value("screenUuid", std::string());
   o.ordinal = std::max(1, m.value("ordinal", 1));
-  const bool window = m.value("window", false);
+  const DisplayMode mode = parseDisplayMode(m.value("mode", std::string("fullscreen")));
+  if (mode == DisplayMode::Syphon) return;  // no screen to paint on
+  const bool window = mode == DisplayMode::Window;
   std::string uuid;
   if (!window) {
     const auto screens = surfaces_->screens();
@@ -229,7 +248,8 @@ void DisplayRunner::identify(const nlohmann::json& m) {
   surfaces_->identify(m.value("label", std::string()), uuid, window);
 }
 
-void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, bool hasContent) {
+void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, int width, int height,
+                               bool hasContent) {
   if (!surfaces_ || !gpu_) return;
   // Screens: re-read on a hotplug only.
   const uint64_t sv = surfaces_->screensVersion();
@@ -245,12 +265,15 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, bool h
     w.placementId = o.placementId;
     w.slotId = o.slotId;
     w.name = o.name;
-    w.window = o.window;
+    w.mode = o.mode;
     w.windowFrame = o.windowFrame;
-    if (!o.window) {
+    if (o.mode == DisplayMode::Fullscreen) {
       const int si = resolveDisplayScreen(o, screens_);
       if (si < 0) continue;  // no screen: an unplugged cable
       w.screenUuid = screens_[si].uuid;
+    } else if (o.mode == DisplayMode::Syphon) {
+      w.width = width;
+      w.height = height;
     }
     wants.push_back(std::move(w));
   }
@@ -267,19 +290,21 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, bool h
                                     [&](const DisplayWant& w) { return w.placementId == o.placementId; });
     if (!wanted) continue;
     const auto s = surfaces_->surfaceFor(o.placementId);
-    if (!s.layer && (s.width <= 0 || s.height <= 0)) continue;  // not up yet
+    if (!s.native && (s.width <= 0 || s.height <= 0)) continue;  // not up yet
     Target t;
     if (auto it = targets_.find(o.placementId); it != targets_.end()) {
       t = it->second;
       targets_.erase(it);
     }
-    const bool same = s.layer ? t.layer == s.layer
-                              : !t.layer && t.width == s.width && t.height == s.height;
+    const bool same = t.kind == s.kind &&
+        (s.native ? t.native == s.native : t.width == s.width && t.height == s.height);
     if (t.handle <= 0 || !same) {
       releaseTarget(t);
-      t.handle = s.layer ? gpu_->createPresentTarget(s.layer)
-                         : gpu_->createOffscreenPresentTarget((uint32_t)s.width, (uint32_t)s.height);
-      t.layer = s.layer;
+      t.handle = s.kind == DisplaySurfaces::Surface::Layer ? gpu_->createPresentTarget(s.native)
+          : s.kind == DisplaySurfaces::Surface::IOSurface ? gpu_->createSurfacePresentTarget(s.native)
+          : gpu_->createOffscreenPresentTarget((uint32_t)s.width, (uint32_t)s.height);
+      t.kind = s.kind;
+      t.native = s.native;
       t.presented = 0;
       t.fps = 0;
       t.windowStart = now;
@@ -291,14 +316,22 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, bool h
       bool routed = false;
       int32_t src = cx.deviceSourceTexture(o.placementId, &routed);
       if (!routed) src = hasContent ? composite : -1;
-      if (gpu_->presentScaled(t.handle, src, o.fit)) t.presented++;
+      // A Syphon frame is published once the GPU has finished writing it.
+      std::function<void()> done;
+      if (o.mode == DisplayMode::Syphon) {
+        DisplaySurfaces* surfaces = surfaces_;
+        const std::string pid = o.placementId;
+        done = [surfaces, pid] { surfaces->publish(pid); };
+      }
+      if (gpu_->presentScaled(t.handle, src, o.fit, std::move(done))) t.presented++;
       if (now - t.windowStart >= 1.0) {
         t.fps = t.presented / (now - t.windowStart);
         t.presented = 0;
         t.windowStart = now;
       }
       // Offscreen: a small probe of what was presented, for the report.
-      if (!t.layer && (t.lastProbe < 0 || now - t.lastProbe >= kProbeIntervalSec)) {
+      if (t.kind == DisplaySurfaces::Surface::Offscreen &&
+          (t.lastProbe < 0 || now - t.lastProbe >= kProbeIntervalSec)) {
         t.lastProbe = now;
         const int32_t tex = gpu_->presentTargetTexture(t.handle);
         auto probes = probes_;
@@ -339,13 +372,14 @@ nlohmann::json DisplayRunner::status() {
     } else if (o.enabled && !armed_) {
       s["state"] = "disarmed";
     } else if (o.enabled) {
-      const int si = o.window ? -1 : resolveDisplayScreen(o, screens_);
-      if (!o.window && si < 0) {
+      const bool onScreen = o.mode == DisplayMode::Fullscreen;
+      const int si = onScreen ? resolveDisplayScreen(o, screens_) : -1;
+      if (onScreen && si < 0) {
         s["state"] = "no-screen";
       } else {
         const auto it = targets_.find(o.placementId);
         const bool up = it != targets_.end() && it->second.handle > 0;
-        s["state"] = !up ? "opening" : o.window ? "window" : "showing";
+        s["state"] = !up ? "opening" : onScreen ? "showing" : displayModeName(o.mode);
         if (up) {
           s["width"] = it->second.width;
           s["height"] = it->second.height;
@@ -353,7 +387,9 @@ nlohmann::json DisplayRunner::status() {
         }
         if (si >= 0) s["screen"] = displayScreensJson({screens_[si]})[0];
         const auto p = probes.find(o.placementId);
-        if (up && !it->second.layer && p != probes.end()) s["probe"] = base64(p->second);
+        if (up && it->second.kind == DisplaySurfaces::Surface::Offscreen && p != probes.end()) {
+          s["probe"] = base64(p->second);
+        }
       }
     }
     out[o.placementId] = std::move(s);

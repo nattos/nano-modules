@@ -10,7 +10,9 @@
  */
 
 import type { Composition } from '../views/arrangement/model/composition';
-import { displayOrdinal, librarySlot, type DisplayFit, type DisplaySlot, type WindowFrame } from './display-types';
+import {
+  displayMode, displayOrdinal, librarySlot, type DisplayFit, type DisplayMode, type DisplaySlot, type WindowFrame,
+} from './display-types';
 
 export interface DisplayPlanOutput {
   placementId: string;
@@ -21,7 +23,7 @@ export interface DisplayPlanOutput {
   screenUuid: string;
   /** Display N: the automatic binding's N. */
   ordinal: number;
-  window: boolean;
+  mode: DisplayMode;
   windowFrame?: WindowFrame;
   fit: DisplayFit;
 }
@@ -46,7 +48,7 @@ export function buildDisplayPlan(comp: Composition, library: readonly DisplaySlo
       enabled: p.enabled !== false,
       screenUuid: slot.screen?.uuid ?? '',
       ordinal: displayOrdinal(slot.id),
-      window: slot.window === true,
+      mode: displayMode(slot),
       ...(slot.windowFrame ? { windowFrame: { ...slot.windowFrame } } : {}),
       fit: p.fit ?? 'fit',
     });

@@ -19,10 +19,16 @@ import {
 
 const FILE = SETTINGS_FILES.displayDevices;
 
-/** The well-formed rows of a stored library, in slot order. */
+/** The well-formed rows of a stored library, in slot order. A row from
+ *  before modes (`window: true`) is a window. */
 export function validDisplayRows(doc: unknown): DisplaySlot[] {
   if (!Array.isArray(doc)) return [];
   return doc
+    .map((r) => {
+      if (!r || typeof r !== 'object' || !('window' in r)) return r;
+      const { window: w, ...rest } = r as DisplaySlot & { window?: unknown };
+      return w === true && !rest.mode ? { ...rest, mode: 'window' } : rest;
+    })
     .filter((r): r is DisplaySlot => !!r && typeof r === 'object' &&
       (r as { kind?: unknown }).kind === 'display' &&
       typeof (r as { id?: unknown }).id === 'string' && displayOrdinal((r as DisplaySlot).id) > 0 &&

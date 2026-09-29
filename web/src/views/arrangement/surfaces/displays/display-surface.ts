@@ -11,7 +11,7 @@
 import { html, css, svg } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../../mobx-lit-element';
-import type { DisplayFit } from '../../../../displays/display-types';
+import { displayMode, type DisplayFit } from '../../../../displays/display-types';
 import { displayController } from '../../state/display-controller';
 import { store } from '../../state/store';
 import { frameAspect } from '../lights/light-draw';
@@ -40,12 +40,15 @@ export class DisplaySurface extends MobxLitElement {
     const p = this.placementId ? store.placementById(this.placementId) : undefined;
     const st = this.placementId ? displayController.status[this.placementId] : undefined;
     const screen = slot ? (st?.screen ?? displayController.screenFor(slot)) : null;
-    const win = slot?.window ? slot.windowFrame : undefined;
-    const aspect = screen && screen.w > 0 && screen.h > 0 ? screen.w / screen.h
+    const mode = slot ? displayMode(slot) : 'fullscreen';
+    const win = mode === 'window' ? slot?.windowFrame : undefined;
+    // A Syphon frame IS the show's frame.
+    const aspect = mode === 'syphon' ? frameAspect()
+      : screen && screen.w > 0 && screen.h > 0 ? screen.w / screen.h
       : win && win.w > 0 && win.h > 0 ? win.w / win.h : 16 / 9;
     const fit: DisplayFit = p?.fit ?? 'fit';
     const r = fittedRect(frameAspect(), aspect, fit);
-    const live = !!st && (st.state === 'showing' || st.state === 'window');
+    const live = !!st && (st.state === 'showing' || st.state === 'window' || st.state === 'syphon');
     const hi = 'var(--app-hi-color2, #4169e1)';
     return html`<svg viewBox="-0.04 -0.04 ${aspect + 0.08} 1.08" class=${live || !p ? '' : 'dim'}>
       <defs><clipPath id=${this.clipId}><rect x="0" y="0" width=${aspect} height="1"></rect></clipPath></defs>

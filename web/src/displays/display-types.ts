@@ -10,7 +10,9 @@
  *     the editor. A remembered screen that isn't connected falls back to the
  *     automatic binding; with no screen at all the display is inert — an
  *     unplugged cable, not an error.
- *   - `window`: rehearse in a normal window instead (a laptop, no projector).
+ *   - `mode`: fullscreen on that screen (the default), a normal WINDOW to
+ *     rehearse in (a laptop, no projector), or a SYPHON server other apps
+ *     read (no screen at all).
  *
  * Display 1 and Display 2 always exist (synthesised when the library has no
  * row for them); "New display" adds Display 3 and on. The native compositor
@@ -30,6 +32,19 @@ export const DISPLAY_FITS: readonly { id: DisplayFit; label: string; title: stri
   { id: 'fill', label: 'Fill', title: 'Fill the screen, cropping the frame' },
   { id: 'stretch', label: 'Stretch', title: 'Fill the screen, ignoring the aspect' },
 ];
+
+/** Where a display goes on this machine. Lock-step: comp_displays.h
+ *  DisplayMode. */
+export type DisplayMode = 'fullscreen' | 'window' | 'syphon';
+
+export const DISPLAY_MODES: readonly { id: DisplayMode; label: string; title: string }[] = [
+  { id: 'fullscreen', label: 'fullscreen', title: 'Fullscreen on its screen' },
+  { id: 'window', label: 'window', title: 'A normal window to rehearse in — no projector needed' },
+  { id: 'syphon', label: 'syphon', title: 'A Syphon server other apps can read (Resolume, MadMapper, OBS…) — no screen' },
+];
+
+/** What identify asks the engine for. */
+export interface DisplayIdentify { label: string; screenUuid: string; ordinal: number; mode: DisplayMode }
 
 /** A screen as the native compositor reports it (comp_report.screens). */
 export interface DisplayScreen {
@@ -55,8 +70,8 @@ export interface DisplaySlot {
   name: string;
   /** This machine's screen for it; absent = automatic. */
   screen?: { uuid: string; name: string };
-  /** Rehearse in a window instead of fullscreen. */
-  window?: boolean;
+  /** Where it goes (absent: fullscreen on its screen). */
+  mode?: 'window' | 'syphon';
   /** Where that window was last (remembered when it moves). */
   windowFrame?: WindowFrame;
   updatedAt: number;
@@ -80,6 +95,10 @@ export function displayOrdinal(id: string): number {
 
 export function defaultDisplaySlot(n: number): DisplaySlot {
   return { kind: 'display', id: displaySlotId(n), name: `Display ${n}`, updatedAt: 0 };
+}
+
+export function displayMode(slot: Pick<DisplaySlot, 'mode'>): DisplayMode {
+  return slot.mode ?? 'fullscreen';
 }
 
 /**
