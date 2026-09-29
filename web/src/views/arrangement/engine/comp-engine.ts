@@ -74,6 +74,16 @@ export interface CompEngine {
    */
   mirrorMidi(kind: 'library' | 'sim', value: unknown): void;
 
+  /** Does this engine transmit light devices' DMX? Only the native
+   *  compositor can (a browser has no UDP); the worker engine takes the plan
+   *  and ignores it. */
+  readonly outputsLights: boolean;
+  /** The show's resolved light plan (lights/light-plan.ts) — replaces the last. */
+  setLightPlan(plan: unknown): void;
+  /** Start (pattern non-empty) or stop an identify / test pattern on a placed
+   *  light, or one slot of it (slotId ''). */
+  lightTest(placementId: string, slotId: string, pattern: string): void;
+
   /** Per-device texture traces, merged with the composite trace. */
   setExtraTracePoints(tps: TracePoint[]): void;
   /** Bind a decoded video frame to a source instance (null clears). Only

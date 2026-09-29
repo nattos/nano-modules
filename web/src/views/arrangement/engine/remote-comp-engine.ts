@@ -214,10 +214,22 @@ export class RemoteCompEngine implements CompEngine {
   }
   private midiMirror: { library?: unknown; sim?: unknown } = {};
 
+  readonly outputsLights = true;
+  /** Sticky: a restarted compositor gets it back on reconnect. */
+  private lightPlan: unknown = undefined;
+  setLightPlan(plan: unknown): void {
+    this.lightPlan = plan;
+    this.action('comp_lights', { plan });
+  }
+  lightTest(placementId: string, slotId: string, pattern: string): void {
+    this.action('comp_lights_test', { placementId, slotId, pattern });
+  }
+
   private replay() {
     if (this.lastDoc !== null) this.action('comp_load_doc', { json: this.lastDoc });
     if (this.midiMirror.library !== undefined) this.mirrorMidi('library', this.midiMirror.library);
     if (this.midiMirror.sim !== undefined) this.mirrorMidi('sim', this.midiMirror.sim);
+    if (this.lightPlan !== undefined) this.setLightPlan(this.lightPlan);
     // Settings first, then where the playhead WAS (not the last seek — it has
     // moved on since), then whether it runs.
     for (const slot of ['mode', 'loop', 'clipTiming', 'ignoreSolo']) {

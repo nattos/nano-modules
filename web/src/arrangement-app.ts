@@ -26,6 +26,8 @@ import { debugPerf } from './views/arrangement/state/debug-perf';
 import { previewSurfaces } from './preview-surfaces';
 import { midiController } from './state/midi-controller';
 import { bootArrangementMidi } from './views/arrangement/state/arr-midi';
+import { bootArrangementLights } from './views/arrangement/state/arr-lights';
+import { lightController } from './views/arrangement/state/light-controller';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -47,4 +49,7 @@ import { bootArrangementMidi } from './views/arrangement/state/arr-midi';
 (window as any).__previewSurfaces = previewSurfaces;
 // The MIDI device library + Web MIDI (devices the show includes drive its wires).
 (window as any).midiController = midiController;
+// The light library (types, rigs) + test patterns.
+(window as any).lightController = lightController;
 void bootArrangementMidi();
+void bootArrangementLights();

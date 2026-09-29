@@ -95,6 +95,18 @@ browser editor reaches it through the plugin). Both apply edits live. An empty
 array never replaces a non-empty library — remove devices from the app's
 Devices tab (they are soft-deleted, so wires keep their provenance).
 
+### `light-devices.json` — the light device library
+
+An array of rows, each a light TYPE (`{"kind":"type", "pixels", "ledsPerPixel",
+"format": "rgb"|"grb"|"bgr"|"rgbw"|"grbw", "gamma", …}`) or a RIG
+(`{"kind":"rig", "slots": [{ "typeId", "address": { "universe", "channel",
+"dest" }, "reverse", "layout": { "x", "y", "w", "h" } }], …}`). `universe` is
+the Art-Net port address (0-based, as the node is set), `channel` 1-based,
+`dest` `"broadcast"`, an IP or `ip:port`; `layout` is the slot's default
+sampling rect in the frame (0–1, top-left origin). Used by the arrangement app
+(its Devices view) and applied live; a show stores only which rigs it includes
+and where each slot samples in that show.
+
 ### `library-paths.json` — media library roots
 
 `[{ "id", "label", "absolutePath", "addedAt" }]`. The arrangement app adopts a

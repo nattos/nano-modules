@@ -277,6 +277,13 @@ export class ArrOverlay extends MobxLitElement {
   /** Where a route end sits on screen (a port pip's centre, a field's left
    *  edge), or null when it isn't showing. */
   private routeEndPoint(e: RouteEnd): Pt | null {
+    if (e.kind === 'device') {
+      // A light's input pip: its card in the Devices view, its row otherwise.
+      const r = store.mainView === 'devices'
+        ? deviceAnchorRect(DeviceAnchorKeys.lightInput(e.placementId))
+        : anchorRect(AnchorKeys.lightInput(e.placementId));
+      return r ? { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 } : null;
+    }
     if (e.kind === 'port') {
       const r = anchorRect(AnchorKeys.port(e.trackId, e.portId));
       return r ? { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 } : null;

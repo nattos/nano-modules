@@ -229,5 +229,6 @@ export const SETTINGS_FILES = {
   arrangement: 'arrangement.json',
   remoteControl: 'remote-control.json',
   midiDevices: 'midi-devices.json',
+  lightDevices: 'light-devices.json',
   libraryPaths: 'library-paths.json',
 } as const;

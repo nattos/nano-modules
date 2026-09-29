@@ -329,6 +329,12 @@ export interface CompFrameInfo {
   /** …and the source frame each clip has bound now (clips with one), present
    *  when it changed. */
   videoFrames?: Record<string, number>;
+  /** Light devices (the native compositor): the colours each placed light is
+   *  showing (placementId → base64 RGB, every slot's pixels in rig order),
+   *  at most ~30 Hz, when they changed. */
+  lights?: Record<string, string>;
+  /** …and the transmitter's status (on a change, else once a second). */
+  lightStatus?: { sending: boolean; pps: number; error?: string };
 }
 
 // --- Worker events (worker → main) ---

@@ -26,7 +26,7 @@ export async function bootArrangementMidi(): Promise<void> {
   booted = true;
   midiController.bindSketchSource(() => compositionSketches(store.composition));
   midiController.bindEnginePush((json) => engineBridge.setExternalScalars(json));
-  engineBridge.onDocShipped = () => midiController.pushExternalScalars();
+  engineBridge.addDocShippedListener(() => midiController.pushExternalScalars());
   try {
     await midiController.loadLibrary();
   } catch (err) {

@@ -15,6 +15,7 @@ import type { Sketch, Wire } from '../../../sketch-types';
 import type { PluginInfo } from '../../../widgets/column-adapter';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { store } from '../state/store';
+import { lightController } from '../state/light-controller';
 import { LAYER_TARGET_ID, PORT_IN, PORT_OUT, type RouteEnd, type Track } from '../model/composition';
 import { catalogEffect } from '../engine/effect-catalog';
 import { anchorRect, AnchorKeys } from './anchor-registry';
@@ -86,8 +87,10 @@ export function portDir(track: Track, portId: string): 'in' | 'out' {
   return track.ports?.find((p) => p.id === portId)?.dir ?? 'out';
 }
 
-/** "Track · port" or "Track · Device.field" (clip ends name the clip). */
+/** "Track · port", "Track · Device.field" (clip ends name the clip), or a
+ *  light's name. */
 export function routeEndLabel(e: RouteEnd): string {
+  if (e.kind === 'device') return lightController.placementName(e.placementId);
   const t = store.trackById(e.trackId);
   const tn = t ? store.trackDisplayName(t) : '?';
   if (e.kind === 'port') return `${tn} · ${t ? portName(t, e.portId) : e.portId}`;

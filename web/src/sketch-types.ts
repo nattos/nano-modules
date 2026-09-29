@@ -743,5 +743,11 @@ export interface FieldConnectInfo {
    * a port makes the gesture a ROUTE (store.connectRoute), not a wire.
    */
   trackPort?: { trackId: string; portId: string; dir: 'in' | 'out' };
+  /**
+   * Set when this endpoint is a LIGHT device's input (the arrangement's
+   * Devices view / light row): the placement id. Pairs with an out port — the
+   * gesture becomes a route telling the light what to sample.
+   */
+  lightInput?: { placementId: string };
 }
 

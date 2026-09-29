@@ -1,0 +1,172 @@
+/**
+ * Light devices — the library model (the devices push, D2).
+ *
+ * Three layers, the same words every device kind uses:
+ *   - TEMPLATE (code): a parametric shape — `light.strip`, a bar of pixels.
+ *   - TYPE (library): a template with its parameters filled in ("24 V bar:
+ *     12 px × 5 LEDs, RGB"). Customised by forking, as MIDI templates are.
+ *   - RIG (library): SLOTS, each a type plus an ADDRESS (universe, start
+ *     channel, destination) and a default layout — "four bars as vertical
+ *     strips". A lone bar is a one-slot rig.
+ *
+ * There is no separate "unit": a slot's address IS the physical bar. Swapping
+ * two slots exchanges their addresses (and types), which is how a rig hung in
+ * the wrong order is fixed — in the library, so every show using the rig gets
+ * it. What a SHOW owns is where each slot samples its frame (its placement's
+ * per-slot layout, falling back to the rig's).
+ *
+ * Pure types + helpers — no DOM, no store.
+ */
+
+/** Channel layout per pixel. Lock-step: native lights/light_map.h Format. */
+export type LightFormat = 'rgb' | 'grb' | 'bgr' | 'rgbw' | 'grbw';
+
+export const LIGHT_FORMATS: readonly { id: LightFormat; label: string }[] = [
+  { id: 'rgb', label: 'RGB' },
+  { id: 'grb', label: 'GRB' },
+  { id: 'bgr', label: 'BGR' },
+  { id: 'rgbw', label: 'RGBW' },
+  { id: 'grbw', label: 'GRBW' },
+];
+
+export function channelsPerPixel(f: LightFormat): number {
+  return f === 'rgbw' || f === 'grbw' ? 4 : 3;
+}
+
+/** A rect in normalized frame coordinates (0,0 = top-left). A slot's pixels
+ *  run along its LONG axis: top → bottom when it's tall, left → right when
+ *  it's wide (a slot's `reverse` flips that). */
+export interface SlotRect { x: number; y: number; w: number; h: number }
+
+/** Where a fixture listens. */
+export interface LightAddress {
+  /** The 15-bit Art-Net port address (net · subnet · universe), 0-based as
+   *  the node is set. */
+  universe: number;
+  /** 1-based start channel, as a lighting desk shows it. */
+  channel: number;
+  /** 'broadcast', a node's IP, or 'ip:port'. */
+  dest: string;
+}
+
+export interface LightTemplate {
+  templateId: string;
+  name: string;
+  /** The parameters a new type starts with. */
+  defaults: { pixels: number; ledsPerPixel: number; format: LightFormat; gamma: number };
+}
+
+/** The code-registered templates. One parametric strip covers bars of any
+ *  length, RGB or RGBW, one LED per pixel or many (a 24 V segment). */
+export const LIGHT_TEMPLATES: readonly LightTemplate[] = [
+  {
+    templateId: 'light.strip',
+    name: 'LED strip',
+    defaults: { pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5 },
+  },
+];
+
+export function lightTemplate(templateId: string): LightTemplate | undefined {
+  return LIGHT_TEMPLATES.find((t) => t.templateId === templateId);
+}
+
+interface RowBase {
+  id: string;
+  name: string;
+  /** Lineage: the row (or template id) this was forked from. Bookkeeping only. */
+  parentId: string;
+  forkedAt: number;
+  updatedAt: number;
+  /** Soft delete — kept so a show that places it can say what it was. */
+  deleted?: boolean;
+}
+
+export interface LightType extends RowBase {
+  kind: 'type';
+  templateId: string;
+  /** Addressable pixels (DMX sees this many). */
+  pixels: number;
+  /** Physical LEDs each pixel lights (a 24 V segment is several) — drawing only. */
+  ledsPerPixel: number;
+  format: LightFormat;
+  gamma: number;
+}
+
+export interface LightSlot {
+  id: string;
+  typeId: string;
+  address: LightAddress;
+  /** Pixel 0 at the other end (a bar hung upside down). */
+  reverse?: boolean;
+  /** The rig's default layout for this slot (a show can override it). */
+  layout: SlotRect;
+}
+
+export interface LightRig extends RowBase {
+  kind: 'rig';
+  slots: LightSlot[];
+}
+
+export type LightRow = LightType | LightRig;
+
+/** Channels one slot of `type` occupies. */
+export function slotChannels(type: Pick<LightType, 'pixels' | 'format'>): number {
+  return type.pixels * channelsPerPixel(type.format);
+}
+
+/** The rig default for slot `i` of `n`: vertical strips spread across the
+ *  frame, each 1/60 wide (the Resolume shows' 32 px of 1920). */
+export function defaultStripLayout(i: number, n: number): SlotRect {
+  const w = 1 / 60;
+  return { x: (i + 0.5) / n - w / 2, y: 0, w, h: 1 };
+}
+
+/** Addresses for `count` fixtures of `type`, one after another from `start`.
+ *  A fixture that wouldn't fit in what's left of a universe starts the next. */
+export function consecutiveAddresses(count: number, type: Pick<LightType, 'pixels' | 'format'>,
+                                     start: LightAddress): LightAddress[] {
+  const n = slotChannels(type);
+  const out: LightAddress[] = [];
+  let universe = start.universe;
+  let channel = start.channel;
+  for (let i = 0; i < count; i++) {
+    if (channel > 1 && channel + n - 1 > 512) { universe++; channel = 1; }
+    out.push({ universe, channel, dest: start.dest });
+    channel += n;
+  }
+  return out;
+}
+
+/** One footprint per pixel: the rect cut into `pixels` cells along its long
+ *  axis, pixel 0 at the top (or left) unless `reverse`. [u0, v0, u1, v1]. */
+export function slotFootprints(r: SlotRect, pixels: number, reverse = false): [number, number, number, number][] {
+  const out: [number, number, number, number][] = [];
+  const n = Math.max(0, Math.floor(pixels));
+  const tall = r.h >= r.w;
+  for (let i = 0; i < n; i++) {
+    const k = reverse ? n - 1 - i : i;
+    if (tall) {
+      const y0 = r.y + (r.h * k) / n;
+      out.push([r.x, y0, r.x + r.w, y0 + r.h / n]);
+    } else {
+      const x0 = r.x + (r.w * k) / n;
+      out.push([x0, r.y, x0 + r.w / n, r.y + r.h]);
+    }
+  }
+  return out;
+}
+
+/** "u 3 · ch 41" (and the destination when it isn't broadcast). */
+export function addressLabel(a: LightAddress): string {
+  const base = `u${a.universe} · ch ${a.channel}`;
+  return a.dest && a.dest !== 'broadcast' ? `${base} → ${a.dest}` : base;
+}
+
+/** Is `dest` something the transmitter accepts ('broadcast' | ip | ip:port)? */
+export function validDest(dest: string): boolean {
+  if (dest === 'broadcast') return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?$/.exec(dest.trim());
+  if (!m) return false;
+  if (m.slice(1, 5).some((o) => Number(o) > 255)) return false;
+  return m[5] === undefined || (Number(m[5]) > 0 && Number(m[5]) <= 65535);
+}

@@ -278,6 +278,10 @@ export class ArrEngine implements CompEngine {
   setExternalScalars(json: string) { this.proxy.setExternalScalars(json); }
   /** The worker folds library + simulation into the table already. */
   mirrorMidi(_kind: 'library' | 'sim', _value: unknown) {}
+  // Light output is the native compositor's (no UDP in a browser).
+  readonly outputsLights = false;
+  setLightPlan(_plan: unknown) {}
+  lightTest(_placementId: string, _slotId: string, _pattern: string) {}
   /** Transport + Precise-gate commands. */
   compControl(msg: CompControlMsg) {
     this.proxy.compControl(msg);

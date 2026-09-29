@@ -13,6 +13,7 @@
 
 import { ALL_MIGRATION_IDS } from '../../../state/effect-migrations';
 import type { Wire as SketchWire } from '../../../sketch-types';
+import type { SlotRect } from '../../../lights/light-types';
 
 export interface Resolution {
   width: number;
@@ -779,16 +780,19 @@ export interface TrackPort {
   dir: 'in' | 'out';
 }
 
-/** One end of a route: a track port, or a texture field of a device in a
- *  track's own sketch (`clipId` omitted) or one of its clips. */
+/** One end of a route: a track port, a texture field of a device in a
+ *  track's own sketch (`clipId` omitted) or one of its clips, or a placed
+ *  LIGHT's input (a destination only — see {@link DevicePlacement}). */
 export type RouteEnd =
   | { kind: 'port'; trackId: string; portId: string }
-  | { kind: 'field'; trackId: string; clipId?: string; deviceId: string; field: string };
+  | { kind: 'field'; trackId: string; clipId?: string; deviceId: string; field: string }
+  | { kind: 'device'; placementId: string };
 
 /**
  * A Composition I/O route — PORTS ARE HUBS: every legal route has a port end.
  *   feed    — a field inside track T → a named OUT port of T;
- *   send    — an out port (named or `__out__`) → an input field anywhere, or an in port;
+ *   send    — an out port (named or `__out__`) → an input field anywhere, an in
+ *             port, or a light's input (what it samples instead of the main output);
  *   receive — a named IN port of T → an input field inside T.
  * Lock-step: comp_model.h RouteM + sketch_build.h routeIsLegal.
  */
@@ -830,23 +834,29 @@ export interface Composition {
 }
 
 /**
- * A library device the show puts ON ITS TIMELINE (the devices push): a device
- * row under the tracks. Only MIDI controllers today — lights and displays
- * extend `kind`, and will use `enabled`.
+ * A library device the show INCLUDES (the devices push), shown as a row under
+ * the tracks.
  *
- * A MIDI device's wires are ordinary sketch wires with
- * `src: { instanceKey: 'midi:<deviceId>', field: 'b0/e05/turn' }`, and they
- * work whether or not the device has a placement: the row is for seeing and
- * reaching the device, not for enabling it.
+ * - MIDI: the row is for seeing and reaching the device, nothing more. Its
+ *   wires are ordinary sketch wires with
+ *   `src: { instanceKey: 'midi:<deviceId>', field: 'b0/e05/turn' }`, and they
+ *   work whether or not the device has a placement.
+ * - LIGHT (a library rig, lights/light-types.ts): the placement IS the light
+ *   being in the show — it samples the main output (or whatever a route feeds
+ *   its input) and transmits while `enabled`. `layout` is where each of the
+ *   rig's slots samples the frame in THIS show (slot id → rect), overriding the
+ *   rig's default per slot.
  * LOCK-STEP: comp_model.h DevicePlacementM.
  */
 export interface DevicePlacement {
   id: string;
-  kind: 'midi';
-  /** The library device's uuid — what the show's wires address. */
+  kind: 'midi' | 'light';
+  /** The library device's uuid — what the show's wires address (a light: its rig). */
   deviceId: string;
-  /** Lights / displays: output off when false. Unused for MIDI. */
+  /** Lights: output on (default) / off. Unused for MIDI. */
   enabled?: boolean;
+  /** Lights: per-slot sampling rects for this show (see SlotRect). */
+  layout?: Record<string, SlotRect>;
   /** The device's name and template when it was placed: all a machine
    *  WITHOUT that device has to show ("missing: Twister #2"). */
   label?: string;
@@ -1192,6 +1202,14 @@ export function portInfo(
 export function routeIsLegal(comp: Composition, r: Pick<Route, 'src' | 'dest'>): boolean {
   const s = r.src;
   const d = r.dest;
+  if (s.kind === 'device') return false; // a light is only ever a destination
+  if (d.kind === 'device') {
+    // send: an out port (named or __out__) → a placed LIGHT's input
+    if (s.kind !== 'port' || s.portId === PORT_IN) return false;
+    const sp = portInfo(comp, s.trackId, s.portId);
+    return sp.exists && sp.isOut &&
+      !!comp.devices?.some((p) => p.id === d.placementId && p.kind === 'light');
+  }
   if (s.kind !== 'port' && d.kind !== 'port') return false; // field → field: not via a hub
   if (s.kind === 'field') {
     // feed: a field inside T → a NAMED out port of T
@@ -1212,6 +1230,7 @@ export function routeIsLegal(comp: Composition, r: Pick<Route, 'src' | 'dest'>):
 
 /** Does this route end still point at something that exists? */
 export function routeEndExists(comp: Composition, e: RouteEnd): boolean {
+  if (e.kind === 'device') return !!comp.devices?.some((p) => p.id === e.placementId);
   const t = comp.tracks.find((x) => x.id === e.trackId);
   if (!t) return false;
   if (e.kind === 'port') return portInfo(comp, e.trackId, e.portId).exists;
@@ -1221,6 +1240,9 @@ export function routeEndExists(comp: Composition, e: RouteEnd): boolean {
 
 /** Two route ends address the same thing. */
 export function sameRouteEnd(a: RouteEnd, b: RouteEnd): boolean {
+  if (a.kind === 'device' || b.kind === 'device') {
+    return a.kind === 'device' && b.kind === 'device' && a.placementId === b.placementId;
+  }
   if (a.kind !== b.kind || a.trackId !== b.trackId) return false;
   if (a.kind === 'port' && b.kind === 'port') return a.portId === b.portId;
   if (a.kind === 'field' && b.kind === 'field') {

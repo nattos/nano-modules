@@ -553,13 +553,12 @@ function concatChains(target: Clip, sources: Clip[]): void {
 
 /** Resolve a column-group sketchId (`clip/<trk>/<clip>` | `track/<trk>`) to its
  *  ClipSketch within a draft composition. */
-/** Include `deviceId` in the draft's devices unless already there (a
- *  placement for it, parked or not, counts). */
+/** Include `deviceId` in the draft's devices unless already there. */
 function addPlacement(d: Composition, id: string, deviceId: string,
-                      info: { label?: string; templateId?: string }) {
+                      info: { label?: string; templateId?: string; kind?: 'midi' | 'light' }) {
   if (d.devices?.some((p) => p.deviceId === deviceId)) return;
   d.devices = [...(d.devices ?? []), {
-    id, kind: 'midi', deviceId,
+    id, kind: info.kind ?? 'midi', deviceId,
     ...(info.label ? { label: info.label } : {}),
     ...(info.templateId ? { templateId: info.templateId } : {}),
   }];
@@ -4778,8 +4777,9 @@ export class ArrangementStore {
    * sketch.
    */
   connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
-    // Composition I/O: a TRACK PORT on either end makes it a route.
-    if (a.trackPort || b.trackPort) {
+    // Composition I/O: a TRACK PORT (or a light's input) on either end makes
+    // it a route.
+    if (a.trackPort || b.trackPort || a.lightInput || b.lightInput) {
       this.connectRoute(a, b);
       return;
     }
@@ -4905,15 +4905,75 @@ export class ArrangementStore {
     return this.devicePlacements.find((p) => p.deviceId === deviceId);
   }
 
-  /** Put a library MIDI device on the timeline (a device row). Including one
-   *  already there returns its placement. Wiring doesn't need it: a device's
-   *  wires work whether or not it has a row. */
-  includeDevice(deviceId: string, info: { label?: string; templateId?: string } = {}): string {
+  /** Put a library device in the show, as a row on the timeline. Including
+   *  one already there returns its placement.
+   *    - MIDI: the row only — its wires work with or without it.
+   *    - A light rig: the light is IN the show (it samples the main output
+   *      unless a route feeds it, and transmits while enabled). */
+  includeDevice(deviceId: string,
+                info: { label?: string; templateId?: string; kind?: 'midi' | 'light' } = {}): string {
     const existing = this.placementForDevice(deviceId);
     if (existing) return existing.id;
     const id = uid('dev');
-    this.mutate('show device on timeline', (d) => { addPlacement(d, id, deviceId, info); });
+    this.mutate(info.kind === 'light' ? 'add light to show' : 'show device on timeline',
+      (d) => { addPlacement(d, id, deviceId, info); });
     return id;
+  }
+
+  // ── Lights: output on/off + where each slot samples, per show ─────────────
+
+  /** The show's light placements (document order). */
+  get lightPlacements(): DevicePlacement[] {
+    return this.devicePlacements.filter((p) => p.kind === 'light');
+  }
+
+  placementById(placementId: string): DevicePlacement | undefined {
+    return this.devicePlacements.find((p) => p.id === placementId);
+  }
+
+  /** Switch a light's output on or off (off = it stops transmitting; it still
+   *  samples, so the UI shows what it would send). */
+  setLightEnabled(placementId: string, on: boolean) {
+    this.mutate(on ? 'light output on' : 'light output off', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p || p.kind !== 'light') return;
+      if (on) delete p.enabled; else p.enabled = false;
+    });
+  }
+
+  /** Where one of a light's slots samples the frame in THIS show. A drag
+   *  passes a coalesce key so it lands as one undo point. */
+  setLightLayout(placementId: string, slotId: string, rect: { x: number; y: number; w: number; h: number },
+                 coalesceKey?: string) {
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    const w = Math.max(0.002, Math.min(1, rect.w));
+    const h = Math.max(0.002, Math.min(1, rect.h));
+    const r = { x: clamp(Math.min(rect.x, 1 - w)), y: clamp(Math.min(rect.y, 1 - h)), w, h };
+    this.mutate('move light strip', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p || p.kind !== 'light') return;
+      p.layout = { ...(p.layout ?? {}), [slotId]: r };
+    }, coalesceKey);
+  }
+
+  /** Back to the rig's layout: one slot, or every slot. */
+  resetLightLayout(placementId: string, slotId?: string) {
+    this.mutate('reset light layout', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p?.layout) return;
+      if (slotId) {
+        const next = { ...p.layout };
+        delete next[slotId];
+        p.layout = next;
+      }
+      if (!slotId || Object.keys(p.layout).length === 0) delete p.layout;
+    });
+  }
+
+  /** The route feeding a light's input, if any (else it samples the main output). */
+  lightInputRoute(placementId: string): Route | undefined {
+    return (this.composition.routes ?? []).find(
+      (r) => r.dest.kind === 'device' && r.dest.placementId === placementId);
   }
 
   /** Take a device's row off the timeline. Its wires stay: they belong to the
@@ -5079,6 +5139,10 @@ export class ArrangementStore {
    *  top-level track's sketch / clip. Null for anything a route can't address
    *  (scalar fields, sequence interiors, rails…). */
   private routeEndOf(info: FieldConnectInfo): RouteEnd | null {
+    if (info.lightInput) {
+      return this.placementById(info.lightInput.placementId)?.kind === 'light'
+        ? { kind: 'device', placementId: info.lightInput.placementId } : null;
+    }
     if (info.trackPort) {
       return { kind: 'port', trackId: info.trackPort.trackId, portId: info.trackPort.portId };
     }
@@ -5107,6 +5171,9 @@ export class ArrangementStore {
     const ea = this.routeEndOf(a);
     const eb = this.routeEndOf(b);
     if (!ea || !eb) return null;
+    // A light's input is only ever the destination.
+    if (ea.kind === 'device') return this.addRoute(eb, ea);
+    if (eb.kind === 'device') return this.addRoute(ea, eb);
     // A field decides by its own direction: an OUTPUT field is the source (it
     // feeds a named out port), an INPUT field the destination.
     if (ea.kind === 'field') return a.isOutput ? this.addRoute(ea, eb) : this.addRoute(eb, ea);

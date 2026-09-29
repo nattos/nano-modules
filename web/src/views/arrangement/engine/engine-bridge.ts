@@ -33,6 +33,7 @@ import { VideoCompositor, videoDescFor, type VideoClipDesc } from './video-compo
 import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady } from './precise-gate';
 import { store } from '../state/store';
+import { lightController } from '../state/light-controller';
 import { deviceIsSource } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import { discoverEffectBundles } from '../../../effect-bundles';
@@ -361,14 +362,33 @@ export class EngineBridge {
     // Device values pushed before this engine existed (or by its predecessor).
     if (this.externalScalarsJson) e.setExternalScalars(this.externalScalarsJson);
     for (const [kind, value] of this.midiMirror) e.mirrorMidi(kind, value);
+    if (this.lightPlan !== undefined) e.setLightPlan(this.lightPlan);
     this.engine = e;
     return e;
   }
 
   // ── Devices: MIDI values → the composition (see CompEngine) ──────────────
 
-  /** Called after each document ship (arr-midi re-lowers the MIDI table). */
-  onDocShipped: (() => void) | null = null;
+  /** Called after each document ship (arr-midi re-lowers the MIDI table;
+   *  arr-lights re-resolves the light plan). */
+  private docShipped = new Set<() => void>();
+  addDocShippedListener(fn: () => void): void { this.docShipped.add(fn); }
+  private lightPlan: unknown = undefined;
+
+  /** The light plan (remembered for an engine created later). */
+  setLightPlan(plan: unknown) {
+    this.lightPlan = plan;
+    this.engine?.setLightPlan(plan);
+  }
+
+  lightTest(placementId: string, slotId: string, pattern: string) {
+    this.engine?.lightTest(placementId, slotId, pattern);
+  }
+
+  /** Does the current engine transmit lights? */
+  get outputsLights(): boolean {
+    return this.engine?.outputsLights ?? false;
+  }
   private externalScalarsJson = '';
   private midiMirror = new Map<'library' | 'sim', unknown>();
 
@@ -390,6 +410,7 @@ export class EngineBridge {
    *  (the comp transport owns the beat while playing). */
   private handleCompInfo(info: CompFrameInfo) {
     this.lastCompInfo = info;
+    if (info.lights || info.lightStatus) lightController.setTelemetry(info.lights, info.lightStatus);
     this.hasContent = info.hasContent;
     if (info.videoInjects !== undefined) this.engineVideoInjects = info.videoInjects;
     if (info.videoSkipped !== undefined) this.engineVideoSkipped = info.videoSkipped;
@@ -616,7 +637,7 @@ export class EngineBridge {
       this.sentDocRev = store.docRev;
       e.compLoadDoc(JSON.stringify(store.composition));
       // A document edit can change which device controls a wire reads.
-      this.onDocShipped?.();
+      for (const fn of this.docShipped) fn();
       // The full document supersedes any queued field patches (they're already
       // reflected in the doc we just shipped).
       store.pendingCompOps.length = 0;

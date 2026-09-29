@@ -90,6 +90,12 @@ export const STORE_INPUT_VIDEO = 'inputVideo';
  */
 export const STORE_MIDI_DEVICES = 'midiDevices';
 /**
+ * Light device library — types and rigs (lights/light-types.ts), keyed by
+ * row id. Per machine, NOT undoable, soft-deleted rows included. The desktop
+ * app keeps it in Settings/light-devices.json instead (light-device-store.ts).
+ */
+export const STORE_LIGHT_DEVICES = 'lightDevices';
+/**
  * Per-sketch UI-only editor state, keyed by sketch id (`user:<uuid>`,
  * `default:<effectId>`, `pg:<uuid>`, or a live barrel UUID). A small bag of
  * view-local preferences — currently the editor's last scroll offset — that
@@ -114,6 +120,7 @@ const STORE_KEYPATHS: Record<string, string> = {
   [STORE_FIELD_DOCS]: 'key',
   [STORE_INPUT_VIDEO]: 'id',
   [STORE_MIDI_DEVICES]: 'id',
+  [STORE_LIGHT_DEVICES]: 'id',
   [STORE_SKETCH_UI]: 'id',
 };
 

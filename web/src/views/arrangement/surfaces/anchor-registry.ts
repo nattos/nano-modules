@@ -40,6 +40,8 @@ export const AnchorKeys = {
   deviceControl: (deviceId: string, endpoint: string) => `devctl:${deviceId}:${endpoint}`,
   /** A device row's header (wires of a control on another bank end here). */
   deviceRow: (deviceId: string) => `devrow:${deviceId}`,
+  /** A light row's input pip (routes into the light end here). */
+  lightInput: (placementId: string) => `lightin:${placementId}`,
   beatwarp: () => 'beatwarp',
   mainbus: () => 'mainbus',
 };
