@@ -199,6 +199,8 @@ export const paths = {
   track: (trackId: string) => `track/${trackId}`,
   clip: (trackId: string, clipId: string) => `clip/${trackId}/${clipId}`,
   rail: (railId: string) => `rail/${railId}`,
+  /** A device row on the timeline (a DevicePlacement). */
+  device: (placementId: string) => `device/${placementId}`,
   automation: (laneId: string) => `automation/${laneId}`,
   composition: () => `composition`,
 };

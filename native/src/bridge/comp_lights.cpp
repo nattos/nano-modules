@@ -63,7 +63,7 @@ struct LightRunner::State {
           const bool hit = tt.slotId.empty() || tt.slotId == f.slotId;
           const double t = std::chrono::duration<double>(now - tt.start).count();
           for (size_t i = 0; i < n; i++) {
-            colors[i] = hit ? lights::patternColor(tt.pattern, (int)fi, (int)i, (int)n, t)
+            colors[i] = hit ? lights::patternColor(tt.pattern, (int)fi, (int)o.fixtures.size(), (int)i, (int)n, t)
                             : lights::Rgb{};
           }
         }

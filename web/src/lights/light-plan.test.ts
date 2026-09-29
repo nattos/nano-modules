@@ -8,7 +8,7 @@ import type { Composition } from '../views/arrangement/model/composition';
 
 const bar: LightType = {
   kind: 'type', id: 'bar', templateId: 'light.strip', parentId: 'light.strip', name: 'Bar',
-  pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5, forkedAt: 0, updatedAt: 0,
+  pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5, vertical: true, forkedAt: 0, updatedAt: 0,
 };
 
 function rig(slots = 4): LightRig {
@@ -40,14 +40,24 @@ describe('light types', () => {
     expect(defaultStripLayout(0, 4).h).toBe(1);
   });
 
-  it('cuts a slot into pixel footprints along its long axis; reverse flips them', () => {
-    const tall = slotFootprints({ x: 0.125, y: 0, w: 0.25, h: 1 }, 4);
+  it('stacks a horizontal type\'s default layout down the frame', () => {
+    const centres = [0, 1, 2, 3].map((i) => { const r = defaultStripLayout(i, 4, false); return r.y + r.h / 2; });
+    expect(centres.map((c) => Math.round(c * 1000) / 1000)).toEqual([0.125, 0.375, 0.625, 0.875]);
+    expect(defaultStripLayout(0, 4, false)).toMatchObject({ x: 0, w: 1 });
+  });
+
+  it('cuts a slot into pixel footprints along its type\'s axis; reverse flips them', () => {
+    const tall = slotFootprints({ x: 0.125, y: 0, w: 0.25, h: 1 }, 4, true);
     expect(tall[0]).toEqual([0.125, 0, 0.375, 0.25]);
     expect(tall[3][1]).toBe(0.75);
-    const rev = slotFootprints({ x: 0.125, y: 0, w: 0.25, h: 1 }, 4, true);
+    const rev = slotFootprints({ x: 0.125, y: 0, w: 0.25, h: 1 }, 4, true, true);
     expect(rev[0][1]).toBe(0.75);
-    const wide = slotFootprints({ x: 0, y: 0.5, w: 1, h: 0.1 }, 2);
+    const wide = slotFootprints({ x: 0, y: 0.5, w: 1, h: 0.1 }, 2, false);
     expect(wide[1]).toEqual([0.5, 0.5, 1, 0.6]);
+    // The TYPE decides, not the rect's shape: a vertical bar in a wide rect
+    // still runs top → bottom.
+    const squat = slotFootprints({ x: 0, y: 0, w: 1, h: 0.5 }, 2, true);
+    expect(squat[1]).toEqual([0, 0.25, 1, 0.5]);
   });
 
   it('validates destinations', () => {

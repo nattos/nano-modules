@@ -7,6 +7,10 @@
  * Draws only; the layout editor (light-details) is the interactive twin.
  * Stroke widths are in screen pixels (vector-effect), so thin strips stay
  * visible at any frame aspect.
+ *
+ * `compact` (a timeline light row) fits the frame to the host's HEIGHT rather
+ * than its width, draws each pixel as one cell (dots would be sub-pixel) and
+ * thin bars a little wider — the same picture, scaled down.
  */
 
 import { html, css, svg, nothing } from 'lit';
@@ -18,6 +22,7 @@ import { drawSlots, frameAspect, pixelCells, UNLIT, type DrawSlot } from './ligh
 /** Strips narrower than this (in frame units) are drawn at it, so a 1/60-wide
  *  bar reads as a bar on a 220 px card. */
 const MIN_DRAW = 0.05;
+const MIN_DRAW_COMPACT = 0.09;
 
 @customElement('light-rig-surface')
 export class LightRigSurface extends MobxLitElement {
@@ -26,10 +31,14 @@ export class LightRigSurface extends MobxLitElement {
   @property({ attribute: false }) placementId = '';
   /** Highlight one slot (the details panel's selection). */
   @property({ attribute: false }) selectedSlot = '';
+  /** Fit to the host's height, simplified (see above). */
+  @property({ type: Boolean, reflect: true }) compact = false;
 
   static styles = css`
     :host { display: block; }
     svg { display: block; width: 100%; height: auto; }
+    :host([compact]) { height: 100%; }
+    :host([compact]) svg { width: auto; height: 100%; }
   `;
 
   render() {
@@ -46,15 +55,16 @@ export class LightRigSurface extends MobxLitElement {
 
   private drawSlot(s: DrawSlot, aspect: number) {
     const px = s.type?.pixels ?? 0;
-    const leds = Math.max(1, s.type?.ledsPerPixel ?? 1);
+    const leds = this.compact ? 1 : Math.max(1, s.type?.ledsPerPixel ?? 1);
+    const minDraw = this.compact ? MIN_DRAW_COMPACT : MIN_DRAW;
     // Frame units: x scaled by the aspect so the viewBox stays 0..aspect × 0..1.
-    const tall = s.rect.h >= s.rect.w;
+    const tall = s.vertical;
     const r = {
       x: s.rect.x * aspect, y: s.rect.y, w: s.rect.w * aspect, h: s.rect.h,
     };
-    if (tall && r.w < MIN_DRAW) { r.x -= (MIN_DRAW - r.w) / 2; r.w = MIN_DRAW; }
-    if (!tall && r.h < MIN_DRAW) { r.y -= (MIN_DRAW - r.h) / 2; r.h = MIN_DRAW; }
-    const cells = pixelCells(r, px, s.reverse);
+    if (tall && r.w < minDraw) { r.x -= (minDraw - r.w) / 2; r.w = minDraw; }
+    if (!tall && r.h < minDraw) { r.y -= (minDraw - r.h) / 2; r.h = minDraw; }
+    const cells = pixelCells(r, px, s.vertical, s.reverse);
     const sel = this.selectedSlot === s.slotId;
     return svg`
       <g data-slot=${s.slotId}>
@@ -77,7 +87,7 @@ export class LightRigSurface extends MobxLitElement {
         <rect x=${r.x} y=${r.y} width=${r.w} height=${r.h} fill="none"
           stroke=${sel ? 'var(--app-hi-color2, #4169e1)' : 'rgba(255,255,255,0.25)'}
           stroke-width=${sel ? 2 : 1} vector-effect="non-scaling-stroke"></rect>
-        ${px > 0 ? svg`<circle cx=${cells[0].x + cells[0].w / 2} cy=${cells[0].y + cells[0].h / 2}
+        ${px > 0 && !this.compact ? svg`<circle cx=${cells[0].x + cells[0].w / 2} cy=${cells[0].y + cells[0].h / 2}
           r="0.006" fill="#e0a040" opacity="0.8"></circle>` : nothing}
       </g>`;
   }

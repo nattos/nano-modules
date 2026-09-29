@@ -55,11 +55,11 @@ export class LightLayoutEditor extends MobxLitElement {
         const r = { x: s.rect.x * aspect, y: s.rect.y, w: s.rect.w * aspect, h: s.rect.h };
         // Thin strips are DRAWN at a readable width (centred); the numbers and
         // the grab area keep the true rect.
-        const tall = r.h >= r.w;
+        const tall = s.vertical;
         const d = { ...r };
         if (tall && d.w < MIN_DRAW) { d.x -= (MIN_DRAW - d.w) / 2; d.w = MIN_DRAW; }
         if (!tall && d.h < MIN_DRAW) { d.y -= (MIN_DRAW - d.h) / 2; d.h = MIN_DRAW; }
-        const cells = pixelCells(d, s.type?.pixels ?? 0, s.reverse);
+        const cells = pixelCells(d, s.type?.pixels ?? 0, s.vertical, s.reverse);
         const sel = s.slotId === this.selectedSlot;
         const gx = r.w < MIN_GRAB ? r.x - (MIN_GRAB - r.w) / 2 : r.x;
         const gw = Math.max(r.w, MIN_GRAB);

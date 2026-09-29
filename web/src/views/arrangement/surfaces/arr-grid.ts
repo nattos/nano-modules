@@ -39,7 +39,6 @@ import { engineBridge } from '../engine/engine-bridge';
 import { midiController } from '../../../state/midi-controller';
 import { appState } from '../../../state/app-state';
 import type { DevicePlacement } from '../model/composition';
-import { devicesUi } from '../../devices/devices-ui';
 import { WireConnect } from '../../../widgets/taps-connect';
 import './arr-automation-editor';
 import '../../../widgets/ui-icon';
@@ -742,7 +741,8 @@ export class ArrGrid extends MobxLitElement {
    * A device shown on the timeline (store.devicePlacements), below the tracks:
    * header = name, status (live / offline / missing from this machine's
    * library), how many wires it drives; lane = its controls
-   * (<arr-device-lane>). Clicking the header opens it in the Devices view.
+   * (<arr-device-lane>). Clicking the header selects it (the inspector shows
+   * it); the inspector's "Edit in Devices" is the way to the Devices view.
    */
   private renderDeviceRow(p: DevicePlacement, first: boolean) {
     if (p.kind === 'light') return this.renderLightRow(p, first);
@@ -755,13 +755,11 @@ export class ArrGrid extends MobxLitElement {
     return html`
       <div class="row device ${first ? 'first' : ''}" data-device-id=${p.deviceId}>
         <div
-          class="header"
+          class="header ${store.isSelected(paths.device(p.id)) ? 'selected' : ''}"
           data-device-row=${p.deviceId}
-          title="Open in the Devices view"
           @pointerdown=${(e: PointerEvent) => {
             e.stopPropagation();
-            devicesUi.selectCard(p.deviceId);
-            store.setMainView('devices');
+            store.select(paths.device(p.id));
           }}
         >
           <div class="h-top" style="padding-left: var(--app-sp-3)">
@@ -782,7 +780,8 @@ export class ArrGrid extends MobxLitElement {
   /**
    * A light rig in the show: header = name, whether it's sending, its output
    * switch and its input (what it samples — a route target); lane = its bars
-   * in their live colours (<arr-light-lane>). The header opens it in Devices.
+   * in their live colours, drawn as the rig (<arr-light-lane>). The header
+   * selects it.
    */
   private renderLightRow(p: DevicePlacement, first: boolean) {
     const rig = lightController.rig(p.deviceId);
@@ -797,12 +796,10 @@ export class ArrGrid extends MobxLitElement {
     return html`
       <div class="row device light ${first ? 'first' : ''}" data-light-row=${p.id}>
         <div
-          class="header"
-          title="Open in the Devices view"
+          class="header ${store.isSelected(paths.device(p.id)) ? 'selected' : ''}"
           @pointerdown=${(e: PointerEvent) => {
             e.stopPropagation();
-            devicesUi.selectCard(rig ? rig.id : `missing-light:${p.id}`);
-            store.setMainView('devices');
+            store.select(paths.device(p.id));
           }}
         >
           <div class="h-top" style="padding-left: var(--app-sp-3)">

@@ -34,8 +34,8 @@ export function channelsPerPixel(f: LightFormat): number {
 }
 
 /** A rect in normalized frame coordinates (0,0 = top-left). A slot's pixels
- *  run along its LONG axis: top → bottom when it's tall, left → right when
- *  it's wide (a slot's `reverse` flips that). */
+ *  run along its TYPE's axis: top → bottom for a vertical type, left → right
+ *  for a horizontal one (a slot's `reverse` flips that). */
 export interface SlotRect { x: number; y: number; w: number; h: number }
 
 /** Where a fixture listens. */
@@ -53,7 +53,7 @@ export interface LightTemplate {
   templateId: string;
   name: string;
   /** The parameters a new type starts with. */
-  defaults: { pixels: number; ledsPerPixel: number; format: LightFormat; gamma: number };
+  defaults: { pixels: number; ledsPerPixel: number; format: LightFormat; gamma: number; vertical: boolean };
 }
 
 /** The code-registered templates. One parametric strip covers bars of any
@@ -62,7 +62,7 @@ export const LIGHT_TEMPLATES: readonly LightTemplate[] = [
   {
     templateId: 'light.strip',
     name: 'LED strip',
-    defaults: { pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5 },
+    defaults: { pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5, vertical: true },
   },
 ];
 
@@ -90,6 +90,10 @@ export interface LightType extends RowBase {
   ledsPerPixel: number;
   format: LightFormat;
   gamma: number;
+  /** Hung vertically (pixels run top → bottom) or horizontally (left →
+   *  right). Sets which way a slot's pixels run in its rect, and how a new
+   *  rig of the type is laid out. */
+  vertical: boolean;
 }
 
 export interface LightSlot {
@@ -115,8 +119,14 @@ export function slotChannels(type: Pick<LightType, 'pixels' | 'format'>): number
 }
 
 /** The rig default for slot `i` of `n`: vertical strips spread across the
- *  frame, each 1/60 wide (the Resolume shows' 32 px of 1920). */
-export function defaultStripLayout(i: number, n: number): SlotRect {
+ *  frame, each 1/60 wide (the Resolume shows' 32 px of 1920) — or, for a
+ *  horizontal type, full-width strips stacked down it, as thick (32 px of
+ *  1080 at 16:9). */
+export function defaultStripLayout(i: number, n: number, vertical = true): SlotRect {
+  if (!vertical) {
+    const h = (1 / 60) * (16 / 9);
+    return { x: 0, y: (i + 0.5) / n - h / 2, w: 1, h };
+  }
   const w = 1 / 60;
   return { x: (i + 0.5) / n - w / 2, y: 0, w, h: 1 };
 }
@@ -137,15 +147,16 @@ export function consecutiveAddresses(count: number, type: Pick<LightType, 'pixel
   return out;
 }
 
-/** One footprint per pixel: the rect cut into `pixels` cells along its long
- *  axis, pixel 0 at the top (or left) unless `reverse`. [u0, v0, u1, v1]. */
-export function slotFootprints(r: SlotRect, pixels: number, reverse = false): [number, number, number, number][] {
+/** One footprint per pixel: the rect cut into `pixels` cells down it
+ *  (`vertical`) or across it, pixel 0 at the top (or left) unless `reverse`.
+ *  [u0, v0, u1, v1]. */
+export function slotFootprints(r: SlotRect, pixels: number, vertical: boolean,
+                               reverse = false): [number, number, number, number][] {
   const out: [number, number, number, number][] = [];
   const n = Math.max(0, Math.floor(pixels));
-  const tall = r.h >= r.w;
   for (let i = 0; i < n; i++) {
     const k = reverse ? n - 1 - i : i;
-    if (tall) {
+    if (vertical) {
       const y0 = r.y + (r.h * k) / n;
       out.push([r.x, y0, r.x + r.w, y0 + r.h / n]);
     } else {

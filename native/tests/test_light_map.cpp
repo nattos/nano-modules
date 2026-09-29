@@ -116,15 +116,21 @@ TEST_CASE("pixels past channel 512 are dropped, never spilled", "[light_map]") {
 TEST_CASE("test patterns", "[light_map]") {
   CHECK(parsePattern("identify") == Pattern::Identify);
   CHECK(parsePattern("nope") == Pattern::None);
-  CHECK(patternColor(Pattern::White, 0, 3, 10, 0) == Rgb{1, 1, 1});
-  CHECK(patternColor(Pattern::Off, 0, 3, 10, 0) == Rgb{0, 0, 0});
-  CHECK(patternColor(Pattern::Colors, 0, 0, 10, 1.5) == Rgb{0, 1, 0});
+  CHECK(patternColor(Pattern::White, 0, 4, 3, 10, 0) == Rgb{1, 1, 1});
+  CHECK(patternColor(Pattern::Off, 0, 4, 3, 10, 0) == Rgb{0, 0, 0});
+  CHECK(patternColor(Pattern::Colors, 0, 4, 0, 10, 1.5) == Rgb{0, 1, 0});
   // numbers: slot 2 lights three pixels
-  CHECK(patternColor(Pattern::Numbers, 2, 2, 10, 0) == Rgb{1, 1, 1});
-  CHECK(patternColor(Pattern::Numbers, 2, 3, 10, 0) == Rgb{0, 0, 0});
+  CHECK(patternColor(Pattern::Numbers, 2, 4, 2, 10, 0) == Rgb{1, 1, 1});
+  CHECK(patternColor(Pattern::Numbers, 2, 4, 3, 10, 0) == Rgb{0, 0, 0});
   // chase: 12 px/s — at t = 0.25 the dot is on pixel 3
-  CHECK(patternColor(Pattern::Chase, 0, 3, 10, 0.25) == Rgb{1, 1, 1});
-  CHECK(patternColor(Pattern::Chase, 0, 4, 10, 0.25) == Rgb{0, 0, 0});
+  CHECK(patternColor(Pattern::Chase, 0, 4, 3, 10, 0.25) == Rgb{1, 1, 1});
+  CHECK(patternColor(Pattern::Chase, 0, 4, 4, 10, 0.25) == Rgb{0, 0, 0});
   // identify: pixel 0 stays red so the strip's direction shows
-  CHECK(patternColor(Pattern::Identify, 0, 0, 10, 0.25) == Rgb{1, 0, 0});
+  CHECK(patternColor(Pattern::Identify, 0, 4, 0, 10, 0.25) == Rgb{1, 0, 0});
+  // bars: one slot at a time, in order, wrapping.
+  CHECK(parsePattern("bars") == Pattern::Bars);
+  CHECK(patternColor(Pattern::Bars, 0, 4, 5, 10, 0.1) == Rgb{1, 1, 1});
+  CHECK(patternColor(Pattern::Bars, 1, 4, 5, 10, 0.1) == Rgb{0, 0, 0});
+  CHECK(patternColor(Pattern::Bars, 2, 4, 5, 10, 2 * kBarSec + 0.1) == Rgb{1, 1, 1});
+  CHECK(patternColor(Pattern::Bars, 0, 4, 5, 10, 4 * kBarSec + 0.1) == Rgb{1, 1, 1});
 }

@@ -38,6 +38,7 @@ const PATTERNS: { id: LightPattern; label: string; title: string }[] = [
   { id: 'white', label: 'white', title: 'All pixels full white' },
   { id: 'colors', label: 'colours', title: 'Red, green, blue, white — a second each' },
   { id: 'chase', label: 'chase', title: 'A dot runs along every bar' },
+  { id: 'bars', label: 'bars', title: 'One bar at a time, in rig order — where each hangs' },
   { id: 'numbers', label: 'numbers', title: 'Bar N lights its first N pixels — which bar is which' },
 ];
 
@@ -157,6 +158,12 @@ export class LightDetails extends MobxLitElement {
           <input type="number" min="1" max="64" .value=${String(t.ledsPerPixel)}
             @change=${(e: Event) => num((e.target as HTMLInputElement).value, (n) => lightController.editType(t.id, { ledsPerPixel: n }))}>
           <span class="note">a 24 V segment lights several</span></div>
+        <div class="row"><label>hung</label>
+          ${([['vertical', true], ['horizontal', false]] as const).map(([label, v]) => html`<button
+            class=${(t.vertical !== false) === v ? 'on' : ''} data-light-orient=${label}
+            title=${v ? 'Pixels run top → bottom; a new rig spreads its bars across the frame'
+                      : 'Pixels run left → right; a new rig stacks its bars down the frame'}
+            @click=${() => lightController.editType(t.id, { vertical: v })}>${label}</button>`)}</div>
         <div class="row"><label>colour order</label>
           <select @change=${(e: Event) => lightController.editType(t.id, { format: (e.target as HTMLSelectElement).value as LightFormat })}>
             ${LIGHT_FORMATS.map((x) => html`<option value=${x.id} ?selected=${x.id === t.format}>${x.label}</option>`)}

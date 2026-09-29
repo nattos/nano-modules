@@ -15,6 +15,8 @@ export interface DrawSlot {
   type: LightType | undefined;
   rect: SlotRect;
   reverse: boolean;
+  /** Which way its pixels run (its type's; vertical when the type is gone). */
+  vertical: boolean;
   /** CSS colour per pixel (pixel 0 first), or null when nothing has been
    *  reported (the worker engine, or a light not in the show). */
   colors: string[] | null;
@@ -42,18 +44,21 @@ export function drawSlots(rig: LightRig, placementId?: string): DrawSlot[] {
         colors.push(off + 2 < bytes.length ? `rgb(${bytes[off]},${bytes[off + 1]},${bytes[off + 2]})` : '#000');
       }
     }
-    return { index, slotId: slot.id, type, rect: slotRectIn(placement, slot), reverse: !!slot.reverse, colors };
+    return {
+      index, slotId: slot.id, type, rect: slotRectIn(placement, slot), reverse: !!slot.reverse,
+      vertical: type?.vertical !== false, colors,
+    };
   });
 }
 
-/** Pixel cells of a slot rect along its long axis, in drawing order (pixel 0
- *  first — at the far end when reversed). Units are the rect's own. */
-export function pixelCells(r: SlotRect, pixels: number, reverse: boolean): SlotRect[] {
+/** Pixel cells of a slot rect down it (`vertical`) or across it, in drawing
+ *  order (pixel 0 first — at the far end when reversed). Units are the rect's
+ *  own. */
+export function pixelCells(r: SlotRect, pixels: number, vertical: boolean, reverse: boolean): SlotRect[] {
   const out: SlotRect[] = [];
-  const tall = r.h >= r.w;
   for (let i = 0; i < pixels; i++) {
     const k = reverse ? pixels - 1 - i : i;
-    out.push(tall
+    out.push(vertical
       ? { x: r.x, y: r.y + (r.h * k) / pixels, w: r.w, h: r.h / pixels }
       : { x: r.x + (r.w * k) / pixels, y: r.y, w: r.w / pixels, h: r.h });
   }

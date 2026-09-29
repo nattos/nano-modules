@@ -135,6 +135,59 @@ describe('Arrangement lights (GPU)', () => {
     await waitDeep(`[data-light-row="${p[0].id}"]`);
   });
 
+  it('selecting a light row shows it in the inspector — the timeline stays', async () => {
+    await resetShow([1, 0, 0], [0, 1, 0]);
+    const { rig, pid } = await makeRig(4);
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      store.clearSelection();
+      store.setMainView('timeline');
+      store.showRightTab('inspector');
+    });
+    // The lane draws the rig (its bars where they sample), scaled to the row.
+    await waitDeep(`[data-light-row="${pid}"] arr-light-lane`);
+    const bars = await page.evaluate((p: string) => {
+      const stack: (Document | ShadowRoot)[] = [document];
+      while (stack.length) {
+        const root = stack.pop()!;
+        const lane = root.querySelector(`[data-light-row="${p}"] arr-light-lane`);
+        if (lane) {
+          const surf = lane.shadowRoot!.querySelector('light-rig-surface[compact]');
+          return surf?.shadowRoot?.querySelectorAll('g[data-slot]').length ?? -1;
+        }
+        for (const el of root.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot);
+      }
+      return -2;
+    }, pid);
+    expect(bars).toBe(4);
+    await clickDeep(`[data-light-row="${pid}"] .header .tname`);
+    const after = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      return { view: store.mainView, path: store.primaryPath };
+    });
+    expect(after).toEqual({ view: 'timeline', path: `device/${pid}` });
+    // The inspector says what it is; its button is the way to Devices.
+    await waitDeep('[data-inspector-light-enable]');
+    await clickDeep('[data-inspector-action="edit-in-devices"]');
+    expect(await page.evaluate(() => (window as any).arrangementStore.mainView)).toBe('devices');
+    await waitDeep(`[data-light-card="${rig}"][selected]`);
+  });
+
+  it('a type hung horizontally: its pixels run across, a new rig stacks down the frame', async () => {
+    await resetShow([1, 0, 0], [0, 1, 0]);
+    const typeId = await page.evaluate(() => (window as any).lightController.newType('light.strip').id);
+    await clickDeep(`[data-light-card="${typeId}"]`);
+    await clickDeep('[data-light-orient="horizontal"]');
+    expect(await page.evaluate((id: string) => (window as any).lightController.type(id).vertical, typeId)).toBe(false);
+    const layout = await page.evaluate((id: string) => {
+      const lc = (window as any).lightController;
+      const rig = lc.newRig({ typeId: id, count: 2, start: { universe: 0, channel: 1, dest: 'broadcast' } });
+      return rig.slots.map((s: any) => s.layout);
+    }, typeId);
+    expect(layout.map((r: any) => r.w)).toEqual([1, 1]);
+    expect(layout[0].y).toBeLessThan(layout[1].y);
+  });
+
   it('layout: dragging a strip moves it in THIS show, as one undo point', async () => {
     await resetShow([1, 0, 0], [0, 1, 0]);
     const { rig, pid } = await makeRig(4);
@@ -225,7 +278,7 @@ describe('Arrangement lights (GPU)', () => {
       };
       try {
         const { t2 } = await resetShow([1, 0, 0], [0, 1, 0]);
-        const { pid } = await makeRig(1);
+        const { pid } = await makeRig(2);
         // The main output is red: RGBW (255, 0, 0, 0).
         await waitFor([255, 0, 0, 0], 'the composite');
         // The UI draws what it sends.
@@ -246,6 +299,23 @@ describe('Arrangement lights (GPU)', () => {
         await waitFor([0, 0, 0, 255], 'the white test');
         await page.evaluate((p: string) => (window as any).lightController.test(p, null, null), pid);
         await waitFor([0, 255, 0, 0], 'after the test');
+
+        // "bars": one bar at a time, in rig order (bar 2's W is channel 41+3).
+        await page.evaluate((p: string) => (window as any).lightController.test(p, null, 'bars'), pid);
+        const whites = () => (last ? [last[21], last[18 + 43]] : null);
+        const waitWhites = async (want: number[], what: string) => {
+          const until = Date.now() + 10_000;
+          while (Date.now() < until) {
+            const v = whites();
+            if (v && v[0] === want[0] && v[1] === want[1]) return;
+            await new Promise((r) => setTimeout(r, 20));
+          }
+          throw new Error(`${what}: got ${JSON.stringify(whites())}, want ${JSON.stringify(want)}`);
+        };
+        await waitWhites([255, 0], 'bars: the first bar');
+        await waitWhites([0, 255], 'bars: then the second');
+        await page.evaluate((p: string) => (window as any).lightController.test(p, null, null), pid);
+        await waitFor([0, 255, 0, 0], 'after the bars test');
 
         // Output off: it stops sending.
         await page.evaluate((p: string) => (window as any).arrangementStore.setLightEnabled(p, false), pid);

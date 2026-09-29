@@ -99,7 +99,7 @@ describe('light library', () => {
     vi.useFakeTimers();  // the debounced saves
     const bar: LightType = {
       kind: 'type', id: 'bar', templateId: 'light.strip', parentId: 'light.strip', name: 'Bar',
-      pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5, forkedAt: 0, updatedAt: 0,
+      pixels: 10, ledsPerPixel: 1, format: 'rgbw', gamma: 2.5, vertical: true, forkedAt: 0, updatedAt: 0,
     };
     runInAction(() => { lightController.library = [bar]; });
   });
@@ -110,6 +110,21 @@ describe('light library', () => {
     })!;
     expect(rig.slots.map((s) => s.address.channel)).toEqual([1, 41, 81, 121]);
     expect(rig.name).toBe('4 × Bar');
+  });
+
+  it('turning a type horizontal lays its rigs out again, stacked down the frame', () => {
+    const rig = lightController.newRig({
+      typeId: 'bar', count: 2, start: { universe: 0, channel: 1, dest: 'broadcast' },
+    })!;
+    expect(rig.slots[0].layout.h).toBe(1);
+    lightController.editType('bar', { vertical: false });
+    const r = lightController.rig(rig.id)!;
+    expect(r.slots.map((s) => s.layout.w)).toEqual([1, 1]);
+    expect(r.slots[0].layout.y).toBeLessThan(r.slots[1].layout.y);
+    // Another edit that doesn't turn it leaves a hand-made layout alone.
+    lightController.editSlot(rig.id, r.slots[0].id, { layout: { x: 0.1, y: 0.1, w: 0.5, h: 0.05 } });
+    lightController.editType('bar', { vertical: false, gamma: 2 });
+    expect(lightController.rig(rig.id)!.slots[0].layout.w).toBe(0.5);
   });
 
   it('swapping two slots exchanges where they SEND, not where they sample', () => {

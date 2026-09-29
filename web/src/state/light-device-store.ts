@@ -20,7 +20,8 @@ import {
 
 const FILE = SETTINGS_FILES.lightDevices;
 
-/** The well-formed rows of a stored library, oldest first. */
+/** The well-formed rows of a stored library, oldest first. A type written
+ *  before `vertical` existed is vertical (every bar was). */
 export function validLightRows(doc: unknown): LightRow[] {
   if (!Array.isArray(doc)) return [];
   return doc
@@ -31,6 +32,7 @@ export function validLightRows(doc: unknown): LightRow[] {
       if (row.kind === 'type') return true;
       return row.kind === 'rig' && Array.isArray(row.slots);
     })
+    .map((r) => (r.kind === 'type' && typeof r.vertical !== 'boolean' ? { ...r, vertical: true } : r))
     .sort((a, b) => (a.forkedAt ?? 0) - (b.forkedAt ?? 0));
 }
 

@@ -159,7 +159,7 @@ export class LightDevicesSection extends MobxLitElement {
     const fmt = LIGHT_FORMATS.find((f) => f.id === t.format)?.label ?? t.format;
     return html`
       <device-card .name=${t.name}
-        .subtitle=${`${t.pixels} px${t.ledsPerPixel > 1 ? ` × ${t.ledsPerPixel} LEDs` : ''} · ${fmt} · γ${t.gamma}`}
+        .subtitle=${`${t.vertical !== false ? '↕' : '↔'} ${t.pixels} px${t.ledsPerPixel > 1 ? ` × ${t.ledsPerPixel} LEDs` : ''} · ${fmt} · γ${t.gamma}`}
         .status=${'disconnected'} data-light-card=${t.id}
         ?selected=${devicesUi.selectedCardId === t.id}
         @click=${() => this.select(t.id)}>

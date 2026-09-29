@@ -26,7 +26,7 @@ import { store } from './store';
 
 const SAVE_DEBOUNCE_MS = 300;
 
-export type LightPattern = 'off' | 'white' | 'colors' | 'chase' | 'numbers' | 'identify';
+export type LightPattern = 'off' | 'white' | 'colors' | 'chase' | 'numbers' | 'bars' | 'identify';
 
 export interface LightStatus {
   sending: boolean;
@@ -171,28 +171,47 @@ export class LightController {
       kind: 'type', id: uuid(), templateId: base.templateId, parentId: from,
       name: this.uniqueName(src ? `${src.name} copy` : tpl.name),
       pixels: base.pixels, ledsPerPixel: base.ledsPerPixel, format: base.format, gamma: base.gamma,
+      vertical: base.vertical !== false,
       forkedAt: now, updatedAt: now,
     };
     this.add(row);
     return row;
   }
 
-  editType(id: string, patch: Partial<Pick<LightType, 'name' | 'pixels' | 'ledsPerPixel' | 'format' | 'gamma'>>): void {
+  /**
+   * Edit a type. Turning it (vertical ↔ horizontal) also lays the rigs'
+   * slots of it out again the new way — a thin vertical strip read across
+   * would be nonsense. A show's own layout for them is the show's (its "reset
+   * to rig layout" picks the new one up).
+   */
+  editType(id: string, patch: Partial<Pick<LightType, 'name' | 'pixels' | 'ledsPerPixel' | 'format' | 'gamma' | 'vertical'>>): void {
     const t = this.type(id);
     if (!t) return;
+    const turned = patch.vertical !== undefined && patch.vertical !== (t.vertical !== false);
+    const relaid: LightRig[] = [];
     runInAction(() => {
       Object.assign(t, patch);
       t.pixels = Math.max(1, Math.min(512, Math.round(t.pixels)));
       t.ledsPerPixel = Math.max(1, Math.min(64, Math.round(t.ledsPerPixel)));
       t.gamma = Math.max(0.1, Math.min(5, t.gamma));
       t.updatedAt = Date.now();
+      if (!turned) return;
+      for (const r of this.rigs) {
+        if (!r.slots.some((s) => s.typeId === id)) continue;
+        r.slots.forEach((s, i) => {
+          if (s.typeId === id) s.layout = defaultStripLayout(i, r.slots.length, t.vertical);
+        });
+        r.updatedAt = Date.now();
+        relaid.push(r);
+      }
     });
     this.changed(t);
+    for (const r of relaid) this.changed(r);
   }
 
   /**
    * A new rig of `count` bars of one type, addressed one after another from
-   * `start` and laid out as vertical strips across the frame.
+   * `start`, laid out as strips across the frame (vertical types) or down it.
    */
   newRig(opts: { typeId: string; count: number; start: LightAddress; name?: string }): LightRig | null {
     const type = this.type(opts.typeId);
@@ -204,7 +223,7 @@ export class LightController {
       kind: 'rig', id: uuid(), parentId: type.id,
       name: this.uniqueName(opts.name?.trim() || `${count} × ${type.name}`),
       slots: addrs.map((address, i) => ({
-        id: uuid(), typeId: type.id, address, layout: defaultStripLayout(i, count),
+        id: uuid(), typeId: type.id, address, layout: defaultStripLayout(i, count, type.vertical !== false),
       })),
       forkedAt: now, updatedAt: now,
     };
@@ -252,7 +271,7 @@ export class LightController {
       : { universe: 0, channel: 1, dest: 'broadcast' };
     const n = r.slots.length + 1;
     runInAction(() => {
-      r.slots.push({ id: uuid(), typeId: type.id, address: start, layout: defaultStripLayout(n - 1, n) });
+      r.slots.push({ id: uuid(), typeId: type.id, address: start, layout: defaultStripLayout(n - 1, n, type.vertical !== false) });
       r.updatedAt = Date.now();
     });
     this.changed(r);

@@ -206,7 +206,7 @@ inline void encodeFixture(const Fixture& f, const std::vector<Rgb>& colors, Fram
 // Transient: they replace a light's sampled colours while active and are never
 // saved. Colours are pre-gamma like sampled ones (so white is full on).
 
-enum class Pattern { None, Off, White, Colors, Chase, Numbers, Identify };
+enum class Pattern { None, Off, White, Colors, Chase, Numbers, Bars, Identify };
 
 inline Pattern parsePattern(const std::string& s) {
   if (s == "off") return Pattern::Off;
@@ -214,17 +214,22 @@ inline Pattern parsePattern(const std::string& s) {
   if (s == "colors") return Pattern::Colors;
   if (s == "chase") return Pattern::Chase;
   if (s == "numbers") return Pattern::Numbers;
+  if (s == "bars") return Pattern::Bars;
   if (s == "identify") return Pattern::Identify;
   return Pattern::None;
 }
 
-/// A pattern's colour for pixel `px` of `count` in slot `slot` at time `t`
-/// (seconds since it started).
+/// A pattern's colour for pixel `px` of `count` in slot `slot` (of `slots`)
+/// at time `t` (seconds since it started).
 ///   colors   — the whole light steps red → green → blue → white, 1 s each;
 ///   chase    — one dot runs along every slot, 12 px/s;
 ///   numbers  — slot k lights its first k+1 pixels (which bar is which);
+///   bars     — one slot at a time, in rig order, kBarSec each (where each
+///              bar hangs, and in what order);
 ///   identify — a dot walks the slot, pixel 0 held red (so direction shows).
-inline Rgb patternColor(Pattern p, int slot, int px, int count, double t) {
+constexpr double kBarSec = 0.75;
+
+inline Rgb patternColor(Pattern p, int slot, int slots, int px, int count, double t) {
   static const Rgb kWhite{1, 1, 1}, kBlack{0, 0, 0}, kRed{1, 0, 0};
   switch (p) {
     case Pattern::None:
@@ -242,6 +247,11 @@ inline Rgb patternColor(Pattern p, int slot, int px, int count, double t) {
       return px == at ? kWhite : kBlack;
     }
     case Pattern::Numbers: return px <= slot ? kWhite : kBlack;
+    case Pattern::Bars: {
+      if (slots <= 0) return kBlack;
+      const int at = (int)((int64_t)std::floor(std::max(0.0, t) / kBarSec) % slots);
+      return slot == at ? kWhite : kBlack;
+    }
   }
   return kBlack;
 }

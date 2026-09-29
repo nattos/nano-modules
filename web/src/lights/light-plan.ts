@@ -73,7 +73,7 @@ export function rigFixtures(rig: LightRig, library: readonly LightRow[],
       dest: slot.address.dest || 'broadcast',
       format: type.format,
       gamma: type.gamma,
-      footprints: slotFootprints(slotRectIn(placement, slot), type.pixels, !!slot.reverse),
+      footprints: slotFootprints(slotRectIn(placement, slot), type.pixels, type.vertical !== false, !!slot.reverse),
     });
   }
   return out;

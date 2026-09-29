@@ -367,26 +367,31 @@ library and used per show (plan: COMPOSITOR.md § devices; lights and displays f
 - **Timeline rows** (`Composition.devices`). A card's `timeline` toggle shows the device as a row
   under the tracks: status (connected / offline / missing from this machine's library), wire count,
   and its shown bank's controls — live, drag to simulate, W-mode sources for anything easier to
-  reach from the timeline. Clicking the row's header opens the device in the Devices view. Taking a
-  row away keeps the device's wires. *Later:* choosing which controls a row shows.
+  reach from the timeline. Clicking the row's header SELECTS it — the inspector shows what it is
+  and whether it's live, with "Edit in Devices" as the explicit way there (the view never switches
+  on its own). Taking a row away keeps the device's wires. *Later:* choosing which controls a row shows.
 
 **Lights (D2)** — LED pixel fixtures over Art-Net, in the same Devices view:
 
 - **The library** (this machine's, `light-devices.json`): the `LED strip` template → a TYPE (pixels,
-  LEDs per pixel — a 24 V segment lights several, colour order RGB/GRB/BGR/RGBW/GRBW, gamma) → a RIG
+  LEDs per pixel — a 24 V segment lights several, colour order RGB/GRB/BGR/RGBW/GRBW, gamma, hung
+  vertically or horizontally — which way its pixels run) → a RIG
   of slots, each a type plus an ADDRESS (universe, start channel, destination: broadcast / IP /
   `ip:port`) and a default layout. "New rig" makes N bars addressed one after another, laid out as
-  vertical strips at 1/8, 3/8, 5/8, 7/8 (the Resolume shows' geometry). There is no separate "unit":
+  vertical strips at 1/8, 3/8, 5/8, 7/8 (the Resolume shows' geometry) — or, for a horizontal type,
+  full-width strips stacked down the frame (turning a type re-lays its rigs). There is no separate "unit":
   a slot's address is the physical bar, so **swap** exchanges two slots' addresses (bars hung in each
   other's places) — in the rig, so every show using it is fixed. **Identify** walks one bar (pixel 0
   red, so its direction shows).
 - **In a show**: a card's `add to show` places the rig (`Composition.devices`, kind `light`) — a row
-  under the tracks with its bars' live pixels, a sending status and an output switch. It samples the
+  under the tracks whose lane draws the rig as the Devices view does (its bars where they sample,
+  live, scaled to the row), a sending status and an output switch; selecting it shows the rig, its
+  source and its addresses in the inspector. It samples the
   **main output** unless a **route** feeds its input: a track's out port (Composition I/O) dragged
   onto the light's input pip — across the Timeline | Devices switch if need be. Where each bar
   samples is the show's: the layout editor (drag a strip, its corner to resize; one undo point per
-  drag) overrides the rig's layout per slot. **Test patterns** (black, white, colours, chase, slot
-  numbers) are transient and light even a switched-off output.
+  drag) overrides the rig's layout per slot. **Test patterns** (black, white, colours, chase, bars
+  — one at a time in rig order, slot numbers) are transient and light even a switched-off output.
 - **Output is the native compositor's** (a browser has no UDP): it reads back what each light
   samples, maps it and transmits at a steady 40 Hz (ArtDmx + ArtSync), whatever the render rate.
   The worker engine renders the same show and says it doesn't transmit.

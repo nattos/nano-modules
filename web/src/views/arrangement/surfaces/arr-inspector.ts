@@ -22,6 +22,7 @@ import { sequenceLaneOf, sequenceInteriorBeats, clipProcessesTexture, clipTransp
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
+import './arr-device-inspector';
 import { setInspectorFieldLookup } from './arr-io';
 import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, trackTransportTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
 import { multiSketchId } from '../state/multi-edit';
@@ -723,6 +724,9 @@ export class ArrInspector extends MobxLitElement {
     if (kind === 'clip') return this.renderClipInspector(path);
     if (kind === 'track') return this.renderTrackInspector(path);
     if (kind === 'rail') return this.renderRailInspector(path);
+    if (kind === 'device') {
+      return html`<arr-device-inspector .placementId=${path.slice('device/'.length)}></arr-device-inspector>`;
+    }
     return html`<div class="empty">Selected: ${path}</div>`;
   }
 
