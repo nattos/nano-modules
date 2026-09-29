@@ -938,6 +938,19 @@ target_include_directories(test_artnet_socket PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_artnet_socket PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_artnet_socket PROPERTIES LABELS "integration")
 
+# The Art-Net TRANSMITTER (light devices) against a loopback socket: packet
+# layout, the fixed cadence, and stop-on-empty. Never sends to 6454.
+add_executable(test_artnet_sender tests/test_artnet_sender.cpp src/artnet/artnet_sender.cpp)
+target_include_directories(test_artnet_sender PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_artnet_sender PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_artnet_sender PROPERTIES LABELS "integration")
+
+# Light devices' pixel mapping (lights/light_map.h): pure CPU goldens.
+add_executable(test_light_map tests/test_light_map.cpp)
+target_include_directories(test_light_map PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_light_map PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_light_map)
+
 # Runnable fake Resolume WS server (headless dev/e2e — point the dylib at it via
 # NANO_RESOLUME_URL).
 add_executable(fake_resolume
@@ -1375,7 +1388,8 @@ if(NANO_HAS_GPU_BACKEND)
     src/bridge/barrel_runtime.cpp
     src/midi/midi_host.cpp
     ${NANO_MIDI_PORT_BACKEND}
-    src/artnet/artnet_host.cpp)
+    src/artnet/artnet_host.cpp
+    src/artnet/artnet_sender.cpp)
   target_link_libraries(bridge_server PRIVATE sketch_executor)
   if(TARGET comp_host)
     target_link_libraries(bridge_server PRIVATE comp_host)
