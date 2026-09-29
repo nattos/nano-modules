@@ -338,6 +338,17 @@ export interface CompFrameInfo {
   /** …and this machine's IPv4 network interfaces (what a light NETWORK can
    *  send from) — on connect and when they change. */
   netIfaces?: { name: string; address: string; netmask: string; broadcast: string; up: boolean; loopback: boolean }[];
+  /** Display devices (the native compositor): the screens it sees — on
+   *  connect and on a hotplug (displays/display-types.ts DisplayScreen). */
+  screens?: { uuid: string; name: string; w: number; h: number; hz: number; main: boolean }[];
+  /** …each placed display's state (display-controller.ts DisplayStatus), on
+   *  a change, else once a second. */
+  displayStatus?: Record<string, { state: string; screen?: { uuid: string; name: string; w: number; h: number; hz: number; main: boolean };
+    width?: number; height?: number; fps?: number; probe?: string }>;
+  /** …and what the viewer did to an output window: closed it, moved it. */
+  displayEvents?: ({ type: 'closed'; placementId: string }
+    | { type: 'moved'; slotId: string; frame: { x: number; y: number; w: number; h: number } }
+    | { type: 'identified'; label: string; screenUuid: string; window: boolean })[];
 }
 
 // --- Worker events (worker → main) ---

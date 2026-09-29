@@ -36,7 +36,7 @@ import { store } from '../../state/store';
 import { routeEndLabel } from '../arr-io';
 
 import './light-layout-editor';
-import './light-input-pip';
+import '../device-input-pip';
 
 const PATTERNS: { id: LightPattern; label: string; title: string }[] = [
   { id: 'off', label: 'black', title: 'All pixels off' },
@@ -350,7 +350,7 @@ export class LightDetails extends MobxLitElement {
   }
 
   private renderShowSection(rig: LightRig, pid: string, enabled: boolean) {
-    const route = store.lightInputRoute(pid);
+    const route = store.deviceInputRoute(pid);
     const testing = lightController.testing[pid];
     const transmits = engineBridge.outputsLights;
     const status = lightController.status;
@@ -363,7 +363,7 @@ export class LightDetails extends MobxLitElement {
             : status?.error ? status.error
             : enabled ? `${status?.pps ?? 0} packets/s` : 'not sending'}</span></div>
         <div class="row"><label>samples</label>
-          <light-input-pip .placementId=${pid} .scope=${'devices'}></light-input-pip>
+          <device-input-pip .placementId=${pid} .scope=${'devices'}></device-input-pip>
           ${route ? html`<button title="Sample the main output again"
             @click=${() => store.removeRoute(route.id)}>main</button>` : nothing}</div>
         ${!transmits ? html`<div class="note">Light output needs the native compositor (the desktop

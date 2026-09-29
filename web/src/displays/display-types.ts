@@ -1,0 +1,131 @@
+/**
+ * Display devices — the library model (the devices push, D3).
+ *
+ * A display is a portable SLOT — "Display 1", "Display 2" — not a monitor. A
+ * show places a slot (by its id, the same on every machine); each machine's
+ * library says which physical screen fills it and how:
+ *   - `screen`: remembered by CGDisplay UUID (never by index — indices
+ *     reshuffle on hotplug). Absent = automatic: Display N takes the Nth screen
+ *     that ISN'T the main one (the menu bar's), so a fresh machine never covers
+ *     the editor. A remembered screen that isn't connected falls back to the
+ *     automatic binding; with no screen at all the display is inert — an
+ *     unplugged cable, not an error.
+ *   - `window`: rehearse in a normal window instead (a laptop, no projector).
+ *
+ * Display 1 and Display 2 always exist (synthesised when the library has no
+ * row for them); "New display" adds Display 3 and on. The native compositor
+ * resolves the binding (comp_displays.h resolveDisplayScreen, lock-step with
+ * resolveDisplayScreen here, which the UI uses to say where a display WILL
+ * land) so a hotplug re-binds at once.
+ *
+ * Pure types + helpers — no DOM, no store.
+ */
+
+/** How the show's frame fits a display: Fit letterboxes in black, Fill crops,
+ *  Stretch ignores the aspect. Lock-step: GPUBackend::PresentFit. */
+export type DisplayFit = 'fit' | 'fill' | 'stretch';
+
+export const DISPLAY_FITS: readonly { id: DisplayFit; label: string; title: string }[] = [
+  { id: 'fit', label: 'Fit', title: 'The whole frame, black bars where the aspects differ' },
+  { id: 'fill', label: 'Fill', title: 'Fill the screen, cropping the frame' },
+  { id: 'stretch', label: 'Stretch', title: 'Fill the screen, ignoring the aspect' },
+];
+
+/** A screen as the native compositor reports it (comp_report.screens). */
+export interface DisplayScreen {
+  uuid: string;
+  name: string;
+  /** Pixels. */
+  w: number;
+  h: number;
+  hz: number;
+  /** The screen with the menu bar — the editor's, usually. */
+  main: boolean;
+}
+
+/** A window's content rect, in screen points (AppKit: origin bottom-left). */
+export interface WindowFrame { x: number; y: number; w: number; h: number }
+
+/** One slot in this machine's library. */
+export interface DisplaySlot {
+  kind: 'display';
+  /** `display.<n>` — portable: a show on another machine means that
+   *  machine's Display n. */
+  id: string;
+  name: string;
+  /** This machine's screen for it; absent = automatic. */
+  screen?: { uuid: string; name: string };
+  /** Rehearse in a window instead of fullscreen. */
+  window?: boolean;
+  /** Where that window was last (remembered when it moves). */
+  windowFrame?: WindowFrame;
+  updatedAt: number;
+  deleted?: boolean;
+}
+
+export const DISPLAY_ID_PREFIX = 'display.';
+/** Display 1 and 2 always exist. */
+export const BUILTIN_DISPLAY_COUNT = 2;
+
+export function displaySlotId(n: number): string {
+  return `${DISPLAY_ID_PREFIX}${n}`;
+}
+
+/** 'display.3' → 3; 0 for anything else. */
+export function displayOrdinal(id: string): number {
+  if (!id.startsWith(DISPLAY_ID_PREFIX)) return 0;
+  const n = Number(id.slice(DISPLAY_ID_PREFIX.length));
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
+export function defaultDisplaySlot(n: number): DisplaySlot {
+  return { kind: 'display', id: displaySlotId(n), name: `Display ${n}`, updatedAt: 0 };
+}
+
+/**
+ * Every slot this machine has, in order: Display 1 and 2 (the library's row,
+ * else the default), then every other live row.
+ */
+export function librarySlots(rows: readonly DisplaySlot[]): DisplaySlot[] {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out: DisplaySlot[] = [];
+  for (let n = 1; n <= BUILTIN_DISPLAY_COUNT; n++) {
+    const r = byId.get(displaySlotId(n));
+    out.push(r && !r.deleted ? r : defaultDisplaySlot(n));
+  }
+  const rest = rows
+    .filter((r) => !r.deleted && displayOrdinal(r.id) > BUILTIN_DISPLAY_COUNT)
+    .sort((a, b) => displayOrdinal(a.id) - displayOrdinal(b.id));
+  return [...out, ...rest];
+}
+
+/** A slot by id: the library's, a built-in's default, or — for a slot this
+ *  machine has never configured (a show from elsewhere) — a default. */
+export function librarySlot(rows: readonly DisplaySlot[], id: string, label?: string): DisplaySlot | undefined {
+  const n = displayOrdinal(id);
+  if (!n) return undefined;
+  const r = rows.find((x) => x.id === id && !x.deleted);
+  if (r) return r;
+  const d = defaultDisplaySlot(n);
+  return label ? { ...d, name: label } : d;
+}
+
+/**
+ * Which of `screens` a slot lands on (fullscreen), or -1: its remembered
+ * screen if connected, else the Nth screen that isn't the main one. Lock-step:
+ * native bridge/comp_displays.cpp resolveDisplayScreen.
+ */
+export function resolveDisplayScreen(slot: Pick<DisplaySlot, 'id' | 'screen'>,
+                                     screens: readonly DisplayScreen[]): number {
+  if (slot.screen) {
+    const i = screens.findIndex((s) => s.uuid === slot.screen!.uuid);
+    if (i >= 0) return i;
+  }
+  const ordinal = Math.max(1, displayOrdinal(slot.id));
+  let n = 0;
+  for (let i = 0; i < screens.length; i++) {
+    if (screens[i].main) continue;
+    if (++n === ordinal) return i;
+  }
+  return -1;
+}

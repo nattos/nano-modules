@@ -65,7 +65,7 @@ export class ArrDeviceInspector extends MobxLitElement {
     const rig = lightController.rig(p.deviceId);
     const name = rig?.name ?? p.label ?? 'Missing light';
     const on = p.enabled !== false;
-    const route = store.lightInputRoute(p.id);
+    const route = store.deviceInputRoute(p.id);
     const status = lightController.status;
     const sending = !rig || rig.deleted ? 'not in this machine’s library'
       : !engineBridge.outputsLights ? 'this engine doesn’t transmit'

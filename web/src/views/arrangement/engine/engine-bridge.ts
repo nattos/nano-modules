@@ -33,6 +33,7 @@ import { VideoCompositor, videoDescFor, type VideoClipDesc } from './video-compo
 import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady } from './precise-gate';
 import { store } from '../state/store';
+import { displayController } from '../state/display-controller';
 import { lightController } from '../state/light-controller';
 import { deviceIsSource } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
@@ -289,12 +290,14 @@ export class EngineBridge {
   videoLastPulled(): unknown { return this.video?.lastPulled ?? null; }
 
   /** Engine render size = composition resolution's aspect, capped to the preview
-   *  max edge (even dimensions for clean GPU textures). */
+   *  max edge (even dimensions for clean GPU textures) — except while a display
+   *  shows the show: a projector gets the composition's full resolution (the
+   *  preview is scaled down from it as ever). */
   private renderSize(): { w: number; h: number } {
     const r = store.composition.meta.resolution;
     const rw = Math.max(1, r.width);
     const rh = Math.max(1, r.height);
-    const scale = Math.min(1, PREVIEW_MAX_EDGE / Math.max(rw, rh));
+    const scale = this.displayLive ? 1 : Math.min(1, PREVIEW_MAX_EDGE / Math.max(rw, rh));
     const even = (n: number) => Math.max(2, Math.round((n * scale) / 2) * 2);
     return { w: even(rw), h: even(rh) };
   }
@@ -363,6 +366,7 @@ export class EngineBridge {
     if (this.externalScalarsJson) e.setExternalScalars(this.externalScalarsJson);
     for (const [kind, value] of this.midiMirror) e.mirrorMidi(kind, value);
     if (this.lightPlan !== undefined) e.setLightPlan(this.lightPlan);
+    if (this.displayPlan !== undefined) e.setDisplayPlan(this.displayPlan);
     this.engine = e;
     return e;
   }
@@ -389,6 +393,31 @@ export class EngineBridge {
   get outputsLights(): boolean {
     return this.engine?.outputsLights ?? false;
   }
+
+  private displayPlan: unknown = undefined;
+  /** The display plan (remembered for an engine created later). An enabled
+   *  display also lifts the preview cap on the render size (renderSize). */
+  setDisplayPlan(plan: unknown) {
+    this.displayPlan = plan;
+    this.engine?.setDisplayPlan(plan);
+    this.syncResolution();
+  }
+
+  identifyDisplay(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }) {
+    this.engine?.identifyDisplay(msg);
+  }
+
+  /** Does the current engine put displays on screens? */
+  get outputsDisplays(): boolean {
+    return this.engine?.outputsDisplays ?? false;
+  }
+
+  /** Is a display showing this show (enabled, on an engine that outputs)? */
+  private get displayLive(): boolean {
+    if (!this.outputsDisplays) return false;
+    const outs = (this.displayPlan as { outputs?: { enabled?: boolean }[] } | undefined)?.outputs;
+    return !!outs?.some((o) => o.enabled !== false);
+  }
   private externalScalarsJson = '';
   private midiMirror = new Map<'library' | 'sim', unknown>();
 
@@ -410,6 +439,9 @@ export class EngineBridge {
    *  (the comp transport owns the beat while playing). */
   private handleCompInfo(info: CompFrameInfo) {
     this.lastCompInfo = info;
+    if (info.screens || info.displayStatus || info.displayEvents) {
+      displayController.setTelemetry(info.screens, info.displayStatus, info.displayEvents);
+    }
     if (info.lights || info.lightStatus || info.netIfaces) {
       lightController.setTelemetry(info.lights, info.lightStatus, info.netIfaces);
     }

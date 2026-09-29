@@ -82,10 +82,11 @@ function deepElementFromPoint(x: number, y: number): Element | null {
 const gestureActive = observable.box(false);
 export function connectGestureActive(): boolean { return gestureActive.get(); }
 
-/** A light's input as a gesture endpoint (only ever a route destination). */
-export function lightInputInfo(placementId: string, viewportY: number): FieldConnectInfo {
+/** An output device's input (a light's, a display's) as a gesture endpoint
+ *  (only ever a route destination). */
+export function deviceInputInfo(placementId: string, viewportY: number): FieldConnectInfo {
   return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
-    viewportY, schemaDef: null, lightInput: { placementId } };
+    viewportY, schemaDef: null, deviceInput: { placementId } };
 }
 
 function hitKey(hit: HTMLElement): string {
@@ -175,19 +176,19 @@ export class WireConnect implements ColumnTaps {
     this.end();
   }
 
-  /** Complete a CLICK-mode connection onto a light's input (the arrangement's
-   *  Devices view / light row). */
-  completeOnLightInput(placementId: string) {
+  /** Complete a CLICK-mode connection onto an output device's input (the
+   *  arrangement's Devices view / device row). */
+  completeOnDeviceInput(placementId: string) {
     if (!this.state) return;
-    this.commit({ key: `light/${placementId}`, info: lightInputInfo(placementId, this.state.pointerY) });
+    this.commit({ key: `light/${placementId}`, info: deviceInputInfo(placementId, this.state.pointerY) });
     this.end();
   }
 
   private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
-    // A LIGHT device's input (routes from an out port land here).
-    if (hit.dataset.lightInput) {
+    // An output device's input (routes from an out port land here).
+    if (hit.dataset.deviceInput) {
       const rr = hit.getBoundingClientRect();
-      return lightInputInfo(hit.dataset.lightInput, rr.top + rr.height / 2);
+      return deviceInputInfo(hit.dataset.deviceInput, rr.top + rr.height / 2);
     }
     // A Composition I/O track port (the arrangement's header I/O strip).
     if (hit.dataset.portTrack && hit.dataset.portId) {

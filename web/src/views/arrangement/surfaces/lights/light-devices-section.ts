@@ -31,7 +31,7 @@ import { MISSING_PREFIX } from './light-details';
 
 import '../../../devices/device-card';
 import './light-rig-surface';
-import './light-input-pip';
+import '../device-input-pip';
 import './light-details';
 
 @customElement('light-devices-section')
@@ -171,8 +171,8 @@ export class LightDevicesSection extends MobxLitElement {
             else store.includeDevice(rig.id, { kind: 'light', label: rig.name });
           }}>${on ? 'in show' : 'add to show'}</button>
         <light-rig-surface .rigId=${rig.id} .placementId=${placementId ?? ''}></light-rig-surface>
-        ${placementId ? html`<div class="pip"><light-input-pip .placementId=${placementId}
-          .scope=${'devices'}></light-input-pip></div>` : nothing}
+        ${placementId ? html`<div class="pip"><device-input-pip .placementId=${placementId}
+          .scope=${'devices'}></device-input-pip></div>` : nothing}
       </device-card>`;
   }
 

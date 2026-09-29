@@ -26,8 +26,10 @@ import { debugPerf } from './views/arrangement/state/debug-perf';
 import { previewSurfaces } from './preview-surfaces';
 import { midiController } from './state/midi-controller';
 import { bootArrangementMidi } from './views/arrangement/state/arr-midi';
+import { bootArrangementDisplays } from './views/arrangement/state/arr-displays';
 import { bootArrangementLights } from './views/arrangement/state/arr-lights';
 import { lightController } from './views/arrangement/state/light-controller';
+import { displayController } from './views/arrangement/state/display-controller';
 
 // Expose for console poking / e2e (mirrors boot.ts's window globals).
 (window as any).arrangementStore = store;
@@ -51,5 +53,8 @@ import { lightController } from './views/arrangement/state/light-controller';
 (window as any).midiController = midiController;
 // The light library (types, rigs) + test patterns.
 (window as any).lightController = lightController;
+// This machine's display slots (which screen fills each) + identify.
+(window as any).displayController = displayController;
 void bootArrangementMidi();
 void bootArrangementLights();
+void bootArrangementDisplays();

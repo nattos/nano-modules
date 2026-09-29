@@ -14,6 +14,7 @@
 import { ALL_MIGRATION_IDS } from '../../../state/effect-migrations';
 import type { Wire as SketchWire } from '../../../sketch-types';
 import type { SlotRect } from '../../../lights/light-types';
+import type { DisplayFit } from '../../../displays/display-types';
 
 export interface Resolution {
   width: number;
@@ -782,7 +783,7 @@ export interface TrackPort {
 
 /** One end of a route: a track port, a texture field of a device in a
  *  track's own sketch (`clipId` omitted) or one of its clips, or a placed
- *  LIGHT's input (a destination only — see {@link DevicePlacement}). */
+ *  light's or display's input (a destination only — see {@link DevicePlacement}). */
 export type RouteEnd =
   | { kind: 'port'; trackId: string; portId: string }
   | { kind: 'field'; trackId: string; clipId?: string; deviceId: string; field: string }
@@ -792,7 +793,8 @@ export type RouteEnd =
  * A Composition I/O route — PORTS ARE HUBS: every legal route has a port end.
  *   feed    — a field inside track T → a named OUT port of T;
  *   send    — an out port (named or `__out__`) → an input field anywhere, an in
- *             port, or a light's input (what it samples instead of the main output);
+ *             port, or a light's / display's input (what it shows instead of the
+ *             main output);
  *   receive — a named IN port of T → an input field inside T.
  * Lock-step: comp_model.h RouteM + sketch_build.h routeIsLegal.
  */
@@ -846,15 +848,21 @@ export interface Composition {
  *   its input) and transmits while `enabled`. `layout` is where each of the
  *   rig's slots samples the frame in THIS show (slot id → rect), overriding the
  *   rig's default per slot.
+ * - DISPLAY (a portable slot, displays/display-types.ts: "Display 1"): the
+ *   placement IS the display being in the show — it shows the main output (or
+ *   whatever a route feeds its input) while `enabled`, fitted per `fit`. WHICH
+ *   screen fills the slot is the machine's business (its library).
  * LOCK-STEP: comp_model.h DevicePlacementM.
  */
 export interface DevicePlacement {
   id: string;
-  kind: 'midi' | 'light';
+  kind: 'midi' | 'light' | 'display';
   /** The library device's uuid — what the show's wires address (a light: its rig). */
   deviceId: string;
-  /** Lights: output on (default) / off. Unused for MIDI. */
+  /** Lights, displays: output on (default) / off. Unused for MIDI. */
   enabled?: boolean;
+  /** Displays: how the frame fits the screen (absent: 'fit'). */
+  fit?: DisplayFit;
   /** Lights: per-slot sampling rects for this show (see SlotRect). */
   layout?: Record<string, SlotRect>;
   /** The device's name and template when it was placed: all a machine
@@ -1202,13 +1210,13 @@ export function portInfo(
 export function routeIsLegal(comp: Composition, r: Pick<Route, 'src' | 'dest'>): boolean {
   const s = r.src;
   const d = r.dest;
-  if (s.kind === 'device') return false; // a light is only ever a destination
+  if (s.kind === 'device') return false; // an output device is only ever a destination
   if (d.kind === 'device') {
-    // send: an out port (named or __out__) → a placed LIGHT's input
+    // send: an out port (named or __out__) → a placed LIGHT's or DISPLAY's input
     if (s.kind !== 'port' || s.portId === PORT_IN) return false;
     const sp = portInfo(comp, s.trackId, s.portId);
     return sp.exists && sp.isOut &&
-      !!comp.devices?.some((p) => p.id === d.placementId && p.kind === 'light');
+      !!comp.devices?.some((p) => p.id === d.placementId && (p.kind === 'light' || p.kind === 'display'));
   }
   if (s.kind !== 'port' && d.kind !== 'port') return false; // field → field: not via a hub
   if (s.kind === 'field') {

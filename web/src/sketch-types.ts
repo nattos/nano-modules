@@ -744,10 +744,11 @@ export interface FieldConnectInfo {
    */
   trackPort?: { trackId: string; portId: string; dir: 'in' | 'out' };
   /**
-   * Set when this endpoint is a LIGHT device's input (the arrangement's
-   * Devices view / light row): the placement id. Pairs with an out port — the
-   * gesture becomes a route telling the light what to sample.
+   * Set when this endpoint is an OUTPUT device's input — a light's or a
+   * display's (the arrangement's Devices view / device row): the placement id.
+   * Pairs with an out port — the gesture becomes a route telling the device
+   * what to show.
    */
-  lightInput?: { placementId: string };
+  deviceInput?: { placementId: string };
 }
 

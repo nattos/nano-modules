@@ -30,7 +30,7 @@ describe('light placements', () => {
   });
   const lightIn = (placementId: string): FieldConnectInfo => ({
     sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false, viewportY: 0,
-    schemaDef: null, lightInput: { placementId },
+    schemaDef: null, deviceInput: { placementId },
   });
 
   it('includes a rig as a light, on by default; the switch turns it off', () => {
@@ -65,17 +65,17 @@ describe('light placements', () => {
   it('an out port routes into a light (either gesture direction); one route per light', () => {
     const pid = store.includeDevice('rig-1', { kind: 'light' });
     store.connectSketchWire(lightIn(pid), port(trackId));
-    expect(store.lightInputRoute(pid)).toMatchObject({
+    expect(store.deviceInputRoute(pid)).toMatchObject({
       src: { kind: 'port', trackId, portId: PORT_OUT },
       dest: { kind: 'device', placementId: pid },
     });
     const t2 = store.addTrack();
     store.connectSketchWire(port(t2), lightIn(pid));
     expect((store.composition.routes ?? []).length).toBe(1);
-    expect(store.lightInputRoute(pid)!.src).toMatchObject({ trackId: t2 });
+    expect(store.deviceInputRoute(pid)!.src).toMatchObject({ trackId: t2 });
     // an IN port can't feed a light
     store.connectSketchWire(port(trackId, '__in__', 'in'), lightIn(pid));
-    expect(store.lightInputRoute(pid)!.src).toMatchObject({ trackId: t2 });
+    expect(store.deviceInputRoute(pid)!.src).toMatchObject({ trackId: t2 });
   });
 
   it('removing the light removes its route, in the same undo step', () => {
@@ -84,7 +84,7 @@ describe('light placements', () => {
     store.removeDevicePlacement(pid);
     expect(store.composition.routes ?? []).toHaveLength(0);
     store.undo();
-    expect(store.lightInputRoute(pid)).toBeTruthy();
+    expect(store.deviceInputRoute(pid)).toBeTruthy();
   });
 
   it('a MIDI placement is never a route destination', () => {

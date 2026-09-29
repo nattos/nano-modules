@@ -68,6 +68,7 @@ import { resolveFileRef } from '../../../state/handle-ref';
 import { ALL_MIGRATION_IDS, migrateDeviceState } from '../../../state/effect-migrations';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID, PORT_IN, PORT_OUT, pruneDanglingRoutes, routeIsLegal, sameRouteEnd, compositionSketches } from '../model/composition';
 import type { DevicePlacement, Route, RouteEnd } from '../model/composition';
+import type { DisplayFit } from '../../../displays/display-types';
 import {
   allLanes,
   mediaSourceKeys,
@@ -557,7 +558,7 @@ function concatChains(target: Clip, sources: Clip[]): void {
  *  ClipSketch within a draft composition. */
 /** Include `deviceId` in the draft's devices unless already there. */
 function addPlacement(d: Composition, id: string, deviceId: string,
-                      info: { label?: string; templateId?: string; kind?: 'midi' | 'light' }) {
+                      info: { label?: string; templateId?: string; kind?: DevicePlacement['kind'] }) {
   if (d.devices?.some((p) => p.deviceId === deviceId)) return;
   d.devices = [...(d.devices ?? []), {
     id, kind: info.kind ?? 'midi', deviceId,
@@ -4781,7 +4782,7 @@ export class ArrangementStore {
   connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
     // Composition I/O: a TRACK PORT (or a light's input) on either end makes
     // it a route.
-    if (a.trackPort || b.trackPort || a.lightInput || b.lightInput) {
+    if (a.trackPort || b.trackPort || a.deviceInput || b.deviceInput) {
       this.connectRoute(a, b);
       return;
     }
@@ -4911,13 +4912,16 @@ export class ArrangementStore {
    *  one already there returns its placement.
    *    - MIDI: the row only — its wires work with or without it.
    *    - A light rig: the light is IN the show (it samples the main output
-   *      unless a route feeds it, and transmits while enabled). */
+   *      unless a route feeds it, and transmits while enabled).
+   *    - A display slot: the display is IN the show (it shows the main output
+   *      unless a route feeds it, while enabled). */
   includeDevice(deviceId: string,
-                info: { label?: string; templateId?: string; kind?: 'midi' | 'light' } = {}): string {
+                info: { label?: string; templateId?: string; kind?: DevicePlacement['kind'] } = {}): string {
     const existing = this.placementForDevice(deviceId);
     if (existing) return existing.id;
     const id = uid('dev');
-    this.mutate(info.kind === 'light' ? 'add light to show' : 'show device on timeline',
+    this.mutate(info.kind === 'light' ? 'add light to show'
+      : info.kind === 'display' ? 'add display to show' : 'show device on timeline',
       (d) => { addPlacement(d, id, deviceId, info); });
     return id;
   }
@@ -4972,8 +4976,34 @@ export class ArrangementStore {
     });
   }
 
-  /** The route feeding a light's input, if any (else it samples the main output). */
-  lightInputRoute(placementId: string): Route | undefined {
+  // ── Displays: output on/off + how the frame fits, per show ────────────────
+
+  /** The show's display placements (document order). */
+  get displayPlacements(): DevicePlacement[] {
+    return this.devicePlacements.filter((p) => p.kind === 'display');
+  }
+
+  /** Switch a display on or off (off = its window closes). */
+  setDisplayEnabled(placementId: string, on: boolean) {
+    this.mutate(on ? 'display on' : 'display off', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p || p.kind !== 'display') return;
+      if (on) delete p.enabled; else p.enabled = false;
+    });
+  }
+
+  /** How the show's frame fits this display's screen. */
+  setDisplayFit(placementId: string, fit: DisplayFit) {
+    this.mutate('display fit', (d) => {
+      const p = d.devices?.find((x) => x.id === placementId);
+      if (!p || p.kind !== 'display') return;
+      if (fit === 'fit') delete p.fit; else p.fit = fit;
+    });
+  }
+
+  /** The route feeding an output device's input (a light's, a display's), if
+   *  any — else it shows the main output. */
+  deviceInputRoute(placementId: string): Route | undefined {
     return (this.composition.routes ?? []).find(
       (r) => r.dest.kind === 'device' && r.dest.placementId === placementId);
   }
@@ -5141,9 +5171,10 @@ export class ArrangementStore {
    *  top-level track's sketch / clip. Null for anything a route can't address
    *  (scalar fields, sequence interiors, rails…). */
   private routeEndOf(info: FieldConnectInfo): RouteEnd | null {
-    if (info.lightInput) {
-      return this.placementById(info.lightInput.placementId)?.kind === 'light'
-        ? { kind: 'device', placementId: info.lightInput.placementId } : null;
+    if (info.deviceInput) {
+      const kind = this.placementById(info.deviceInput.placementId)?.kind;
+      return kind === 'light' || kind === 'display'
+        ? { kind: 'device', placementId: info.deviceInput.placementId } : null;
     }
     if (info.trackPort) {
       return { kind: 'port', trackId: info.trackPort.trackId, portId: info.trackPort.portId };

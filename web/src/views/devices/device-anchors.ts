@@ -29,5 +29,5 @@ export const DeviceAnchorKeys = {
   /** One wireable endpoint: deviceId + full endpoint field ('b0/e05/turn'). */
   control: (deviceId: string, endpoint: string) => `devctl:${deviceId}:${endpoint}`,
   /** A placed light card's input pip (the arrangement's Devices view). */
-  lightInput: (placementId: string) => `lightin:${placementId}`,
+  deviceInput: (placementId: string) => `devin:${placementId}`,
 };

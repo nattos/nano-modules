@@ -282,6 +282,9 @@ export class ArrEngine implements CompEngine {
   readonly outputsLights = false;
   setLightPlan(_plan: unknown) {}
   lightTest(_placementId: string, _slotId: string, _pattern: string) {}
+  readonly outputsDisplays = false;
+  setDisplayPlan(_plan: unknown) {}
+  identifyDisplay(_msg: { label: string; screenUuid: string; ordinal: number; window: boolean }) {}
   /** Transport + Precise-gate commands. */
   compControl(msg: CompControlMsg) {
     this.proxy.compControl(msg);

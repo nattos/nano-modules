@@ -33,7 +33,7 @@ import './arr-rail-lane';
 import './arr-scene';
 import './arr-device-lane';
 import './arr-light-lane';
-import './lights/light-input-pip';
+import './device-input-pip';
 import { lightController } from '../state/light-controller';
 import { engineBridge } from '../engine/engine-bridge';
 import { midiController } from '../../../state/midi-controller';
@@ -813,7 +813,7 @@ export class ArrGrid extends MobxLitElement {
           </div>
           <div class="h-bottom" style="padding-left: var(--app-sp-3)">
             <span class="dchip">LIGHT</span>
-            <light-input-pip .placementId=${p.id} .scope=${'timeline'}></light-input-pip>
+            <device-input-pip .placementId=${p.id} .scope=${'timeline'}></device-input-pip>
           </div>
         </div>
         <div class="lane device"><arr-light-lane .placementId=${p.id}></arr-light-lane></div>

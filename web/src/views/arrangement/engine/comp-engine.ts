@@ -84,6 +84,15 @@ export interface CompEngine {
    *  light, or one slot of it (slotId ''). */
   lightTest(placementId: string, slotId: string, pattern: string): void;
 
+  /** Does this engine put display devices on screens? Only the native
+   *  compositor can (a page can't open a window on another screen); the
+   *  worker engine takes the plan and ignores it. */
+  readonly outputsDisplays: boolean;
+  /** The show's resolved display plan (displays/display-plan.ts). */
+  setDisplayPlan(plan: unknown): void;
+  /** Paint a slot's name over the screen it lands on, for a moment. */
+  identifyDisplay(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }): void;
+
   /** Per-device texture traces, merged with the composite trace. */
   setExtraTracePoints(tps: TracePoint[]): void;
   /** Bind a decoded video frame to a source instance (null clears). Only

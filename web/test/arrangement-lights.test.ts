@@ -291,12 +291,12 @@ describe('Arrangement lights (GPU)', () => {
     await page.mouse.move(sw.x, sw.y, { steps: 6 });
     await page.waitForFunction(() => (window as any).arrangementStore.mainView === 'devices', { timeout: 3_000 });
     await new Promise((r) => setTimeout(r, 300));
-    const pip = await waitDeep(`[data-light-input="${pid}"]`);
+    const pip = await waitDeep(`[data-device-input="${pid}"]`);
     await page.mouse.move(pip.x, pip.y, { steps: 6 });
     await new Promise((r) => setTimeout(r, 60));
     await page.mouse.up();
     const route = await page.evaluate((p: string) => JSON.parse(JSON.stringify(
-      (window as any).arrangementStore.lightInputRoute(p) ?? null)), pid);
+      (window as any).arrangementStore.deviceInputRoute(p) ?? null)), pid);
     expect(route).toMatchObject({
       src: { kind: 'port', trackId: t2, portId: '__out__' },
       dest: { kind: 'device', placementId: pid },

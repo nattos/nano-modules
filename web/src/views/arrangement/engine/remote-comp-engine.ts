@@ -225,11 +225,23 @@ export class RemoteCompEngine implements CompEngine {
     this.action('comp_lights_test', { placementId, slotId, pattern });
   }
 
+  readonly outputsDisplays = true;
+  /** Sticky, like the light plan. */
+  private displayPlan: unknown = undefined;
+  setDisplayPlan(plan: unknown): void {
+    this.displayPlan = plan;
+    this.action('comp_displays', { plan });
+  }
+  identifyDisplay(msg: { label: string; screenUuid: string; ordinal: number; window: boolean }): void {
+    this.action('comp_display_identify', msg);
+  }
+
   private replay() {
     if (this.lastDoc !== null) this.action('comp_load_doc', { json: this.lastDoc });
     if (this.midiMirror.library !== undefined) this.mirrorMidi('library', this.midiMirror.library);
     if (this.midiMirror.sim !== undefined) this.mirrorMidi('sim', this.midiMirror.sim);
     if (this.lightPlan !== undefined) this.setLightPlan(this.lightPlan);
+    if (this.displayPlan !== undefined) this.setDisplayPlan(this.displayPlan);
     // Settings first, then where the playhead WAS (not the last seek — it has
     // moved on since), then whether it runs.
     for (const slot of ['mode', 'loop', 'clipTiming', 'ignoreSolo']) {

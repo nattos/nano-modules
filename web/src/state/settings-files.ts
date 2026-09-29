@@ -230,5 +230,6 @@ export const SETTINGS_FILES = {
   remoteControl: 'remote-control.json',
   midiDevices: 'midi-devices.json',
   lightDevices: 'light-devices.json',
+  displayDevices: 'display-devices.json',
   libraryPaths: 'library-paths.json',
 } as const;

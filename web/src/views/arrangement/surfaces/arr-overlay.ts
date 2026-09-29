@@ -280,8 +280,8 @@ export class ArrOverlay extends MobxLitElement {
     if (e.kind === 'device') {
       // A light's input pip: its card in the Devices view, its row otherwise.
       const r = store.mainView === 'devices'
-        ? deviceAnchorRect(DeviceAnchorKeys.lightInput(e.placementId))
-        : anchorRect(AnchorKeys.lightInput(e.placementId));
+        ? deviceAnchorRect(DeviceAnchorKeys.deviceInput(e.placementId))
+        : anchorRect(AnchorKeys.deviceInput(e.placementId));
       return r ? { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 } : null;
     }
     if (e.kind === 'port') {
