@@ -3,6 +3,7 @@
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <IOSurface/IOSurface.h>
+#import <QuartzCore/QuartzCore.h>
 #include <map>
 #include <string>
 #include <cstdio>
@@ -1216,6 +1217,128 @@ public:
     }
   }
 
+  // --- Present targets (display devices; see gpu_backend.h) ---
+
+  int32_t createPresentTarget(void* nativeLayer) override {
+    CAMetalLayer* layer = (__bridge CAMetalLayer*)nativeLayer;
+    if (!layer || ![layer isKindOfClass:[CAMetalLayer class]]) return -1;
+    // Off the main thread: an explicit transaction, or nothing commits.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    layer.device = device_;
+    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    layer.framebufferOnly = NO;  // the Lanczos scaler writes it as a compute target
+    layer.maximumDrawableCount = 3;
+    layer.displaySyncEnabled = YES;
+    [CATransaction commit];
+    PresentTarget t;
+    t.layer = layer;
+    const int32_t h = nextPresentTarget_++;
+    presentTargets_[h] = std::move(t);
+    return h;
+  }
+
+  int32_t createOffscreenPresentTarget(uint32_t w, uint32_t h) override {
+    if (w == 0 || h == 0) return -1;
+    MTLTextureDescriptor* desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:w height:h mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite |
+                 MTLTextureUsageRenderTarget;
+    desc.storageMode = MTLStorageModeShared;
+    id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
+    if (!tex) return -1;
+    PresentTarget t;
+    t.texHandle = alloc(ResourceType::Texture, tex);
+    const int32_t handle = nextPresentTarget_++;
+    presentTargets_[handle] = std::move(t);
+    return handle;
+  }
+
+  int32_t presentTargetTexture(int32_t target) override {
+    auto it = presentTargets_.find(target);
+    return it == presentTargets_.end() ? -1 : it->second.texHandle;
+  }
+
+  bool presentScaled(int32_t target, int32_t src, PresentFit fit) override {
+    auto it = presentTargets_.find(target);
+    if (it == presentTargets_.end()) return false;
+    PresentTarget& t = it->second;
+    if (t.inFlight->load() >= 2) return false;  // the screen is behind: skip
+    @autoreleasepool {
+      id<CAMetalDrawable> drawable = nil;
+      id<MTLTexture> dst = nil;
+      if (t.layer) {
+        drawable = [t.layer nextDrawable];
+        if (!drawable) return false;
+        dst = drawable.texture;
+      } else {
+        dst = getAs<id<MTLTexture>>(t.texHandle);
+      }
+      if (!dst) return false;
+      id<MTLTexture> srcTex = src > 0 ? getAs<id<MTLTexture>>(src) : nil;
+
+      id<MTLCommandBuffer> cb = [queue_ commandBuffer];
+      MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+      rp.colorAttachments[0].texture = dst;
+      rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+      rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+      rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
+
+      if (srcTex && srcTex.width > 0 && srcTex.height > 0) {
+        if (!presentScaler_) presentScaler_ = [[MPSImageLanczosScale alloc] initWithDevice:device_];
+        const double sw = (double)srcTex.width, sh = (double)srcTex.height;
+        const double dw = (double)dst.width, dh = (double)dst.height;
+        MPSScaleTransform xf;
+        MTLRegion clip = MPSRectNoClip;
+        if (fit == PresentFit::Stretch) {
+          xf = {dw / sw, dh / sh, 0.0, 0.0};
+        } else {
+          const double s = fit == PresentFit::Fill ? std::max(dw / sw, dh / sh)
+                                                   : std::min(dw / sw, dh / sh);
+          const double x0 = (dw - sw * s) / 2.0, y0 = (dh - sh * s) / 2.0;
+          xf = {s, s, x0, y0};
+          if (fit == PresentFit::Fit) {
+            // Only the picture's rect: the bars keep the clear's black (the
+            // scaler would otherwise smear the edge texels into them).
+            const NSUInteger cx = (NSUInteger)std::max(0.0, std::round(x0));
+            const NSUInteger cy = (NSUInteger)std::max(0.0, std::round(y0));
+            const NSUInteger cw = (NSUInteger)std::max(1.0, std::round(sw * s));
+            const NSUInteger ch = (NSUInteger)std::max(1.0, std::round(sh * s));
+            clip = MTLRegionMake2D(cx, cy, std::min(cw, dst.width - cx), std::min(ch, dst.height - cy));
+            // MPS places the scaled source relative to the clip rect's
+            // origin, so only the sub-pixel remainder is left to translate.
+            xf.translateX = x0 - (double)cx;
+            xf.translateY = y0 - (double)cy;
+          }
+        }
+        presentScaler_.scaleTransform = &xf;
+        presentScaler_.clipRect = clip;
+        [presentScaler_ encodeToCommandBuffer:cb sourceTexture:srcTex destinationTexture:dst];
+        presentScaler_.scaleTransform = nil;
+        presentScaler_.clipRect = MPSRectNoClip;
+      }
+
+      if (drawable) [cb presentDrawable:drawable];
+      auto inFlight = t.inFlight;
+      inFlight->fetch_add(1);
+      [cb addCompletedHandler:^(id<MTLCommandBuffer>) { inFlight->fetch_sub(1); }];
+      [cb commit];
+      // A CPU readback of an offscreen target must wait for this, not only
+      // the frame (queue order: this commits after it).
+      if (!drawable) lastCommitted_ = cb;
+      return true;
+    }
+  }
+
+  void releasePresentTarget(int32_t target) override {
+    auto it = presentTargets_.find(target);
+    if (it == presentTargets_.end()) return;
+    if (it->second.texHandle > 0) release(it->second.texHandle);
+    presentTargets_.erase(it);
+  }
+
   void commitPreviewBatch() override {
     if (!async_batch_cb_) return;
     if (async_batch_pending_.empty()) {
@@ -1549,6 +1672,16 @@ private:
   // straight through. Lanczos is a windowed filter that actually integrates the
   // footprint. Same encodeToCommandBuffer: API, so it's a drop-in.
   MPSImageLanczosScale* scaler_ = nil;
+  // Display presents: their own scaler (they set a transform + clip rect that
+  // must never leak into the preview/readback resamples).
+  MPSImageLanczosScale* presentScaler_ = nil;
+  struct PresentTarget {
+    CAMetalLayer* layer = nil;  // a window's layer, or nil: offscreen
+    int32_t texHandle = -1;     // offscreen: the texture it presents into
+    std::shared_ptr<std::atomic<int>> inFlight = std::make_shared<std::atomic<int>>(0);
+  };
+  std::map<int32_t, PresentTarget> presentTargets_;
+  int32_t nextPresentTarget_ = 1;
   // Destination textures keyed by ((w << 32) | h). Read+write-only;
   // never published through `resources_` because no caller outside this
   // class needs handles to them. Sync-path uses one scratch per size;

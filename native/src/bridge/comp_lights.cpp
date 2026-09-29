@@ -149,7 +149,7 @@ void LightRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, int widt
   for (size_t i = 0; i < plan->outputs.size(); i++) {
     const auto& o = plan->outputs[i];
     bool routed = false;
-    int32_t tex = cx.lightSourceTexture(o.placementId, &routed);
+    int32_t tex = cx.deviceSourceTexture(o.placementId, &routed);
     if (!routed) tex = hasContent ? composite : -1;
     if (tex > 0) groups[tex].push_back(i);
     else dark.push_back(o.placementId);

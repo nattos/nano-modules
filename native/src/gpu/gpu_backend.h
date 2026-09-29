@@ -392,6 +392,42 @@ public:
     return false;
   }
 
+  // --- Presenting to a display (the arrangement's display devices) ---------
+  //
+  // A PRESENT TARGET is where a display output lands: a window's layer
+  // (`CAMetalLayer*` on Metal), or — for tests and headless runs — an
+  // offscreen BGRA8 texture that presentScaled writes exactly as it would a
+  // drawable, and that reads back like any texture (presentTargetTexture).
+  // The layer's size is its owner's business (the window code sets
+  // drawableSize on the main thread); presentScaled fits into whatever size
+  // the next drawable has.
+  enum class PresentFit : int32_t { Fit = 0, Fill = 1, Stretch = 2 };
+
+  virtual int32_t createPresentTarget(void* nativeLayer) {
+    (void)nativeLayer;
+    return -1;
+  }
+  virtual int32_t createOffscreenPresentTarget(uint32_t w, uint32_t h) {
+    (void)w; (void)h;
+    return -1;
+  }
+  // The offscreen target's texture (a texture handle, owned by the target);
+  // -1 for a layer target.
+  virtual int32_t presentTargetTexture(int32_t target) {
+    (void)target;
+    return -1;
+  }
+  // Clear the target to black, scale `src` into it per `fit` (Fit
+  // letterboxes; Fill crops; Stretch ignores aspect), present. `src` <= 0
+  // presents black. Never blocks on the display: with two presents still in
+  // flight it SKIPS and returns false (a slow screen must not stall the
+  // render loop). Call after the frame's submit.
+  virtual bool presentScaled(int32_t target, int32_t src, PresentFit fit) {
+    (void)target; (void)src; (void)fit;
+    return false;
+  }
+  virtual void releasePresentTarget(int32_t target) { (void)target; }
+
   // Upload pixel bytes into a texture (for tests / FFGL input handoff
   // without going through a full render path). RGBA8 / BGRA8 in row-
   // major order; bytes.size() must be w*h*4. No-op for invalid handles.

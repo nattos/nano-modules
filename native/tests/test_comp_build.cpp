@@ -781,7 +781,7 @@ TEST_CASE("io: inert and illegal routes", "[comp][io]") {
   }
 }
 
-TEST_CASE("io: a route into a placed light resolves its source, with no wire", "[comp][io]") {
+TEST_CASE("io: a route into a placed light or display resolves its source, with no wire", "[comp][io]") {
   const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
   json a = trackJson("a", json::array(), json::array({deviceJson("g", "source.solid_color")}));
   a["output"] = {{"mode", "none"}};
@@ -789,9 +789,11 @@ TEST_CASE("io: a route into a placed light resolves its source, with no wire", "
   json c = compOf(json::array({a, bT}));
   const json light = {{"kind", "device"}, {"placementId", "p1"}};
   c["devices"] = json::array({{{"id", "p1"}, {"kind", "light"}, {"deviceId", "rig"}},
-                              {{"id", "m1"}, {"kind", "midi"}, {"deviceId", "twister"}}});
+                              {{"id", "m1"}, {"kind", "midi"}, {"deviceId", "twister"}},
+                              {{"id", "d1"}, {"kind", "display"}, {"deviceId", "display.1"}}});
   c["routes"] = json::array({
       route("r1", portEnd("a", "__out__"), light),
+      route("r2", portEnd("a", "__out__"), {{"kind", "device"}, {"placementId", "d1"}}),
       // illegal: from an in port, into a MIDI placement, out of a light
       route("x1", portEnd("a", "__in__"), light),
       route("x2", portEnd("a", "__out__"), {{"kind", "device"}, {"placementId", "m1"}}),
@@ -800,12 +802,17 @@ TEST_CASE("io: a route into a placed light resolves its source, with no wire", "
   const auto b = buildOne(c, cat);
   REQUIRE(b.hasContent);
   CHECK(b.routeStatus["r1"]["live"] == true);
-  CHECK(b.lightSources["p1"]["instanceKey"] == "clip_a_c_g");
-  CHECK(b.lightSources["p1"]["field"] == "tex_out");
+  CHECK(b.deviceSources["p1"]["instanceKey"] == "clip_a_c_g");
+  CHECK(b.deviceSources["p1"]["field"] == "tex_out");
+  CHECK(b.routeStatus["r2"]["live"] == true);
+  CHECK(b.deviceSources["d1"]["instanceKey"] == "clip_a_c_g");
   CHECK_FALSE(b.routeStatus.contains("x1"));
   CHECK_FALSE(b.routeStatus.contains("x2"));
   CHECK_FALSE(b.routeStatus.contains("x3"));
-  CHECK(b.lightSources.size() == 1);
-  // A light route is sampled by the host, never wired.
-  for (const auto& w : b.sketch["wires"]) CHECK(w["dest"]["instanceKey"] != "p1");
+  CHECK(b.deviceSources.size() == 2);
+  // A device route is read by the host, never wired.
+  for (const auto& w : b.sketch["wires"]) {
+    CHECK(w["dest"]["instanceKey"] != "p1");
+    CHECK(w["dest"]["instanceKey"] != "d1");
+  }
 }

@@ -32,6 +32,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "bridge/comp_displays.h"
 #include "bridge/comp_lights.h"
 #include "media/video_pump.h"
 #include "sketch/comp/comp_executor.h"
@@ -141,6 +142,15 @@ class CompHost {
                         (lastFlags_ & comp::kCompHasContent) != 0);
   }
 
+  /// The display devices' output (comp_displays.h): the page's plan and
+  /// where each display lands.
+  DisplayRunner& displays() { return *displays_; }
+  /// Present this frame to every enabled display. Call after the frame is
+  /// SUBMITTED, like runLights.
+  void runDisplays() {
+    displays_->afterFrame(*cx_, lastOut_, (lastFlags_ & comp::kCompHasContent) != 0);
+  }
+
   /// Frames stepped, and how many of them held on unready video (Precise).
   int frames() const { return frames_; }
   int stalledFrames() const { return stalledFrames_; }
@@ -159,6 +169,7 @@ class CompHost {
   std::unique_ptr<comp::CompExecutor> cx_;
   std::unique_ptr<nano_media::VideoPump> pump_;
   std::unique_ptr<LightRunner> lights_;
+  std::unique_ptr<DisplayRunner> displays_;
   int32_t lastOut_ = -1;  // what the last frame rendered into (runLights)
   int32_t inTex_ = -1;
   int32_t outTex_ = -1;

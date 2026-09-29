@@ -335,6 +335,7 @@ if(APPLE)
     "-framework MetalPerformanceShaders"
     "-framework Foundation"
     "-framework IOSurface"
+    "-framework QuartzCore"
   )
 
   # --- Media (host-side video decode + cache policy) ---
@@ -1371,7 +1372,7 @@ if(NANO_HAS_GPU_BACKEND)
   # Apple-only for now. NANO_COMP_HOST=1 tells barrel_runtime.cpp it exists.
   if(TARGET nano_media)
     add_library(comp_host STATIC src/bridge/comp_host.cpp src/bridge/comp_export.cpp
-      src/bridge/comp_lights.cpp)
+      src/bridge/comp_lights.cpp src/bridge/comp_displays.cpp)
     target_include_directories(comp_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(comp_host PUBLIC sketch_executor nano_media nlohmann_json::nlohmann_json)
     target_compile_options(comp_host PRIVATE -Wno-attributes)
@@ -1616,6 +1617,17 @@ if(NANO_HAS_GPU_BACKEND)
         CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
         TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
       catch_discover_tests(test_comp_lights)
+
+      # Display devices: present fit/fill/stretch into offscreen targets, the
+      # routed source, screen binding.
+      add_executable(test_comp_displays tests/test_comp_displays.cpp)
+      target_link_libraries(test_comp_displays PRIVATE
+        comp_host effect_runtime sketch_executor wasm_host gpu_backend
+        Catch2::Catch2WithMain)
+      target_compile_definitions(test_comp_displays PRIVATE
+        CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+        TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+      catch_discover_tests(test_comp_displays)
     endif()
 
     # Media-ref resolution: a disk-loaded document (no runtime source.url) must

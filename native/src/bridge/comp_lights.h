@@ -2,7 +2,7 @@
 //
 // After each rendered frame, every enabled light in the page's plan
 // (lights/light_map.h) reads back the texture it samples — the composite, or a
-// routed stage (CompExecutor::lightSourceTexture) — asynchronously and small
+// routed stage (CompExecutor::deviceSourceTexture) — asynchronously and small
 // (the backend's Lanczos downscale; the render thread never waits). The
 // readback callback samples the footprints, and the whole plan is re-encoded
 // into DMX and handed to the SINK (the Art-Net transmitter in production, a

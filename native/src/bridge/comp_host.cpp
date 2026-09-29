@@ -33,6 +33,7 @@ CompHost::CompHost(gpu::GPUBackend* gpu, effect_runtime::EffectRuntime* rt,
   cx_ = std::make_unique<comp::CompExecutor>(rt_, registry_, gpu_);
   cx_->setKeyNamespace(cfg_.keyNamespace);
   lights_ = std::make_unique<LightRunner>(gpu_);
+  displays_ = std::make_unique<DisplayRunner>(gpu_);
   seedSchemas();
 
   // Bind the seekable-streams registry into every loaded bundle (and every one
@@ -59,6 +60,7 @@ CompHost::~CompHost() {
   // Light readbacks in flight sample textures this host owns: let them land.
   if (gpu_) gpu_->drainPreviewReadbacks();
   lights_.reset();
+  displays_.reset();
   // The pump's clips hold textures and inject into the executor: it goes first.
   pump_.reset();
   if (bundles_) bundles_->setStreamsTable(nullptr, nullptr);

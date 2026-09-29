@@ -425,11 +425,12 @@ struct BackgroundM {
 
 /** A device INCLUDED in the composition (composition.ts DevicePlacement). The
  *  engine ignores MIDI placements (a MIDI wire works whether or not its device
- *  is placed); a LIGHT placement is a route destination (its input) — what it
- *  outputs arrives separately, as the page's resolved light plan. */
+ *  is placed); a LIGHT or DISPLAY placement is a route destination (its input)
+ *  — what it outputs arrives separately, as the page's resolved light / display
+ *  plan. */
 struct DevicePlacementM {
   std::string id;
-  std::string kind;      // "midi" | "light"
+  std::string kind;      // "midi" | "light" | "display"
   std::string deviceId;  // the library uuid the show's wires address
   bool enabled = true;
 };

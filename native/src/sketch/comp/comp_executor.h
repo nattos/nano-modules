@@ -279,13 +279,14 @@ class CompExecutor {
    *  {live, delayed}. Refreshed per eval, shipped with layerTargets. */
   const std::string& routeStatusJson();
   /**
-   * Light devices (the lights runner in CompHost): the texture a placed light
-   * samples as of the last render(). With no route (`*routed` false) that is
-   * the composite — the caller's own output texture, returned as -1. A routed
-   * light returns its source stage's texture, or -1 when the route is dead this
-   * build (its source track isn't rendering): the light goes dark.
+   * Output devices (the light and display runners in CompHost): the texture a
+   * placed light or display reads as of the last render(). With no route
+   * (`*routed` false) that is the composite — the caller's own output texture,
+   * returned as -1. A routed device returns its source stage's texture, or -1
+   * when the route is dead this build (its source track isn't rendering): the
+   * device goes dark.
    */
-  int32_t lightSourceTexture(const std::string& placementId, bool* routed) const;
+  int32_t deviceSourceTexture(const std::string& placementId, bool* routed) const;
   /** Launched scenes: {trackId: {sceneId, launchBeat}} (UI playing highlight). */
   const std::string& sceneStatesJson();
   /** Deferred handovers (trackId → incoming {sceneId, launchBeat, launchSec}). */
@@ -401,13 +402,13 @@ class CompExecutor {
   nlohmann::json cleanSketch_;  // structural basis (mirror-built, no live outputs)
   nlohmann::json layerTargets_ = nlohmann::json::object();  // ownerId → {instanceKey, field}
   nlohmann::json routeStatus_ = nlohmann::json::object();   // routeId → {live, delayed}
-  /** Light placements with a routed input (SketchBuild.lightSources), and the
+  /** Device placements with a routed input (SketchBuild.deviceSources), and the
    *  chain index each samples — materialised through the barrier predicate. */
-  std::set<std::string> lightRouted_;
-  struct LightStage { std::string moduleType, key, field; };
-  std::map<std::string, LightStage> lightStage_;  // placementId → its source stage
-  std::set<std::string> lightKeys_;               // their instance keys (barriers)
-  void applyLightSources(const nlohmann::json& sources);
+  std::set<std::string> deviceRouted_;
+  struct DeviceStage { std::string moduleType, key, field; };
+  std::map<std::string, DeviceStage> deviceStage_;  // placementId → its source stage
+  std::set<std::string> deviceKeys_;               // their instance keys (barriers)
+  void applyDeviceSources(const nlohmann::json& sources);
   sketch_executor::SketchExecutor::BarrierPredicate wrappedBarrier();
   /** A FLAT clock at the document tempo — a sequence clip's interior is
    *  unwarped by construction (warp segments are arrangement-beat spans, so
