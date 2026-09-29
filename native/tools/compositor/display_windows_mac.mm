@@ -153,6 +153,7 @@ class MacDisplayWindows final : public DisplayWindows {
   ~MacDisplayWindows() override {
     CGDisplayRemoveReconfigurationCallback(&MacDisplayWindows::onReconfigure, this);
     if (hotKey_) UnregisterEventHotKey(hotKey_);
+    if (quitKey_) UnregisterEventHotKey(quitKey_);
     if (hotKeyHandler_) RemoveEventHandler(hotKeyHandler_);
     if (keyMonitor_) [NSEvent removeMonitor:keyMonitor_];
     [link_ invalidate];
@@ -421,32 +422,49 @@ class MacDisplayWindows final : public DisplayWindows {
   }
 
   /**
-   * ⌘⇧D — "Disable Output", as in Resolume — while any output window is up.
-   * A system hotkey, so it works whichever window is in front (a fullscreen
-   * output covering the editor, a rehearsal window with focus, another app);
-   * registered only while outputs show, so it steals the chord from nothing
-   * otherwise. Needs no permission (Carbon hotkeys never do).
+   * System hotkeys (Carbon — they work whichever app is in front, and need no
+   * permission), held only while they're needed so they steal from nothing
+   * otherwise:
+   *   - ⌘⇧D ("Disable Output", as in Resolume) while ANY output window is up;
+   *   - ⌘Q while a fullscreen output covers the MAIN screen (the editor's):
+   *     clicks pass through a fullscreen output, so whatever is under it can
+   *     end up in front and would swallow ⌘Q. A projector on another screen
+   *     leaves ⌘Q to every other app — quitting something else mid-show must
+   *     never kill the show.
    */
   void syncHotKey() {
-    const bool want = !outs_.empty();
-    if (want && !hotKey_) {
-      if (!hotKeyHandler_) {
-        const EventTypeSpec spec{kEventClassKeyboard, kEventHotKeyPressed};
-        InstallApplicationEventHandler(&MacDisplayWindows::onHotKey, 1, &spec, this, &hotKeyHandler_);
+    bool coversMain = false;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      for (const auto& [pid, o] : outs_) {
+        if (o.want.window) continue;
+        for (const auto& sc : screens_) coversMain |= sc.main && sc.uuid == o.want.screenUuid;
       }
-      const EventHotKeyID id{'nano', 1};
-      if (RegisterEventHotKey(kVK_ANSI_D, cmdKey | shiftKey, id, GetApplicationEventTarget(), 0,
-                              &hotKey_) != noErr) {
-        hotKey_ = nullptr;
-      }
-    } else if (!want && hotKey_) {
-      UnregisterEventHotKey(hotKey_);
-      hotKey_ = nullptr;
+    }
+    if ((!outs_.empty() || coversMain) && !hotKeyHandler_) {
+      const EventTypeSpec spec{kEventClassKeyboard, kEventHotKeyPressed};
+      InstallApplicationEventHandler(&MacDisplayWindows::onHotKey, 1, &spec, this, &hotKeyHandler_);
+    }
+    holdHotKey(hotKey_, !outs_.empty(), kVK_ANSI_D, cmdKey | shiftKey, kHotKeyDisable);
+    holdHotKey(quitKey_, coversMain, kVK_ANSI_Q, cmdKey, kHotKeyQuit);
+  }
+
+  static void holdHotKey(EventHotKeyRef& ref, bool want, UInt32 key, UInt32 mods, UInt32 id) {
+    if (want && !ref) {
+      const EventHotKeyID hid{'nano', id};
+      if (RegisterEventHotKey(key, mods, hid, GetApplicationEventTarget(), 0, &ref) != noErr) ref = nullptr;
+    } else if (!want && ref) {
+      UnregisterEventHotKey(ref);
+      ref = nullptr;
     }
   }
 
-  static OSStatus onHotKey(EventHandlerCallRef, EventRef, void* ctx) {
-    self(ctx)->killOutputs();
+  static OSStatus onHotKey(EventHandlerCallRef, EventRef event, void* ctx) {
+    EventHotKeyID hid{};
+    GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, nullptr, sizeof(hid),
+                      nullptr, &hid);
+    if (hid.id == kHotKeyQuit) self(ctx)->quitRequested();
+    else self(ctx)->killOutputs();
     return noErr;
   }
 
@@ -693,7 +711,10 @@ class MacDisplayWindows final : public DisplayWindows {
   std::map<std::string, Out> outs_;
   std::set<std::string> dismissed_;
   std::vector<NSWindow*> identifyWindows_;
-  EventHotKeyRef hotKey_ = nullptr;
+  EventHotKeyRef hotKey_ = nullptr;   // ⌘⇧D
+  EventHotKeyRef quitKey_ = nullptr;  // ⌘Q (a fullscreen output over the main screen)
+  static constexpr UInt32 kHotKeyDisable = 1;
+  static constexpr UInt32 kHotKeyQuit = 2;
   id keyMonitor_ = nil;  // ⌘Q while one of our windows is in front
   EventHandlerRef hotKeyHandler_ = nullptr;
   bool killed_ = false;  // ⌘⇧D pressed; cleared once the page sends no wants

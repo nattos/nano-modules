@@ -11,8 +11,9 @@
 //   - ⌘⇧D ("Disable Output", as in Resolume): while any output is up, a system
 //     hotkey closes them all at once and reports `disableOutput`; nothing
 //     reopens until the page has switched its master output off.
-//   - ⌘Q with one of these windows in front: outputs off at once, then the
-//     parent app is asked to quit ("nano_compositor quit" on stdout).
+//   - ⌘Q with one of these windows in front — or, as a system hotkey, while a
+//     fullscreen output covers the MAIN screen (the editor's): outputs off at
+//     once, then the parent app is asked to quit ("nano_compositor quit").
 //
 // THREADS. The provider's callbacks run on the RENDER thread and never wait on
 // the main thread: they read a mutex-guarded snapshot and queue work. The main
