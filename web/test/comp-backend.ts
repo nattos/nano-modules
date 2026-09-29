@@ -111,6 +111,16 @@ function portFor(): number {
 }
 
 /**
+ * The screens the test compositor pretends to have (NANO_FAKE_SCREENS): the
+ * machine's own (main) screen and a 4:3 projector, so Display 1 lands on the
+ * projector by itself and a 16:9 show letterboxes under Fit.
+ */
+export const FAKE_SCREENS = [
+  { uuid: 'FAKE-MAIN', name: 'Built-in Display', w: 1440, h: 900, hz: 60, main: true },
+  { uuid: 'FAKE-PROJ', name: 'Test Projector', w: 1024, h: 768, hz: 60, main: false },
+];
+
+/**
  * Where the test compositor's Art-Net OUTPUT goes (NANO_ARTNET_REDIRECT):
  * every light device's DMX lands on this loopback port instead of its
  * configured node or the LAN broadcast — a suite can listen here, and no test
@@ -135,6 +145,10 @@ async function startCompositor(): Promise<{ child: ChildProcess; url: string }> 
     env: {
       ...process.env, NANO_DATA_DIR: dataDir, NANO_RESOURCE_ROOT: RESOURCE_ROOT,
       NANO_ARTNET_REDIRECT: `127.0.0.1:${artnetRedirectPort()}`,
+      // Display devices present OFFSCREEN for fake screens: no test ever opens
+      // a window on a real screen (FAKE_SCREENS).
+      NANO_DISPLAY_REDIRECT: 'offscreen',
+      NANO_FAKE_SCREENS: JSON.stringify(FAKE_SCREENS),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });

@@ -21,6 +21,7 @@
 #include <fstream>
 #include <sys/stat.h>
 
+#include "bridge/bridge_api.h"
 #include "bridge/bridge_server.h"
 #include "bridge/library_paths.h"
 #include "bridge/module_dirs.h"
@@ -358,6 +359,14 @@ struct BarrelRuntime::Impl {
     // readbacks call into the sink — is destroyed first.
     std::unique_ptr<LightSenderSink> lightSink;
     nlohmann::json lightPlan;
+    // Display devices: where they land (the process's windows, or offscreen
+    // under NANO_DISPLAY_REDIRECT) and the page's last plan. Also BEFORE `comp`:
+    // the host's runner closes its outputs through it on the way down.
+    std::unique_ptr<DisplaySurfaces> displaySurfaces;
+    nlohmann::json displayPlan;
+    uint64_t lastScreensVersion = 0;
+    nlohmann::json lastDisplayStatus;
+    double lastDisplayStatusReport = -1;
     uint64_t lastLightsVersion = 0;
     double lastLightsReport = -1;
     nlohmann::json lastLightStatus;
@@ -632,7 +641,8 @@ struct BarrelRuntime::Impl {
     for (const char* action : {"comp_reset", "comp_load_doc", "comp_control", "comp_op",
                                "comp_resize", "comp_clock", "comp_step", "comp_readback",
                                "comp_visibility", "comp_export_start", "comp_export_cancel",
-                               "comp_lights", "comp_lights_test"}) {
+                               "comp_lights", "comp_lights_test", "comp_displays",
+                               "comp_display_identify"}) {
       BridgeServer::instance().set_action_handler(action,
           [this](int, const std::string& msg) {
             auto j = nlohmann::json::parse(msg, nullptr, false);
@@ -708,6 +718,8 @@ struct BarrelRuntime::Impl {
     pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);
     if (pe.lightSink) pe.comp->lights().setSink(pe.lightSink.get());
     if (!pe.lightPlan.is_null()) pe.comp->lights().setPlan(pe.lightPlan);
+    if (pe.displaySurfaces) pe.comp->displays().setSurfaces(pe.displaySurfaces.get());
+    if (!pe.displayPlan.is_null()) pe.comp->displays().setPlan(pe.displayPlan);
     pe.compRequired.clear();
     pe.compControlSeq = 0;
     pe.compResync = true;
@@ -2197,8 +2209,79 @@ void applyCompOp(comp::CompExecutor& cx, const nlohmann::json& m) {
   }
 }
 
+/// NANO_DISPLAY_REDIRECT=offscreen: every display presents offscreen, for the
+/// fake screens in NANO_FAKE_SCREENS — a test never opens a real window.
+bool displayRedirectOffscreen() {
+  const char* e = std::getenv("NANO_DISPLAY_REDIRECT");
+  return e && std::strcmp(e, "offscreen") == 0;
+}
+
+/// DisplaySurfaces over the process's C callbacks (bridge_api.h).
+class CallbackDisplays : public DisplaySurfaces {
+ public:
+  explicit CallbackDisplays(const NanoDisplayProvider& p) : p_(p) {}
+
+  std::vector<DisplayScreen> screens() override {
+    return parseDisplayScreens(take(p_.screens_json ? p_.screens_json(p_.ctx) : nullptr));
+  }
+  uint64_t screensVersion() override {
+    return p_.screens_version ? p_.screens_version(p_.ctx) : 0;
+  }
+  void reconcile(const std::vector<DisplayWant>& wants) override {
+    if (!p_.reconcile) return;
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& w : wants) {
+      arr.push_back({{"placementId", w.placementId}, {"slotId", w.slotId}, {"name", w.name},
+                     {"screenUuid", w.screenUuid}, {"window", w.window},
+                     {"windowFrame", w.windowFrame}});
+    }
+    p_.reconcile(p_.ctx, arr.dump().c_str());
+  }
+  Surface surfaceFor(const std::string& placementId) override {
+    if (!p_.surface_for) return {};
+    int32_t w = 0, h = 0;
+    void* layer = p_.surface_for(p_.ctx, placementId.c_str(), &w, &h);
+    if (!layer) return {};
+    return {layer, w, h};
+  }
+  void identify(const std::string& label, const std::string& screenUuid, bool window) override {
+    if (p_.identify) p_.identify(p_.ctx, label.c_str(), screenUuid.c_str(), window ? 1 : 0);
+  }
+  nlohmann::json takeEvents() override {
+    auto j = take(p_.take_events ? p_.take_events(p_.ctx) : nullptr);
+    return j.is_array() ? j : nlohmann::json::array();
+  }
+
+ private:
+  static nlohmann::json take(char* s) {
+    if (!s) return nullptr;
+    auto j = nlohmann::json::parse(s, nullptr, false);
+    std::free(s);
+    return j.is_discarded() ? nlohmann::json() : j;
+  }
+  NanoDisplayProvider p_;
+};
+
 }  // namespace
 #endif
+
+void BarrelRuntime::setCompDisplayProvider(const std::string& key,
+                                           const NanoDisplayProvider* provider) {
+#if NANO_COMP_HOST
+  if (displayRedirectOffscreen()) return;  // the redirect wins, like Art-Net's
+  std::lock_guard<std::mutex> lk(impl_->render_mu);
+  auto it = impl_->executors.find(key);
+  if (it == impl_->executors.end() || !it->second.comp) return;
+  Impl::PerExecutor& pe = it->second;
+  pe.comp->displays().setSurfaces(nullptr);  // closes what the old one showed
+  pe.displaySurfaces.reset();
+  if (provider) pe.displaySurfaces = std::make_unique<CallbackDisplays>(*provider);
+  if (pe.displaySurfaces) pe.comp->displays().setSurfaces(pe.displaySurfaces.get());
+  pe.compResync = true;
+#else
+  (void)key; (void)provider;
+#endif
+}
 
 bool BarrelRuntime::createComp(const std::string& key, int w, int h) {
 #if NANO_COMP_HOST
@@ -2209,6 +2292,8 @@ bool BarrelRuntime::createComp(const std::string& key, int w, int h) {
   auto [it, inserted] = impl_->executors.try_emplace(key);
   Impl::PerExecutor& pe = it->second;
   pe.compKey = key;
+  // Tests and headless runs: fake screens, offscreen targets, no windows.
+  if (displayRedirectOffscreen()) pe.displaySurfaces = OffscreenDisplays::fromEnv();
   impl_->buildCompHost(pe, w > 0 ? w : 640, h > 0 ? h : 360);
   BRT_LOG("comp created key=%s (%dx%d)", key.c_str(), pe.comp->width(), pe.comp->height());
   return true;
@@ -2295,6 +2380,11 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       host.lights().setTest(m.value("placementId", std::string()),
                             m.value("slotId", std::string()),
                             m.value("pattern", std::string()));
+    } else if (action == "comp_displays") {
+      pe.displayPlan = m.contains("plan") ? m["plan"] : nlohmann::json::object();
+      host.displays().setPlan(pe.displayPlan);
+    } else if (action == "comp_display_identify") {
+      host.displays().identify(m);
     } else if (action == "comp_export_start") {
       impl_->startCompExport(key, pe, m);
     } else if (action == "comp_export_cancel") {
@@ -2368,8 +2458,10 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
     }
     host.step(fdt);
     impl_->gpu->submit();
-    // Light devices read back what they sample AFTER the frame's submit.
+    // Light devices read back what they sample AFTER the frame's submit;
+    // displays present it (and close what is no longer wanted).
     if (host.lights().active()) host.runLights();
+    if (pe.displaySurfaces) host.runDisplays();
     ++rendered;
 
     const uint32_t flags = host.lastFlags();
@@ -2453,6 +2545,30 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
           pe.lastLightStatus = st;
           rep["lightStatus"] = std::move(st);
         }
+      }
+      // Display devices: the screens (on a hotplug), each display's status (on
+      // a change of state, else once a second), and what the viewer did.
+      if (pe.displaySurfaces) {
+        auto& dr = host.displays();
+        const uint64_t sv = dr.screensVersion();
+        if (pe.compResync || sv != pe.lastScreensVersion) {
+          pe.lastScreensVersion = sv;
+          rep["screens"] = dr.screensJson();
+        }
+        auto st = dr.status();
+        auto bare = st;
+        for (auto& [pid, s] : bare.items()) {
+          s.erase("fps");
+          s.erase("probe");
+        }
+        if (pe.compResync || bare != pe.lastDisplayStatus ||
+            pe.compElapsed - pe.lastDisplayStatusReport >= 1.0) {
+          pe.lastDisplayStatus = std::move(bare);
+          pe.lastDisplayStatusReport = pe.compElapsed;
+          rep["displayStatus"] = std::move(st);
+        }
+        auto ev = dr.takeEvents();
+        if (ev.is_array() && !ev.empty()) rep["displayEvents"] = std::move(ev);
       }
       if (pe.compResync || pe.compElapsed - pe.lastNetIfacesPoll >= 2.0) {
         pe.lastNetIfacesPoll = pe.compElapsed;

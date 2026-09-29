@@ -94,6 +94,11 @@ class Compositor {
     return new Promise((resolve, reject) => {
       const env = { ...process.env, NANO_BRIDGE_PORT: String(this.port) };
       if (this.resourceRoot) env.NANO_RESOURCE_ROOT = this.resourceRoot;
+      // A hidden (test / automation) launch never opens display windows either:
+      // they present offscreen (for NANO_FAKE_SCREENS, if the caller set any).
+      if (process.env.NANO_WINDOW === 'hidden' && !env.NANO_DISPLAY_REDIRECT) {
+        env.NANO_DISPLAY_REDIRECT = 'offscreen';
+      }
       const child = spawn(bin, ['--port', String(this.port)], { env, stdio: ['pipe', 'pipe', 'inherit'] });
       this.child = child;
       let ready = false;

@@ -138,6 +138,35 @@ void bridge_comp_destroy(BridgeHandle h, const char* key);
 // Returns the number of frames rendered.
 int  bridge_comp_render(BridgeHandle h, const char* key, double dt, int dirty);
 
+// Where a comp's DISPLAY devices land (bridge/comp_displays.h DisplaySurfaces),
+// as callbacks the process implements — its window code. The runtime calls
+// them from the RENDER thread (inside bridge_comp_render), so none may wait on
+// the process's main thread. Returned strings are malloc'd; the runtime frees
+// them. `ctx` must outlive the comp, or be detached first (provider NULL).
+// Without a provider nothing opens; with NANO_DISPLAY_REDIRECT=offscreen the
+// runtime ignores any provider and presents into offscreen targets for the
+// fake screens in NANO_FAKE_SCREENS (tests: nothing opens on a real screen).
+typedef struct NanoDisplayProvider {
+  void* ctx;
+  /// JSON [{uuid, name, w, h, hz, main}]: the screens now (w/h in pixels).
+  char* (*screens_json)(void* ctx);
+  /// Bumps whenever the screens change (hotplug).
+  uint64_t (*screens_version)(void* ctx);
+  /// JSON [{placementId, slotId, name, screenUuid, window, windowFrame}]: the
+  /// outputs that should be up; everything else closes. Latest wins.
+  void (*reconcile)(void* ctx, const char* wants_json);
+  /// A placement's CAMetalLayer* once its window is up, else NULL; *w/*h its
+  /// drawable size in pixels.
+  void* (*surface_for)(void* ctx, const char* placement_id, int32_t* w, int32_t* h);
+  /// Paint `label` over a screen (or in the placement's window) for a moment.
+  void (*identify)(void* ctx, const char* label, const char* screen_uuid, int32_t window);
+  /// JSON array of what the viewer did since the last call:
+  /// {type:'closed', placementId} | {type:'moved', slotId, frame:{x,y,w,h}}.
+  char* (*take_events)(void* ctx);
+} NanoDisplayProvider;
+void bridge_comp_set_display_provider(BridgeHandle h, const char* key,
+                                      const NanoDisplayProvider* provider);
+
 // Function pointer typedefs for dlsym loading
 typedef BridgeHandle (*BridgeInitFn)(void);
 typedef void (*BridgeReleaseFn)(BridgeHandle);

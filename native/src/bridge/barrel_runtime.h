@@ -18,6 +18,9 @@
 #include <memory>
 #include <string>
 
+// bridge_api.h: where a comp's display devices land.
+typedef struct NanoDisplayProvider NanoDisplayProvider;
+
 namespace bridge {
 
 // Monotonic count of barrel render frames produced (process-global, thread-safe).
@@ -89,6 +92,8 @@ class BarrelRuntime {
   //   comp_visibility {reqId, moduleType, state}
   //   comp_lights   {plan}            light devices' resolved plan (light_map.h)
   //   comp_lights_test {placementId, slotId, pattern}  identify / test pattern
+  //   comp_displays {plan}          display devices' plan (comp_displays.h)
+  //   comp_display_identify {label, screenUuid, ordinal, window}
   // Replies and the per-frame report go out as NBCJ messages (see
   // barrel_runtime.cpp). Previews and telemetry use the barrel's paths
   // (preview_requests, plugin_states, modulation_data). False when this build
@@ -96,6 +101,9 @@ class BarrelRuntime {
   bool createComp(const std::string& key, int w, int h);
   // Apply the queue and render; returns the number of frames rendered.
   int renderComp(const std::string& key, double dt, bool dirty);
+  // Where the comp's display devices land (bridge_api.h NanoDisplayProvider;
+  // copied; null detaches). Ignored under NANO_DISPLAY_REDIRECT=offscreen.
+  void setCompDisplayProvider(const std::string& key, const ::NanoDisplayProvider* provider);
 
  private:
   BarrelRuntime();

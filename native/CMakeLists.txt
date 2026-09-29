@@ -1482,9 +1482,16 @@ if(NANO_HAS_GPU_BACKEND)
   # the engine (process-global runtime state). The editor reaches it over the
   # bridge WebSocket (tools/nano_compositor.cpp has the protocol).
   if(TARGET comp_host)
-    add_executable(nano_compositor tools/nano_compositor.cpp)
-    target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    target_link_libraries(nano_compositor PRIVATE bridge_server)
+    add_executable(nano_compositor tools/nano_compositor.cpp
+      tools/compositor/display_windows_mac.mm)
+    target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src
+      ${CMAKE_SOURCE_DIR}/tools)
+    # The display windows are AppKit, under ARC; they live in the PROCESS, never
+    # in libbridge_server (the barrel inside Resolume must not open windows).
+    set_source_files_properties(tools/compositor/display_windows_mac.mm
+      PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json
+      "-framework AppKit" "-framework QuartzCore" "-framework CoreGraphics")
     # Staged (web/scripts/stage_resources.sh → <root>/bin/) with its own
     # libbridge_server beside it: find that one, not the build tree's.
     if(APPLE)

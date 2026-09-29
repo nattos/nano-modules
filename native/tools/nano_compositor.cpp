@@ -10,10 +10,17 @@
 //
 // Protocol (all actions carry {"key": <key>}; see barrel_runtime.h createComp):
 //   comp_load_doc / comp_control / comp_op / comp_resize / comp_clock /
-//   comp_step / comp_readback / comp_visibility / comp_lights / comp_lights_test
+//   comp_step / comp_readback / comp_visibility / comp_lights / comp_lights_test /
+//   comp_displays / comp_display_identify
 // Out: NBCJ messages (comp_report every frame, replies), NBPS/NBPV previews
 // for /plugins/<key>/state/preview_requests, and plugin_states /
 // modulation_data / plugin_schemas in the state document.
+//
+// Display devices open windows (tools/compositor/display_windows.h): the
+// render loop runs on its own thread — the only GPU thread — while the main
+// thread owns the windows, headless (no NSApplication, no Dock icon) until the
+// first one is wanted. While any display is up, its display link paces the
+// frames; otherwise the steady clock does.
 //
 // Prints one line, "nano_compositor ready port=<p> key=<k>", once it listens.
 // Exits on SIGINT/SIGTERM, or when stdin reaches EOF if stdin isn't a
@@ -22,7 +29,9 @@
 // Environment: NANO_RESOURCE_ROOT (where wasm/ and fonts/ are; otherwise found
 // by walking up from this executable), NANO_DATA_DIR (settings + modules),
 // NANO_BRIDGE_PORT (instead of --port), NANO_ARTNET_REDIRECT (host:port that
-// ALL light-device DMX goes to instead of its destinations — tests). Resolume
+// ALL light-device DMX goes to instead of its destinations — tests),
+// NANO_DISPLAY_REDIRECT=offscreen (display devices present offscreen for the
+// fake screens in NANO_FAKE_SCREENS; no window ever opens — tests). Resolume
 // is never dialled.
 
 #include <atomic>
@@ -31,12 +40,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 
 #include <unistd.h>
 
 #include "bridge/bridge_api.h"
+#include "compositor/display_windows.h"
 #include "platform/resource_root.h"
 
 namespace {
@@ -107,35 +118,11 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const std::string wasmDir = nano_paths::wasmDir((const void*)&main);
-  const std::string fontPath = nano_paths::fontPath((const void*)&main, "default.ttf");
-  if (wasmDir.empty()) {
-    std::fprintf(stderr, "nano_compositor: no resource root (set NANO_RESOURCE_ROOT)\n");
-    bridge_release(h);
-    return 1;
-  }
-  if (!bridge_rt_acquire(h, wasmDir.c_str(), fontPath.c_str())) {
-    std::fprintf(stderr, "nano_compositor: no effects loaded from %s\n", wasmDir.c_str());
-    bridge_release(h);
-    return 1;
-  }
-
-  char keyBuf[256] = {0};
-  bridge_register_plugin(h, "com.nano.compositor", 1, 0, 0, "", args.key.c_str(),
-                         keyBuf, (int32_t)sizeof(keyBuf));
-  const std::string key = keyBuf;
-  if (char* schemas = bridge_rt_schemas(h)) {
-    bridge_set_at(h, ("/plugins/" + key + "/state/plugin_schemas").c_str(), schemas);
-    bridge_free_string(schemas);
-  }
-  if (!bridge_comp_create(h, key.c_str(), args.width, args.height)) {
-    std::fprintf(stderr, "nano_compositor: this build has no composition host\n");
-    bridge_unregister_plugin(h, key.c_str());
-    bridge_rt_release(h);
-    bridge_release(h);
-    return 1;
-  }
-  bridge_register_patch_listener(h, key.c_str(), onPatch, nullptr);
+  // Display devices' windows — unless a redirect keeps them offscreen. Made
+  // here: the main thread owns them (and the screen-change callback).
+  std::unique_ptr<compositor::DisplayWindows> windows;
+  const char* displayRedirect = getenv("NANO_DISPLAY_REDIRECT");
+  if (!displayRedirect || !*displayRedirect) windows = compositor::DisplayWindows::create(args.hz);
 
   // A parent that goes away closes our stdin: go with it.
   if (!isatty(STDIN_FILENO)) {
@@ -146,30 +133,85 @@ int main(int argc, char** argv) {
     }).detach();
   }
 
-  std::printf("nano_compositor ready port=%d key=%s\n", port, key.c_str());
-  std::fflush(stdout);
+  // The render thread owns the RUNTIME, start to finish: the effects' wasm
+  // runs on the thread that brought the runtime up (WAMR's per-thread
+  // environment), and it is the only thread that touches the GPU.
+  std::atomic<int> exitCode{0};
+  const void* self = (const void*)&main;
+  std::thread render([&] {
+    const std::string wasmDir = nano_paths::wasmDir(self);
+    const std::string fontPath = nano_paths::fontPath(self, "default.ttf");
+    auto fail = [&](const char* msg, const std::string& detail) {
+      std::fprintf(stderr, msg, detail.c_str());
+      exitCode.store(1);
+      g_stop.store(true);
+    };
+    if (wasmDir.empty()) {
+      fail("nano_compositor: no resource root (set NANO_RESOURCE_ROOT)%s\n", "");
+      return;
+    }
+    if (!bridge_rt_acquire(h, wasmDir.c_str(), fontPath.c_str())) {
+      fail("nano_compositor: no effects loaded from %s\n", wasmDir);
+      return;
+    }
+    char keyBuf[256] = {0};
+    bridge_register_plugin(h, "com.nano.compositor", 1, 0, 0, "", args.key.c_str(),
+                           keyBuf, (int32_t)sizeof(keyBuf));
+    const std::string key = keyBuf;
+    if (char* schemas = bridge_rt_schemas(h)) {
+      bridge_set_at(h, ("/plugins/" + key + "/state/plugin_schemas").c_str(), schemas);
+      bridge_free_string(schemas);
+    }
+    if (!bridge_comp_create(h, key.c_str(), args.width, args.height)) {
+      bridge_unregister_plugin(h, key.c_str());
+      bridge_rt_release(h);
+      fail("nano_compositor: this build has no composition host%s\n", "");
+      return;
+    }
+    bridge_register_patch_listener(h, key.c_str(), onPatch, nullptr);
+    if (windows) bridge_comp_set_display_provider(h, key.c_str(), windows->provider());
 
-  using clock = std::chrono::steady_clock;
-  const auto period = std::chrono::duration_cast<clock::duration>(
-      std::chrono::duration<double>(1.0 / args.hz));
-  auto last = clock::now();
-  auto next = last;
+    std::printf("nano_compositor ready port=%d key=%s\n", port, key.c_str());
+    std::fflush(stdout);
+
+    using clock = std::chrono::steady_clock;
+    const auto period = std::chrono::duration_cast<clock::duration>(
+        std::chrono::duration<double>(1.0 / args.hz));
+    auto last = clock::now();
+    auto next = last;
+    while (!g_stop.load()) {
+      // A display up: its vsync paces the frame, and dt is its frame time.
+      double vsyncDt = 0;
+      const bool vsync = windows && windows->waitVsync(0.1, &vsyncDt);
+      const auto now = clock::now();
+      // Clamp: a stall (a debugger, a long shader compile) must not hand the
+      // effects one giant step.
+      const double dt = std::min(
+          0.25, vsync && vsyncDt > 0 ? vsyncDt : std::chrono::duration<double>(now - last).count());
+      last = now;
+      bridge_comp_render(h, key.c_str(), dt, g_dirty.exchange(false) ? 1 : 0);
+      if (vsync) {
+        next = clock::now();
+        continue;
+      }
+      next += period;
+      if (next < clock::now()) next = clock::now();  // fell behind: don't burst
+      std::this_thread::sleep_until(next);
+    }
+
+    bridge_unregister_patch_listener(h, key.c_str());
+    bridge_comp_destroy(h, key.c_str());  // its runner closes outputs through `windows`
+    bridge_unregister_plugin(h, key.c_str());
+    bridge_rt_release(h);
+  });
+
+  // The main thread: the windows' run loop (or just waiting, headless).
   while (!g_stop.load()) {
-    const auto now = clock::now();
-    // Clamp: a stall (a debugger, a long shader compile) must not hand the
-    // effects one giant step.
-    const double dt = std::min(0.25, std::chrono::duration<double>(now - last).count());
-    last = now;
-    bridge_comp_render(h, key.c_str(), dt, g_dirty.exchange(false) ? 1 : 0);
-    next += period;
-    if (next < clock::now()) next = clock::now();  // fell behind: don't burst
-    std::this_thread::sleep_until(next);
+    if (windows) windows->pumpMainThread(0.05);
+    else std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
-
-  bridge_unregister_patch_listener(h, key.c_str());
-  bridge_comp_destroy(h, key.c_str());
-  bridge_unregister_plugin(h, key.c_str());
-  bridge_rt_release(h);
+  render.join();
+  windows.reset();
   bridge_release(h);
-  return 0;
+  return exitCode.load();
 }

@@ -246,4 +246,10 @@ int bridge_comp_render(BridgeHandle h, const char* key, double dt, int dirty) {
   return bridge::BarrelRuntime::instance().renderComp(key, dt, dirty != 0);
 }
 
+void bridge_comp_set_display_provider(BridgeHandle h, const char* key,
+                                      const NanoDisplayProvider* provider) {
+  if (!h || !key) return;
+  bridge::BarrelRuntime::instance().setCompDisplayProvider(key, provider);
+}
+
 } // extern "C"

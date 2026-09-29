@@ -109,7 +109,7 @@ json solidDoc(double r, double g, double b) {
 // One compositor process + one WS client, torn down together.
 class Compositor {
  public:
-  explicit Compositor(int port) : port_(port) {
+  explicit Compositor(int port, std::vector<std::string> extraEnv = {}) : port_(port) {
     int inPipe[2], outPipe[2];
     REQUIRE(pipe(inPipe) == 0);
     REQUIRE(pipe(outPipe) == 0);
@@ -125,6 +125,9 @@ class Compositor {
     env.push_back(std::string("NANO_DATA_DIR=") + NANO_TEST_DATA_ROOT + "/compositor");
     // Light devices' DMX lands on loopback, never on the LAN (artnetPort()).
     env.push_back("NANO_ARTNET_REDIRECT=127.0.0.1:" + std::to_string(artnetPort()));
+    // Display devices present offscreen: no test opens a window on a real screen.
+    env.push_back("NANO_DISPLAY_REDIRECT=offscreen");
+    for (auto& e : extraEnv) env.push_back(std::move(e));
     std::vector<char*> envp;
     for (auto& e : env) envp.push_back(e.data());
     envp.push_back(nullptr);
@@ -406,4 +409,68 @@ TEST_CASE("compositor: a light device transmits its DMX to the redirect only",
   }
   CHECK(lights.contains("p1"));
   CHECK(status.value("sending", false));
+}
+
+TEST_CASE("compositor: a display device presents offscreen for a fake screen",
+          "[compositor][integration]") {
+  // A laptop plus a 4:3 projector; the show is 16:9, so Fit letterboxes.
+  Compositor c(8301, {R"(NANO_FAKE_SCREENS=[{"uuid":"MAIN","name":"Built-in","w":1440,"h":900,"hz":60,"main":true},{"uuid":"PROJ","name":"Projector","w":64,"h":48,"hz":60,"main":false}])"});
+  json doc = solidDoc(1, 0, 0);
+  doc["devices"] = json::array({{{"id", "d1"}, {"kind", "display"}, {"deviceId", "display.1"},
+                                 {"enabled", true}}});
+  c.send({{"action", "comp_resize"}, {"width", 64}, {"height", 36}});
+  c.send({{"action", "comp_load_doc"}, {"json", doc.dump()}});
+  c.send({{"action", "comp_control"}, {"op", "seek"}, {"beat", 2}});
+  c.send({{"action", "comp_displays"}, {"plan", {{"outputs", json::array({{
+      {"placementId", "d1"}, {"slotId", "display.1"}, {"name", "Display 1"}, {"enabled", true},
+      {"screenUuid", ""}, {"ordinal", 1}, {"window", false}, {"fit", "fit"}}})}}}});
+  c.send({{"action", "comp_display_identify"}, {"label", "Display 1"}, {"screenUuid", ""},
+          {"ordinal", 1}, {"window", false}});
+
+  // The screens reach the page; Display 1 lands on the PROJECTOR (never the
+  // main screen on its own), presenting red with black bars.
+  size_t cursor = 0;
+  json screens, status, events;
+  bool red = false;
+  // One frame per report; the status (and its probe) re-sends once a rendered
+  // second, so allow a few.
+  for (int i = 0; i < 300 && !(red && !screens.is_null() && !events.is_null()); i++) {
+    c.send({{"action", "comp_step"}, {"frames", 1}, {"dtSec", 1.0 / 60}});
+    const json rep = c.await("comp_report", -1, &cursor);
+    if (rep.contains("screens")) screens = rep["screens"];
+    if (rep.contains("displayEvents")) events = rep["displayEvents"];
+    if (rep.contains("displayStatus")) {
+      status = rep["displayStatus"];
+      const std::string probe = status["d1"].value("probe", std::string());
+      if (!probe.empty()) {
+        const auto px = base64Decode(probe);  // 16×16 RGB
+        REQUIRE(px.size() == 16 * 16 * 3);
+        auto at = [&](int x, int y) { return std::vector<int>{px[(y * 16 + x) * 3], px[(y * 16 + x) * 3 + 1], px[(y * 16 + x) * 3 + 2]}; };
+        const auto mid = at(8, 8), top = at(8, 0);
+        red = mid[0] > 240 && mid[1] < 16 && top[0] < 16;
+      }
+    }
+  }
+  INFO("status " << status.dump());
+  REQUIRE(screens.is_array());
+  CHECK(screens.size() == 2);
+  CHECK(status["d1"]["state"] == "showing");
+  CHECK(status["d1"]["screen"]["uuid"] == "PROJ");
+  CHECK(status["d1"]["width"] == 64);
+  CHECK(red);
+  REQUIRE(events.is_array());
+  CHECK(events[0]["type"] == "identified");
+  CHECK(events[0]["screenUuid"] == "PROJ");
+
+  // Switched off: it closes.
+  c.send({{"action", "comp_displays"}, {"plan", {{"outputs", json::array({{
+      {"placementId", "d1"}, {"slotId", "display.1"}, {"name", "Display 1"}, {"enabled", false},
+      {"screenUuid", ""}, {"ordinal", 1}, {"window", false}, {"fit", "fit"}}})}}}});
+  bool off = false;
+  for (int i = 0; i < 20 && !off; i++) {
+    c.send({{"action", "comp_step"}, {"frames", 1}, {"dtSec", 1.0 / 60}});
+    const json rep = c.await("comp_report", -1, &cursor);
+    if (rep.contains("displayStatus")) off = rep["displayStatus"]["d1"]["state"] == "off";
+  }
+  CHECK(off);
 }
