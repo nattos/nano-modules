@@ -350,10 +350,10 @@ clips).
 - **Next** (designed for, not built): light and display devices whose inputs are just another route
   end; same-frame ordering (render producers first); scalar ports.
 
-## Devices — *as-built (D1: MIDI, D2: lights)*
+## Devices — *as-built (D1: MIDI, D2: lights, D3: displays)*
 
 The devices push: every external thing a show touches is a device, DEFINED once in this machine's
-library and used per show (plan: COMPOSITOR.md § devices; lights and displays follow).
+library and used per show (plan: COMPOSITOR.md § devices).
 
 - **The Devices view.** A `Timeline | Devices` switch in the top bar swaps the main area for the
   Devices panel — the same panel as Remote Control's (define, templates, ghosts, mappings, colours,
@@ -403,6 +403,25 @@ library and used per show (plan: COMPOSITOR.md § devices; lights and displays f
 - **Output is the native compositor's** (a browser has no UDP): it reads back what each light
   samples, maps it and transmits at a steady 40 Hz (ArtDmx + ArtSync), whatever the render rate.
   The worker engine renders the same show and says it doesn't transmit.
+
+**Displays (D3)** — the show on a projector or a second screen (or a rehearsal window):
+
+- **Slots, not monitors.** A display is "Display 1", "Display 2" (always there; `+ display` adds
+  more) — a show places the SLOT, so it travels between machines. Each machine's library
+  (`display-devices.json`) says which screen fills it: automatic — Display N takes the Nth screen
+  that isn't the main one, so a fresh machine never covers the editor — or a picked screen
+  (remembered by its UUID; if it's gone, automatic stands in), or **window**: rehearse in a normal
+  window, no projector needed. No screen for it = it stays dark, nothing else breaks.
+- **In a show**: `add to show` places it (kind `display`) — a row under the tracks whose lane draws
+  the screen with the frame fitted on it, an on/off switch, and an input pip. It shows the **main
+  output** unless a route feeds it (as for lights). **Fit / Fill / Stretch** is the show's (Fit
+  letterboxes in black). Identify paints the display's name on its screen for a moment.
+- **Output is the native compositor's** (a page can't open a window on another screen): it presents
+  each display at the screen's refresh (the first display's vsync paces the render) at the
+  composition's full resolution. Closing a rehearsal window turns that display off (undoable);
+  moving it is remembered. While any display or light output is on and the transport is in
+  Precise, the **Live** button pulses — Precise can hold a frame on decode, a visible hitch.
+- *Later:* Syphon; a crop / usable region per projector; Windows.
 
 ## Automation (track-level and clip-level)
 

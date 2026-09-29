@@ -174,6 +174,15 @@ picks what it samples, else the main output). The page resolves them into a flat
 (`light-plan.ts` → `comp_lights`); the NATIVE compositor maps (`lights/light_map.h`, CompHost's
 `LightRunner`) and transmits (`artnet/artnet_sender`, 40 Hz) — the worker engine can't (no UDP).
 Tests redirect every light's DMX to loopback with `NANO_ARTNET_REDIRECT`; never let one reach the LAN.
+**Displays** (D3): portable slots (`display.<n>`, `web/src/displays/`) placed per show (kind `display`,
+`fit`; routes as for lights — `deviceSources`); which screen fills a slot is this machine's
+(`display-devices.json`: a CGDisplay UUID, automatic = the Nth NON-main screen, or a rehearsal
+window). The page sends the plan (`comp_displays`); CompHost's `DisplayRunner` presents
+(`GPUBackend::presentScaled`) onto surfaces the compositor PROCESS provides
+(`native/tools/compositor/display_windows_mac.mm`, via `bridge_comp_set_display_provider` — never
+AppKit in the dylib). `nano_compositor`'s render thread owns the runtime (WAMR: wasm runs only on the
+thread that brought it up) and the main thread owns the windows. Tests never open a window:
+`NANO_DISPLAY_REDIRECT=offscreen` + `NANO_FAKE_SCREENS`.
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 

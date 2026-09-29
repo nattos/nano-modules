@@ -182,9 +182,58 @@ layouts and muscle memory carry over); devices wire from there into the inspecto
 also be shown as a row under the tracks (a glance at its state, and a wire source near the timeline),
 but a MIDI wire never needs one. Mid-wire, hovering the `Timeline | Devices` switch flips the view —
 the path texture devices (lights, displays) will need. The order is D2 lights (SHIPPED — see Art-Net
-/ DMX output below), D3 displays, D4 inputs (Art-Net in, FFT).
+/ DMX output below), D3 displays (SHIPPED — see Display outputs below), D4 inputs (Art-Net in, FFT).
 
-#### The present API (`GPUBackend`)
+#### Display outputs — SHIPPED (devices D3, 2026-09-29, macOS)
+
+As built (the design notes follow, below):
+- **Portable slots, per-machine screens.** A display is a slot — `display.<n>`, "Display 1" and
+  "Display 2" always exist — that a show places (`DevicePlacement` kind `display`, with `enabled`
+  and `fit: fit | fill | stretch`). This machine's library (`display-devices.json`,
+  `web/src/displays/display-types.ts`) says which screen fills it: a CGDisplay UUID, or automatic
+  (Display N = the Nth screen that ISN'T the main one, so a fresh machine never covers the editor),
+  or rehearse in a **window** instead. A remembered screen that's gone falls back to automatic; no
+  screen at all = inert (an unplugged cable). The page sends the resolved plan
+  (`display-plan.ts` → `comp_displays`, sticky); the compositor binds screens itself
+  (`comp_displays.cpp resolveDisplayScreen`, lock-step with the page's), so a hotplug re-binds at
+  once.
+- **What it shows** is the device route, as for lights: `SketchBuild.deviceSources` /
+  `CompExecutor::deviceSourceTexture` (renamed from the light-only names; goldens unchanged),
+  else the composite.
+- **`GPUBackend` present API** (Metal): `createPresentTarget(CAMetalLayer*)` /
+  `createOffscreenPresentTarget(w, h)` / `presentScaled(target, src, Fit|Fill|Stretch)` — clear to
+  black, the Lanczos scaler with a scale transform (+ a clip rect for Fit; MPS places the source
+  relative to the clip's origin), `presentDrawable`. Two presents in flight = SKIP, never block.
+  The layer is BGRA8 (as previews are), `displaySyncEnabled`, 3 drawables.
+- **`bridge/comp_displays.h` `DisplayRunner`**, owned by `CompHost` beside the `LightRunner`: after
+  each submitted frame, each enabled display presents its source. It never touches a window —
+  a `DisplaySurfaces` provider does: the compositor process's AppKit code
+  (`native/tools/compositor/display_windows_mac.mm`, over `bridge_api.h`
+  `bridge_comp_set_display_provider` — AppKit stays out of `libbridge_server`, so the barrel in
+  Resolume can never open a window), or `OffscreenDisplays` (tests).
+- **The process** (`nano_compositor.cpp`): the render thread owns the RUNTIME start to finish
+  (WAMR's per-thread environment: wasm must run on the thread that brought the runtime up —
+  rendering from another thread silently draws nothing) and is the only GPU thread. The main thread
+  owns the windows, headless (no `NSApplication`, no Dock icon) until the first is wanted, then an
+  Accessory app. Fullscreen = a borderless window over the whole screen (menu bar and Dock
+  included), never key; window mode = a normal window (closing it turns the display off — one undo
+  step; moving it is remembered); identify = a big label for 3 s. Screens by CGDisplay UUID, hotplug
+  via `CGDisplayRegisterReconfigurationCallback`. While a display is up, the first one's display
+  link paces the render thread (capped at `--hz`), and dt comes from its timestamps.
+- **Report**: `screens` (on connect + hotplug), `displayStatus` (per placement: showing / window /
+  opening / no-screen / off, size, fps; offscreen targets add a 16×16 probe), `displayEvents`
+  (closed / moved / identified).
+- **Page**: while a display shows the show, the engine renders at the composition's FULL resolution
+  (not the 1280 preview cap). The Live button pulses while Precise is on and any display or light
+  output is live.
+- **Tests never open a window**: `NANO_DISPLAY_REDIRECT=offscreen` (+ `NANO_FAKE_SCREENS`, a JSON
+  screen list) presents offscreen — ctest, `comp-backend.ts`, and hidden Electron launches set it.
+  `test_comp_displays` (fit/fill/stretch pixels, routes, binding), `test_compositor_protocol`,
+  e2e `arrangement-displays`.
+- Not yet: Syphon (next, small), Windows (D3D11 swap chains, M4), hiding the cursor over a
+  fullscreen output, a crop / usable region per projector, per-output colour.
+
+#### The present API (`GPUBackend`) — design notes
 
 Add a small, optional surface, next to `createSharedSurface` / `blitScaledToSurfaceAsync`:
 
@@ -204,7 +253,7 @@ virtual bool    present(int32_t target, int32_t srcTexture, const float crop[4])
 - Colour: outputs are sRGB-encoded 8-bit, as previews are. Wide gamut and HDR are out of scope. If
   they come, it's a per-output format.
 
-#### Threading and pacing: the loop must move
+#### Threading and pacing: the loop must move — design notes (done: see Display outputs)
 
 `nano_compositor.cpp` runs its render loop **on the main thread** with `sleep_until`. AppKit windows
 need the main thread, so:
@@ -251,8 +300,8 @@ As built:
   one normalized footprint per pixel (`web/src/lights/light-plan.ts`) — and sends it as
   `comp_lights` (sticky, replayed on reconnect). What a light SAMPLES is the document's: a route
   `{kind:'device', placementId}` from an out port, resolved by the builder into
-  `SketchBuild.lightSources` (no wire, so the goldens are untouched) and read as
-  `CompExecutor::lightSourceTexture` (materialised through the barrier predicate); unrouted, the
+  `SketchBuild.deviceSources` (no wire, so the goldens are untouched) and read as
+  `CompExecutor::deviceSourceTexture` (materialised through the barrier predicate); unrouted, the
   composite. Solo never cuts a light's source.
 - **`native/src/lights/light_map.h`** (pure): footprint box-averaging, gamma, channel order, RGBW
   (w = min), never spilling past channel 512, and the test patterns.
