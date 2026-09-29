@@ -101,6 +101,17 @@ function portFor(): number {
   return 8400 + worker * 20;
 }
 
+/**
+ * Where the test compositor's Art-Net OUTPUT goes (NANO_ARTNET_REDIRECT):
+ * every light device's DMX lands on this loopback port instead of its
+ * configured node or the LAN broadcast — a suite can listen here, and no test
+ * ever lights (or confuses) real fixtures.
+ */
+export function artnetRedirectPort(): number {
+  const worker = Number(process.env.JEST_WORKER_ID ?? '1');
+  return 36400 + worker;
+}
+
 async function startCompositor(): Promise<{ child: ChildProcess; url: string }> {
   const dbg = (m: string) => { if (process.env.DEBUG_COMPOSITOR) process.stderr.write(`[comp-backend] ${m}\n`); };
   dbg('startCompositor');
@@ -112,7 +123,10 @@ async function startCompositor(): Promise<{ child: ChildProcess; url: string }> 
   const port = portFor();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nano-compositor-'));
   const child = spawn(NATIVE_COMPOSITOR, ['--port', String(port)], {
-    env: { ...process.env, NANO_DATA_DIR: dataDir, NANO_RESOURCE_ROOT: RESOURCE_ROOT },
+    env: {
+      ...process.env, NANO_DATA_DIR: dataDir, NANO_RESOURCE_ROOT: RESOURCE_ROOT,
+      NANO_ARTNET_REDIRECT: `127.0.0.1:${artnetRedirectPort()}`,
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stderr = '';

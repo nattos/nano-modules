@@ -219,6 +219,13 @@ class SketchExecutor {
    * handles.
    */
   int32_t chainEntryFieldTexture(int colIdx, int chainIdx, const std::string& field) const;
+  /** The same by instance: `bareKey`'s texture on output `field` as of the last
+   *  execute() (-1 if none). */
+  int32_t instanceFieldTexture(const std::string& moduleType, const std::string& bareKey,
+                               const std::string& field) const;
+  /** The bare instance key of the LOWERED chain entry (colIdx, chainIdx) — the
+   *  indices a BarrierPredicate is asked about — or empty. */
+  std::string chainEntryKey(int colIdx, int chainIdx) const;
 
   int32_t executeCached(int32_t inTex, int32_t outTex, int W, int H, double dt) {
     if (!cachedExecDocValid_) return inTex;

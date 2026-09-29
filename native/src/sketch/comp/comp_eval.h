@@ -448,7 +448,8 @@ inline std::vector<CompNode> compositeTreeAtBeat(
       for (const auto& r : comp.routes) {
         if (!r.src.isPort || r.src.trackId == r.dest.trackId) continue;
         const std::string& dest = r.dest.trackId;
-        const bool destKept = passesSolo(dest) || soloForced.count(dest) ||
+        // A light is an output, like the main bus: solo never blacks it out.
+        const bool destKept = r.dest.isDevice || passesSolo(dest) || soloForced.count(dest) ||
                               (bus && bus->id == dest);
         if (!destKept) continue;
         const std::string& src = r.src.trackId;

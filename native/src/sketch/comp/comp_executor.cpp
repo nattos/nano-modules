@@ -66,7 +66,9 @@ CompExecutor::CompExecutor(effect_runtime::EffectRuntime* rt,
       registry_(registry),
       gpu_(gpuBackend),
       ex_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)),
-      transportEx_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)) {}
+      transportEx_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)) {
+  ex_->setBarrierPredicate(wrappedBarrier());
+}
 
 CompExecutor::~CompExecutor() = default;
 
@@ -78,7 +80,7 @@ void CompExecutor::setTraceHooks(sketch_executor::SketchExecutor::ChainEntryHook
   barrierHook_ = std::move(barrier);
   ex_->setChainEntryHook(chainEntryHook_);
   ex_->setSketchOutputHook(outputHook_);
-  ex_->setBarrierPredicate(barrierHook_);
+  ex_->setBarrierPredicate(wrappedBarrier());
 }
 
 int32_t CompExecutor::instanceHandle(const sketch_executor::SketchExecutor& ex,
@@ -107,7 +109,7 @@ void CompExecutor::resetInternalExecutor() {
   ex_->setKeyNamespace(keyNamespace_);
   ex_->setChainEntryHook(chainEntryHook_);
   ex_->setSketchOutputHook(outputHook_);
-  ex_->setBarrierPredicate(barrierHook_);
+  ex_->setBarrierPredicate(wrappedBarrier());
   // The transport executor shares the revive contract: a pruned-then-revived
   // web instance holds DEFAULT params while lastAppliedState_ still matches.
   transportEx_ = std::make_unique<sketch_executor::SketchExecutor>(rt_, registry_, gpu_);
@@ -1162,6 +1164,7 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
     dirty_ = false;
     flags |= kCompStructureChanged;
   }
+  applyLightSources(build.hasContent ? build.lightSources : nlohmann::json::object());
   evalActiveDescs_ = videoDescsForTree(evalTree_);
   evalWarmDescs_ = warmVideoDescs(evalTree_, beat);
   // Pending handovers: pre-build the POST-COMMIT world's sketch (launch map
@@ -1925,6 +1928,45 @@ int32_t CompExecutor::render(int32_t inTex, int32_t outTex, int32_t W, int32_t H
   // scenes — the launch lands next update() (the same 1-frame loop).
   readTriggerSignals();
   return out;
+}
+
+// ── Light devices' sources ───────────────────────────────────────────────────
+
+sketch_executor::SketchExecutor::BarrierPredicate CompExecutor::wrappedBarrier() {
+  // The host's own barriers (preview monitors), plus every stage a light
+  // samples: a fused stage has no texture of its own to read.
+  return [this](int colIdx, int chainIdx) {
+    if (barrierHook_ && barrierHook_(colIdx, chainIdx)) return true;
+    return !lightKeys_.empty() && ex_ &&
+           lightKeys_.count(ex_->chainEntryKey(colIdx, chainIdx)) > 0;
+  };
+}
+
+void CompExecutor::applyLightSources(const nlohmann::json& sources) {
+  lightRouted_.clear();
+  for (const auto& r : doc_.routes) {
+    if (r.dest.isDevice && build_detail::routeIsLegal(doc_, r)) lightRouted_.insert(r.dest.placementId);
+  }
+  lightStage_.clear();
+  lightKeys_.clear();
+  if (!sources.is_object() || !cleanSketch_.is_object()) return;
+  const auto insts = cleanSketch_.find("instances");
+  for (const auto& [pid, src] : sources.items()) {
+    const std::string key = src.value("instanceKey", std::string());
+    if (key.empty() || insts == cleanSketch_.end() || !insts->contains(key)) continue;
+    lightStage_[pid] = {(*insts)[key].value("module_type", std::string()), key,
+                        src.value("field", std::string())};
+    lightKeys_.insert(key);
+  }
+}
+
+int32_t CompExecutor::lightSourceTexture(const std::string& placementId, bool* routed) const {
+  const bool r = lightRouted_.count(placementId) > 0;
+  if (routed) *routed = r;
+  if (!r || !ex_) return -1;
+  const auto it = lightStage_.find(placementId);
+  if (it == lightStage_.end()) return -1;
+  return ex_->instanceFieldTexture(it->second.moduleType, it->second.key, it->second.field);
 }
 
 void CompExecutor::rebuildTriggerRoutes() {

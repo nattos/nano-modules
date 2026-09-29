@@ -87,6 +87,8 @@ class BarrelRuntime {
   //   comp_step     {frames, dtSec}   manual clock: render N frames of dtSec
   //   comp_readback {reqId}           raw RGBA of the composite
   //   comp_visibility {reqId, moduleType, state}
+  //   comp_lights   {plan}            light devices' resolved plan (light_map.h)
+  //   comp_lights_test {placementId, slotId, pattern}  identify / test pattern
   // Replies and the per-frame report go out as NBCJ messages (see
   // barrel_runtime.cpp). Previews and telemetry use the barrel's paths
   // (preview_requests, plugin_states, modulation_data). False when this build

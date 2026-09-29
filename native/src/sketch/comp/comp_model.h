@@ -297,11 +297,13 @@ struct TrackPortM {
 inline constexpr const char* kPortIn = "__in__";
 inline constexpr const char* kPortOut = "__out__";
 
-/** One end of a route (composition.ts RouteEnd): a track port, or a texture
+/** One end of a route (composition.ts RouteEnd): a track port, a texture
  *  field of a device in a track's own sketch (clipId empty) or one of its
- *  clips. */
+ *  clips, or a light DEVICE placement's input (isDevice; destination only). */
 struct RouteEndM {
   bool isPort = false;
+  bool isDevice = false;
+  std::string placementId;  // isDevice
   std::string trackId;
   std::string portId;    // isPort
   std::string clipId;    // !isPort; empty ⇒ the track's own sketch
@@ -421,13 +423,13 @@ struct BackgroundM {
   std::optional<std::string> color;
 };
 
-/** A device INCLUDED in the composition (composition.ts DevicePlacement): a
- *  library device the show puts on its timeline. The engine ignores MIDI
- *  placements (a MIDI wire works whether or not its device is placed);
- *  lights and displays will read theirs. */
+/** A device INCLUDED in the composition (composition.ts DevicePlacement). The
+ *  engine ignores MIDI placements (a MIDI wire works whether or not its device
+ *  is placed); a LIGHT placement is a route destination (its input) — what it
+ *  outputs arrives separately, as the page's resolved light plan. */
 struct DevicePlacementM {
   std::string id;
-  std::string kind;      // "midi"
+  std::string kind;      // "midi" | "light"
   std::string deviceId;  // the library uuid the show's wires address
   bool enabled = true;
 };
@@ -731,9 +733,13 @@ inline TrackM parseTrack(const nlohmann::json& j, int depth = 0) {
 inline RouteEndM parseRouteEnd(const nlohmann::json& j) {
   RouteEndM e;
   if (!j.is_object()) return e;
-  e.isPort = j.value("kind", std::string()) == "port";
+  const std::string kind = j.value("kind", std::string());
+  e.isPort = kind == "port";
+  e.isDevice = kind == "device";
   e.trackId = j.value("trackId", std::string());
-  if (e.isPort) {
+  if (e.isDevice) {
+    e.placementId = j.value("placementId", std::string());
+  } else if (e.isPort) {
     e.portId = j.value("portId", std::string());
   } else {
     if (j.contains("clipId") && j["clipId"].is_string()) e.clipId = j["clipId"].get<std::string>();

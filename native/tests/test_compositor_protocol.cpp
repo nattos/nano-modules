@@ -19,9 +19,12 @@
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -120,6 +123,8 @@ class Compositor {
     std::vector<std::string> env;
     for (char** e = environ; *e; ++e) env.emplace_back(*e);
     env.push_back(std::string("NANO_DATA_DIR=") + NANO_TEST_DATA_ROOT + "/compositor");
+    // Light devices' DMX lands on loopback, never on the LAN (artnetPort()).
+    env.push_back("NANO_ARTNET_REDIRECT=127.0.0.1:" + std::to_string(artnetPort()));
     std::vector<char*> envp;
     for (auto& e : env) envp.push_back(e.data());
     envp.push_back(nullptr);
@@ -223,6 +228,9 @@ class Compositor {
   }
 
   void closeStdin() { close(stdin_); stdin_ = -1; }
+
+  /// Where this compositor's Art-Net output is redirected.
+  int artnetPort() const { return port_ + 30000; }
 
  private:
   int port_;
@@ -337,4 +345,65 @@ TEST_CASE("compositor: comp_reset starts a fresh engine (no document, transport 
   const json r = c.await("readback", 2);
   CHECK_FALSE(r.value("hasContent", true));
   CHECK(r.value("width", 0) == 32);
+}
+
+TEST_CASE("compositor: a light device transmits its DMX to the redirect only",
+          "[compositor][integration]") {
+  Compositor c(8291);
+  // Listen where NANO_ARTNET_REDIRECT points.
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  a.sin_port = htons((uint16_t)c.artnetPort());
+  ::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+  REQUIRE(::bind(fd, (sockaddr*)&a, sizeof a) == 0);
+
+  json doc = solidDoc(1, 0, 0);
+  doc["devices"] = json::array({{{"id", "p1"}, {"kind", "light"}, {"deviceId", "rig"},
+                                 {"enabled", true}}});
+  c.send({{"action", "comp_resize"}, {"width", 64}, {"height", 36}});
+  c.send({{"action", "comp_load_doc"}, {"json", doc.dump()}});
+  c.send({{"action", "comp_control"}, {"op", "seek"}, {"beat", 2}});
+  // The plan says BROADCAST — the redirect must win.
+  c.send({{"action", "comp_lights"}, {"plan", {{"outputs", json::array({{
+      {"placementId", "p1"}, {"enabled", true},
+      {"fixtures", json::array({{{"slotId", "s1"}, {"universe", 1}, {"channel", 1},
+                                  {"dest", "broadcast"}, {"format", "rgbw"}, {"gamma", 1.0},
+                                  {"footprints", json::array({{0.4, 0.4, 0.6, 0.6}})}}})}}})}}}});
+  c.send({{"action", "comp_step"}, {"frames", 4}, {"dtSec", 1.0 / 60}});
+
+  // ArtDmx for universe 1 carrying the red pixel (RGBW: 255, 0, 0, 0).
+  std::vector<uint8_t> dmx;
+  int packets = 0, lastR = -1;
+  const bool got = waitFor([&] {
+    pollfd p{fd, POLLIN, 0};
+    if (::poll(&p, 1, 50) <= 0) return false;
+    std::vector<uint8_t> buf(1024);
+    const auto n = ::recv(fd, buf.data(), buf.size(), 0);
+    packets++;
+    if (n >= 19) lastR = buf[18];
+    if (n < 18 + 4 || buf[8] != 0x00 || buf[9] != 0x50 || buf[14] != 1) return false;
+    if (buf[18] < 200) return false;  // the first rounds may precede the first readback
+    dmx.assign(buf.begin(), buf.begin() + n);
+    return true;
+  });
+  ::close(fd);
+  INFO("packets " << packets << " last ch1 " << lastR);
+  REQUIRE(got);
+  CHECK(dmx[18] >= 250);
+  CHECK(dmx[19] == 0);
+  CHECK(dmx[20] == 0);
+  CHECK(dmx[21] == 0);
+
+  // The report carries the colours the UI draws, and the transmitter's status.
+  c.send({{"action", "comp_step"}, {"frames", 2}, {"dtSec", 1.0 / 60}});
+  size_t cursor = 0;
+  json lights, status;
+  while (lights.is_null() || status.is_null()) {
+    const json rep = c.await("comp_report", -1, &cursor);
+    if (rep.contains("lights")) lights = rep["lights"];
+    if (rep.contains("lightStatus")) status = rep["lightStatus"];
+  }
+  CHECK(lights.contains("p1"));
+  CHECK(status.value("sending", false));
 }

@@ -32,6 +32,7 @@ CompHost::CompHost(gpu::GPUBackend* gpu, effect_runtime::EffectRuntime* rt,
     : gpu_(gpu), rt_(rt), registry_(registry), bundles_(bundles), cfg_(cfg) {
   cx_ = std::make_unique<comp::CompExecutor>(rt_, registry_, gpu_);
   cx_->setKeyNamespace(cfg_.keyNamespace);
+  lights_ = std::make_unique<LightRunner>(gpu_);
   seedSchemas();
 
   // Bind the seekable-streams registry into every loaded bundle (and every one
@@ -55,6 +56,9 @@ CompHost::CompHost(gpu::GPUBackend* gpu, effect_runtime::EffectRuntime* rt,
 }
 
 CompHost::~CompHost() {
+  // Light readbacks in flight sample textures this host owns: let them land.
+  if (gpu_) gpu_->drainPreviewReadbacks();
+  lights_.reset();
   // The pump's clips hold textures and inject into the executor: it goes first.
   pump_.reset();
   if (bundles_) bundles_->setStreamsTable(nullptr, nullptr);
@@ -198,6 +202,7 @@ void CompHost::publishClock(double dt) {
 int32_t CompHost::renderFrame(double execDt) {
   cx_->transportResolve(execDt);
   const int32_t handle = cx_->render(inTex_, outTex_, cfg_.width, cfg_.height, execDt);
+  lastOut_ = handle;
   if (lastFlags_ & comp::kCompStructureChanged) chainKeys_ = cx_->chainKeysJson();
   frames_++;
   // A Precise hold is the transport refusing to advance because a clip's media

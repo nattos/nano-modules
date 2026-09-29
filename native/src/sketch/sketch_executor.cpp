@@ -2431,6 +2431,29 @@ int32_t SketchExecutor::chainEntryFieldTexture(int colIdx, int chainIdx,
   return h > 0 ? h : -1;
 }
 
+int32_t SketchExecutor::instanceFieldTexture(const std::string& moduleType,
+                                             const std::string& bareKey,
+                                             const std::string& field) const {
+  if (moduleType.empty() || bareKey.empty() || field.empty()) return -1;
+  EffectRef inst = instanceRef(moduleType, nsPrefix_ + bareKey);
+  if (!inst.valid()) return -1;
+  const int32_t h = inst.textureField(field);
+  return h > 0 ? h : -1;
+}
+
+std::string SketchExecutor::chainEntryKey(int colIdx, int chainIdx) const {
+  if (!cachedExecDocValid_ || colIdx < 0 || chainIdx < 0) return std::string();
+  const auto cols = cachedExecDoc_.find("columns");
+  if (cols == cachedExecDoc_.end() || !cols->is_array() || (size_t)colIdx >= cols->size())
+    return std::string();
+  const auto chain = (*cols)[(size_t)colIdx].find("chain");
+  if (chain == (*cols)[(size_t)colIdx].end() || !chain->is_array() ||
+      (size_t)chainIdx >= chain->size())
+    return std::string();
+  const json& entry = (*chain)[(size_t)chainIdx];
+  return entry.is_object() ? entry.value("instance_key", std::string()) : std::string();
+}
+
 int32_t SketchExecutor::nextIntermediate(int W, int H) {
   if (W != intermediates_w_ || H != intermediates_h_ ||
       internalFmt_ != intermediates_fmt_) {

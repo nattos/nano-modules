@@ -10,7 +10,7 @@
 //
 // Protocol (all actions carry {"key": <key>}; see barrel_runtime.h createComp):
 //   comp_load_doc / comp_control / comp_op / comp_resize / comp_clock /
-//   comp_step / comp_readback / comp_visibility
+//   comp_step / comp_readback / comp_visibility / comp_lights / comp_lights_test
 // Out: NBCJ messages (comp_report every frame, replies), NBPS/NBPV previews
 // for /plugins/<key>/state/preview_requests, and plugin_states /
 // modulation_data / plugin_schemas in the state document.
@@ -21,7 +21,9 @@
 //
 // Environment: NANO_RESOURCE_ROOT (where wasm/ and fonts/ are; otherwise found
 // by walking up from this executable), NANO_DATA_DIR (settings + modules),
-// NANO_BRIDGE_PORT (instead of --port). Resolume is never dialled.
+// NANO_BRIDGE_PORT (instead of --port), NANO_ARTNET_REDIRECT (host:port that
+// ALL light-device DMX goes to instead of its destinations — tests). Resolume
+// is never dialled.
 
 #include <atomic>
 #include <chrono>

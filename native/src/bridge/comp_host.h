@@ -32,6 +32,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "bridge/comp_lights.h"
 #include "media/video_pump.h"
 #include "sketch/comp/comp_executor.h"
 
@@ -130,6 +131,16 @@ class CompHost {
    */
   size_t pruneInstances(const std::vector<std::pair<std::string, std::string>>& required);
 
+  /// The light devices' output (comp_lights.h): the page's plan, test
+  /// patterns, the sink, and the colours the UI draws.
+  LightRunner& lights() { return *lights_; }
+  /// Queue this frame's light readbacks. Call after the frame is SUBMITTED
+  /// (the readback's command buffer must follow the frame's on the queue).
+  void runLights() {
+    lights_->afterFrame(*cx_, lastOut_, cfg_.width, cfg_.height,
+                        (lastFlags_ & comp::kCompHasContent) != 0);
+  }
+
   /// Frames stepped, and how many of them held on unready video (Precise).
   int frames() const { return frames_; }
   int stalledFrames() const { return stalledFrames_; }
@@ -147,6 +158,8 @@ class CompHost {
 
   std::unique_ptr<comp::CompExecutor> cx_;
   std::unique_ptr<nano_media::VideoPump> pump_;
+  std::unique_ptr<LightRunner> lights_;
+  int32_t lastOut_ = -1;  // what the last frame rendered into (runLights)
   int32_t inTex_ = -1;
   int32_t outTex_ = -1;
   int texW_ = 0, texH_ = 0;

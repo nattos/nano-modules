@@ -33,6 +33,7 @@
 #include "gpu/gpu_backend.h"
 #include "midi/midi_host.h"
 #include "artnet/artnet_host.h"
+#include "artnet/artnet_sender.h"
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
 #include "sketch/sidechannel_bus.h"
@@ -41,6 +42,17 @@
 #if NANO_COMP_HOST
 #include "bridge/comp_export.h"
 #include "bridge/comp_host.h"
+
+namespace bridge {
+namespace {
+/// Light devices' DMX → the Art-Net transmitter (its own socket and send
+/// thread; see artnet_sender.h). One per comp, created with its first plan.
+struct LightSenderSink : LightSink {
+  artnet::ArtNetSender sender;
+  void submit(const lights::Frames& frames) override { sender.submit(frames); }
+};
+}  // namespace
+}  // namespace bridge
 #endif
 
 // Host frame-state setters live in effect_runtime (host_impls.cpp); forward
@@ -341,6 +353,15 @@ struct BarrelRuntime::Impl {
     // A COMPOSITION instance (createComp) rather than a barrel sketch. The
     // comp host owns its executor and may rebuild it (resetInternalExecutor),
     // so shared code reaches the executor through ex(), never `executor`.
+    // Light devices: the transmitter, and the page's last plan (re-applied when
+    // comp_reset rebuilds the host). Declared BEFORE `comp` so the host — whose
+    // readbacks call into the sink — is destroyed first.
+    std::unique_ptr<LightSenderSink> lightSink;
+    nlohmann::json lightPlan;
+    uint64_t lastLightsVersion = 0;
+    double lastLightsReport = -1;
+    nlohmann::json lastLightStatus;
+    double lastLightStatusReport = -1;
     std::unique_ptr<CompHost> comp;
     // The comp's plugin key: its instances live under compKey + "/".
     std::string compKey;
@@ -606,7 +627,8 @@ struct BarrelRuntime::Impl {
     comp_handlers_installed = true;
     for (const char* action : {"comp_reset", "comp_load_doc", "comp_control", "comp_op",
                                "comp_resize", "comp_clock", "comp_step", "comp_readback",
-                               "comp_visibility", "comp_export_start", "comp_export_cancel"}) {
+                               "comp_visibility", "comp_export_start", "comp_export_cancel",
+                               "comp_lights", "comp_lights_test"}) {
       BridgeServer::instance().set_action_handler(action,
           [this](int, const std::string& msg) {
             auto j = nlohmann::json::parse(msg, nullptr, false);
@@ -680,6 +702,8 @@ struct BarrelRuntime::Impl {
     pe.comp = std::make_unique<CompHost>(gpu.get(), rt.get(), registry.get(), bundles.get(), cfg);
     const auto hooks = captureHooksFor(&pe);
     pe.comp->executor().setTraceHooks(hooks.chainEntry, hooks.output, hooks.barrier);
+    if (pe.lightSink) pe.comp->lights().setSink(pe.lightSink.get());
+    if (!pe.lightPlan.is_null()) pe.comp->lights().setPlan(pe.lightPlan);
     pe.compRequired.clear();
     pe.compControlSeq = 0;
     pe.compResync = true;
@@ -2254,6 +2278,19 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       for (int i = 0; i < n; ++i) frameDts.push_back(sdt);
     } else if (action == "comp_readback") {
       readbacks.push_back(std::move(m));
+    } else if (action == "comp_lights") {
+      // The page's resolved light plan (light-plan.ts). The transmitter comes
+      // up with the first plan that has anything in it.
+      pe.lightPlan = m.contains("plan") ? m["plan"] : nlohmann::json::object();
+      if (!pe.lightSink && pe.lightPlan.contains("outputs") && !pe.lightPlan["outputs"].empty()) {
+        pe.lightSink = std::make_unique<LightSenderSink>();
+        host.lights().setSink(pe.lightSink.get());
+      }
+      host.lights().setPlan(pe.lightPlan);
+    } else if (action == "comp_lights_test") {
+      host.lights().setTest(m.value("placementId", std::string()),
+                            m.value("slotId", std::string()),
+                            m.value("pattern", std::string()));
     } else if (action == "comp_export_start") {
       impl_->startCompExport(key, pe, m);
     } else if (action == "comp_export_cancel") {
@@ -2327,6 +2364,8 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
     }
     host.step(fdt);
     impl_->gpu->submit();
+    // Light devices read back what they sample AFTER the frame's submit.
+    if (host.lights().active()) host.runLights();
     ++rendered;
 
     const uint32_t flags = host.lastFlags();
@@ -2384,6 +2423,32 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       if (pump.skipped().size() != pe.compVideoSkipped || pe.compResync) {
         pe.compVideoSkipped = pump.skipped().size();
         rep["videoSkipped"] = pump.skipped();
+      }
+      // Light devices: the colours the UI draws (at most ~30 Hz) and the
+      // transmitter's status (on a change of state, else once a second).
+      if (host.lights().active() || pe.compResync) {
+        const uint64_t lv = host.lights().version();
+        if (pe.compResync ||
+            (lv != pe.lastLightsVersion && pe.compElapsed - pe.lastLightsReport >= 1.0 / 30 - fdt * 0.5)) {
+          pe.lastLightsVersion = lv;
+          pe.lastLightsReport = pe.compElapsed;
+          nlohmann::json lj = nlohmann::json::object();
+          for (const auto& [pid, bytes] : host.lights().colors()) {
+            lj[pid] = base64Encode(bytes.data(), bytes.size());
+          }
+          rep["lights"] = std::move(lj);
+        }
+      }
+      if (pe.lightSink) {
+        auto st = pe.lightSink->sender.stats();
+        const bool changed = !pe.lastLightStatus.is_object() ||
+                             st.value("sending", false) != pe.lastLightStatus.value("sending", false) ||
+                             st.value("error", std::string()) != pe.lastLightStatus.value("error", std::string());
+        if (pe.compResync || changed || pe.compElapsed - pe.lastLightStatusReport >= 1.0) {
+          pe.lastLightStatusReport = pe.compElapsed;
+          pe.lastLightStatus = st;
+          rep["lightStatus"] = std::move(st);
+        }
       }
       pe.compResync = false;
       sendCompJson(key, rep);

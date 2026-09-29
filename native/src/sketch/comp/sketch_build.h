@@ -276,6 +276,13 @@ struct SketchBuild {
    * serialized into it), shipped to the UI for the route markers.
    */
   nlohmann::json routeStatus = nlohmann::json::object();
+  /**
+   * Light devices fed by a route: placementId → {instanceKey, field} — the
+   * built stage whose texture that light samples (live routes only). A light
+   * with no entry samples the composite. A sibling of the sketch: a device
+   * route emits NO wire, so it never reaches the goldens.
+   */
+  nlohmann::json lightSources = nlohmann::json::object();
 };
 
 namespace build_detail {
@@ -1197,6 +1204,17 @@ inline PortInfo portInfo(const CompositionM& comp, const std::string& trackId,
 inline bool routeIsLegal(const CompositionM& comp, const RouteM& r) {
   const RouteEndM& s = r.src;
   const RouteEndM& d = r.dest;
+  if (s.isDevice) return false;  // a light is only ever a destination
+  if (d.isDevice) {
+    // send: an out port (named or __out__) → a placed LIGHT's input
+    if (!s.isPort || s.portId == kPortIn) return false;
+    const PortInfo sp = portInfo(comp, s.trackId, s.portId);
+    if (!sp.exists || !sp.isOut) return false;
+    for (const auto& p : comp.devices) {
+      if (p.id == d.placementId) return p.kind == "light";
+    }
+    return false;
+  }
   if (!s.isPort && !d.isPort) return false;  // field → field: not through a hub
   if (!s.isPort) {
     // feed
@@ -1230,7 +1248,8 @@ inline std::string fieldEndKey(const RouteEndM& e) {
  * one above is the executor's delayed (1-frame) back edge, which it detects
  * from chain position on its own.
  */
-inline void emitRoutes(Builder& b, const CompositionM& comp, nlohmann::json& status) {
+inline void emitRoutes(Builder& b, const CompositionM& comp, nlohmann::json& status,
+                       nlohmann::json& lightSources) {
   std::vector<const RouteM*> legal;
   for (const auto& r : comp.routes) {
     if (routeIsLegal(comp, r)) legal.push_back(&r);
@@ -1291,6 +1310,12 @@ inline void emitRoutes(Builder& b, const CompositionM& comp, nlohmann::json& sta
     if (!r->src.isPort) {
       // feed: live when its field's device is actually rendering.
       live = pushed(fieldEndKey(r->src));
+    } else if (r->dest.isDevice) {
+      // → a light's input: no wire — the host samples the source's texture.
+      if (const auto src = portSource(r->src.trackId, r->src.portId, 0)) {
+        lightSources[r->dest.placementId] = {{"instanceKey", src->key}, {"field", src->field}};
+        live = true;
+      }
     } else if (!r->dest.isPort) {
       // send / receive → a texture field
       const auto src = portSource(r->src.trackId, r->src.portId, 0);
@@ -1472,7 +1497,8 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
   }
 
   nlohmann::json routeStatus = nlohmann::json::object();
-  if (comp && !comp->routes.empty()) emitRoutes(b, *comp, routeStatus);
+  nlohmann::json lightSources = nlohmann::json::object();
+  if (comp && !comp->routes.empty()) emitRoutes(b, *comp, routeStatus, lightSources);
 
   if (b.chain.empty()) return {};
   SketchBuild out;
@@ -1483,6 +1509,7 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
                 {"instances", std::move(b.instances)}};
   out.layerTargets = std::move(b.layerTargets);
   out.routeStatus = std::move(routeStatus);
+  out.lightSources = std::move(lightSources);
   return out;
 }
 
