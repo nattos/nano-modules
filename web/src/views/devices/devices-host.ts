@@ -60,6 +60,9 @@ export interface DevicesHost {
   detailsInset(): { right: number; bottom: number };
   /** "in this arrangement" / "in the composition" / "in this sketch". */
   usageLabel: string;
+  /** Arrangement only: the light devices section (types, rigs), rendered
+   *  after the MIDI groups with the panel's filters. */
+  renderLights?(opts: { inUse: boolean; templates: boolean; deleted: boolean }): unknown;
   /** Arrangement only: the "show on the timeline" toggle per device. */
   included?: {
     has(deviceId: string): boolean;

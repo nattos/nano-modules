@@ -82,6 +82,12 @@ function deepElementFromPoint(x: number, y: number): Element | null {
 const gestureActive = observable.box(false);
 export function connectGestureActive(): boolean { return gestureActive.get(); }
 
+/** A light's input as a gesture endpoint (only ever a route destination). */
+export function lightInputInfo(placementId: string, viewportY: number): FieldConnectInfo {
+  return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+    viewportY, schemaDef: null, lightInput: { placementId } };
+}
+
 function hitKey(hit: HTMLElement): string {
   return `${hit.dataset.sketchId}/${hit.dataset.colIdx}/${hit.dataset.chainIdx}/${hit.dataset.fieldPath}`;
 }
@@ -169,7 +175,20 @@ export class WireConnect implements ColumnTaps {
     this.end();
   }
 
+  /** Complete a CLICK-mode connection onto a light's input (the arrangement's
+   *  Devices view / light row). */
+  completeOnLightInput(placementId: string) {
+    if (!this.state) return;
+    this.commit({ key: `light/${placementId}`, info: lightInputInfo(placementId, this.state.pointerY) });
+    this.end();
+  }
+
   private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
+    // A LIGHT device's input (routes from an out port land here).
+    if (hit.dataset.lightInput) {
+      const rr = hit.getBoundingClientRect();
+      return lightInputInfo(hit.dataset.lightInput, rr.top + rr.height / 2);
+    }
     // A Composition I/O track port (the arrangement's header I/O strip).
     if (hit.dataset.portTrack && hit.dataset.portId) {
       const rr = hit.getBoundingClientRect();

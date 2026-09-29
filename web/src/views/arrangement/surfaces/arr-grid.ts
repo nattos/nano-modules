@@ -32,6 +32,10 @@ import './arr-io-strip';
 import './arr-rail-lane';
 import './arr-scene';
 import './arr-device-lane';
+import './arr-light-lane';
+import './lights/light-input-pip';
+import { lightController } from '../state/light-controller';
+import { engineBridge } from '../engine/engine-bridge';
 import { midiController } from '../../../state/midi-controller';
 import { appState } from '../../../state/app-state';
 import type { DevicePlacement } from '../model/composition';
@@ -303,6 +307,13 @@ export class ArrGrid extends MobxLitElement {
     }
     .devstat.live { background: var(--app-cat-source, #57b47a); }
     .devstat.missing { background: var(--app-error, #e06c6c); }
+    .devstat.local { background: var(--app-hi-color1, #e0a040); }
+    .lighton {
+      margin-left: auto; flex: none; font: inherit; font-size: 8px; line-height: 1; cursor: pointer;
+      padding: 1px 4px; border-radius: 2px; background: none; text-transform: uppercase;
+      border: 1px solid var(--app-tint-4); color: var(--app-text-color2);
+    }
+    .lighton.on { border-color: var(--app-cat-source, #57b47a); color: var(--app-cat-source, #57b47a); }
     .devwires { font-size: 8px; color: var(--app-text-color2); }
     .row.beatwarp {
       border-top: 1px solid var(--app-tint-3);
@@ -734,6 +745,7 @@ export class ArrGrid extends MobxLitElement {
    * (<arr-device-lane>). Clicking the header opens it in the Devices view.
    */
   private renderDeviceRow(p: DevicePlacement, first: boolean) {
+    if (p.kind === 'light') return this.renderLightRow(p, first);
     const inst = midiController.instance(p.deviceId);
     const name = inst?.name ?? p.label ?? 'Missing device';
     const status = !inst ? 'missing' : appState.local.midi.connected[p.deviceId] ? 'live' : 'offline';
@@ -763,6 +775,51 @@ export class ArrGrid extends MobxLitElement {
           </div>
         </div>
         <div class="lane device"><arr-device-lane .placementId=${p.id}></arr-device-lane></div>
+      </div>
+    `;
+  }
+
+  /**
+   * A light rig in the show: header = name, whether it's sending, its output
+   * switch and its input (what it samples — a route target); lane = its bars
+   * in their live colours (<arr-light-lane>). The header opens it in Devices.
+   */
+  private renderLightRow(p: DevicePlacement, first: boolean) {
+    const rig = lightController.rig(p.deviceId);
+    const name = rig?.name ?? p.label ?? 'Missing light';
+    const on = p.enabled !== false;
+    const transmits = engineBridge.outputsLights;
+    const status = !rig || rig.deleted ? 'missing' : !on ? 'offline' : transmits ? 'live' : 'local';
+    const statusTitle = status === 'missing' ? 'Not in this machine\u2019s light library — nothing is sent'
+      : status === 'offline' ? 'Output off'
+      : status === 'live' ? (lightController.status?.error ?? 'Sending')
+      : 'This engine doesn\u2019t transmit (light output needs the native compositor)';
+    return html`
+      <div class="row device light ${first ? 'first' : ''}" data-light-row=${p.id}>
+        <div
+          class="header"
+          title="Open in the Devices view"
+          @pointerdown=${(e: PointerEvent) => {
+            e.stopPropagation();
+            devicesUi.selectCard(rig ? rig.id : `missing-light:${p.id}`);
+            store.setMainView('devices');
+          }}
+        >
+          <div class="h-top" style="padding-left: var(--app-sp-3)">
+            <ui-icon class="devico" icon="la-lightbulb"></ui-icon>
+            <span class="devstat ${status}" title=${statusTitle}></span>
+            <span class="tname" title=${name}>${name}</span>
+            <button class="lighton ${on ? 'on' : ''}" data-light-enable=${p.id}
+              title=${on ? 'Output on — click to stop sending' : 'Output off — click to send'}
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => { e.stopPropagation(); store.setLightEnabled(p.id, !on); }}>${on ? 'on' : 'off'}</button>
+          </div>
+          <div class="h-bottom" style="padding-left: var(--app-sp-3)">
+            <span class="dchip">LIGHT</span>
+            <light-input-pip .placementId=${p.id} .scope=${'timeline'}></light-input-pip>
+          </div>
+        </div>
+        <div class="lane device"><arr-light-lane .placementId=${p.id}></arr-light-lane></div>
       </div>
     `;
   }

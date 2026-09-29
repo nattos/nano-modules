@@ -10,13 +10,17 @@
  *     arrangement's gesture machine for endpoints outside the column-groups).
  *   - "Locate" selects the clip / track, so the inspector shows the field.
  *   - The timeline toggle puts a device row under the tracks.
+ *   - Lights (types, rigs) render as their own section after the MIDI groups.
  */
 
+import { html } from 'lit';
 import type { Sketch } from '../../../sketch-types';
 import { setDevicesHost, type DevicesHost } from '../../devices/devices-host';
 import { compositionSketches, type ClipSketch } from '../model/composition';
 import { portConnect } from '../surfaces/arr-io';
 import { store } from './store';
+
+import '../surfaces/lights/light-devices-section';
 
 /** A ClipSketch in the editor's Sketch shape (chain entries keyed by device id). */
 function asSketch(sk: ClipSketch): Sketch {
@@ -89,6 +93,8 @@ export const arrDevicesHost: DevicesHost = {
     bottom: (store.clipViewOpen ? store.clipViewHeight : 0) + 12,
   }),
   usageLabel: 'wired in this arrangement or shown on its timeline',
+  renderLights: (o) => html`<light-devices-section .inUse=${o.inUse} .templates=${o.templates}
+    .deleted=${o.deleted}></light-devices-section>`,
   included: {
     has: (deviceId) => !!store.placementForDevice(deviceId),
     toggle: (deviceId, info) => {

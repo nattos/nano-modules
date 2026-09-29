@@ -65,6 +65,15 @@ export function nativeGap(backend: CompBackend, reason: string): jest.It {
   return skip;
 }
 
+/** `it` on the native leg, `it.skip` on the worker (the reason named) — for
+ *  what only the native compositor does (light output: no UDP in a browser). */
+export function nativeOnly(backend: CompBackend, reason: string): jest.It {
+  if (backend === 'native') return it;
+  const skip = ((name: string, fn?: jest.ProvidesCallback, timeout?: number) =>
+    it.skip(`${name} [native only: ${reason}]`, fn, timeout)) as unknown as jest.It;
+  return skip;
+}
+
 function backendsToRun(): CompBackend[] {
   const only = process.env.COMP_BACKENDS;
   const all: CompBackend[] = ['worker', 'native'];

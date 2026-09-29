@@ -370,6 +370,7 @@ export class DevicesTab extends MobxLitElement {
           <div class="group-label">Templates</div>
           <div class="cards">${templates.map(t => this.renderTemplateCard(t))}</div>
         </div>` : nothing,
+      host.renderLights?.({ inUse: !!filters.inUse, templates: filters.templates, deleted: filters.deleted }) ?? nothing,
       filters.deleted && deleted.length > 0 ? html`
         <div>
           <div class="group-label">Deleted</div>
