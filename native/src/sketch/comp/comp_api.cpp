@@ -115,6 +115,24 @@ void comp_load_document(CompExecutor* c, const char* json, int32_t len) {
   c->loadDocument(j);
 }
 
+// ── Devices: host-fed scalar tables (see CompExecutor::setExternalScalars) ──
+
+// MIDI device controls: `{"midi:<uuid>": {"b0/e05/turn": 0.42}}`. Only an
+// ENABLED device placement's wires reach them. Replace-all; "{}" clears.
+EXEC_EXPORT("comp_set_external_scalars")
+void comp_set_external_scalars(CompExecutor* c, const char* json, int32_t len) {
+  if (!c) return;
+  c->setExternalScalars(parseOr(json, len, nlohmann::json::object()));
+}
+
+// In-chain cards (control.artnet) by the BUILT sketch's bare instance keys:
+// `{"clip_<c>_<dev>": {"ch_0": 0.4}}`. Replace-all; "{}" clears.
+EXEC_EXPORT("comp_set_injected_scalars")
+void comp_set_injected_scalars(CompExecutor* c, const char* json, int32_t len) {
+  if (!c) return;
+  c->setInjectedScalars(parseOr(json, len, nlohmann::json::object()));
+}
+
 EXEC_EXPORT("comp_doc_epoch")
 int32_t comp_doc_epoch(CompExecutor* c) { return c ? c->docEpoch() : 0; }
 

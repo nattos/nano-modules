@@ -421,6 +421,17 @@ struct BackgroundM {
   std::optional<std::string> color;
 };
 
+/** A device INCLUDED in the composition (composition.ts DevicePlacement): a
+ *  library device the show uses, enabled or parked. Only a MIDI placement
+ *  means anything to the engine today — its wires (`midi:<deviceId>` sources)
+ *  fold into the build only while it is enabled. */
+struct DevicePlacementM {
+  std::string id;
+  std::string kind;      // "midi"
+  std::string deviceId;  // the library uuid the show's wires address
+  bool enabled = true;
+};
+
 struct CompositionM {
   double baseBPM = 120;
   /** meta.timeSignature[0] (beats per bar; scene grid cell width). */
@@ -429,6 +440,8 @@ struct CompositionM {
   std::vector<TrackM> tracks;
   /** Composition I/O routes (composition.ts Composition.routes). */
   std::vector<RouteM> routes;
+  /** Included devices (composition.ts Composition.devices). */
+  std::vector<DevicePlacementM> devices;
 };
 
 /**
@@ -758,6 +771,17 @@ inline CompositionM parseComposition(const nlohmann::json& j) {
       route.src = parseRouteEnd(r.contains("src") ? r["src"] : nlohmann::json());
       route.dest = parseRouteEnd(r.contains("dest") ? r["dest"] : nlohmann::json());
       comp.routes.push_back(std::move(route));
+    }
+  }
+  if (j.contains("devices") && j["devices"].is_array()) {
+    for (const auto& d : j["devices"]) {
+      if (!d.is_object()) continue;
+      DevicePlacementM p;
+      p.id = d.value("id", std::string());
+      p.kind = d.value("kind", std::string());
+      p.deviceId = d.value("deviceId", std::string());
+      p.enabled = d.value("enabled", true);
+      if (!p.deviceId.empty()) comp.devices.push_back(std::move(p));
     }
   }
   return comp;

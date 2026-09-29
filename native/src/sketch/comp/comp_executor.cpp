@@ -121,6 +121,20 @@ void CompExecutor::resetInternalExecutor() {
   });
   dirty_ = true;  // the fresh executor must re-apply every instance's state
   transportDirty_ = true;
+  // Host-fed scalar tables outlive the executor: a reset must not blank the
+  // MIDI / Art-Net values until the host's next change.
+  ex_->setExternalScalars(externalScalars_);
+  ex_->setInjectedScalars(injectedScalars_);
+}
+
+void CompExecutor::setExternalScalars(const nlohmann::json& values) {
+  externalScalars_ = values.is_object() ? values : nlohmann::json::object();
+  ex_->setExternalScalars(externalScalars_);
+}
+
+void CompExecutor::setInjectedScalars(const nlohmann::json& table) {
+  injectedScalars_ = table.is_object() ? table : nlohmann::json::object();
+  ex_->setInjectedScalars(injectedScalars_);
 }
 
 void CompExecutor::registerSchema(const std::string& moduleType, const nlohmann::json& fields) {

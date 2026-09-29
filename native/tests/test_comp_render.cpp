@@ -4040,3 +4040,103 @@ TEST_CASE("io routes reach the pixels", "[comp_render][io]") {
     CHECK(m.r > 220.0);
   }
 }
+
+// ── Devices: MIDI (external scalars) and Art-Net (injected scalars) ──────────
+
+namespace {
+
+/** One white clip whose sketch wires `src` → its own layer opacity. */
+json mkWiredWhiteClip(json extraDevices, json src) {
+  json devs = json::array({mkDevice("d1", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})});
+  for (auto& d : extraDevices) devs.push_back(std::move(d));
+  json c = mkClip("c1", 0, 8, std::move(devs));
+  c["sketch"]["wires"] = json::array(
+      {{{"id", "x1"}, {"src", std::move(src)},
+        {"dest", {{"instanceKey", "__layer__"}, {"field", "opacity"}}},
+        {"combine", "replace"}, {"magnitude", "unsigned"}}});
+  return c;
+}
+
+double renderMean(Harness& hx, comp::CompExecutor& cx) {
+  const int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+  double m = 0;
+  for (int i = 0; i < 3; i++) {
+    cx.update(0.0);
+    m = meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+  }
+  return m;
+}
+
+}  // namespace
+
+TEST_CASE("devices: a MIDI wire reads the host table only while its placement is enabled",
+          "[comp_devices]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+  const json src = {{"instanceKey", "midi:dev-1"}, {"field", "b0/e00/turn"}};
+  const json table = {{"midi:dev-1", {{"b0/e00/turn", 0.5}}}};
+
+  auto run = [&](json devices, bool feed) {
+    json doc = mkComposition(json::array({mkTrack("t1", json::array({mkWiredWhiteClip(
+                                                        json::array(), src)}))}));
+    if (!devices.is_null()) doc["devices"] = std::move(devices);
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    if (feed) cx.setExternalScalars(table);
+    return renderMean(hx, cx);
+  };
+
+  const json enabled = json::array(
+      {{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}, {"enabled", true}}});
+  const json parked = json::array(
+      {{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}, {"enabled", false}}});
+
+  const double live = run(enabled, true);
+  INFO("enabled + fed: " << live << " (expect ~127: the knob at 0.5 fades the layer)");
+  CHECK(std::abs(live - 127.0) < 25.0);
+  // Not included, parked, or included but silent: the wire is inert and the
+  // layer keeps its authored opacity (full white).
+  CHECK(run(json(), true) > 240.0);
+  CHECK(run(parked, true) > 240.0);
+  CHECK(run(enabled, false) > 240.0);
+}
+
+TEST_CASE("devices: the MIDI table survives an internal executor reset", "[comp_devices]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+  json doc = mkComposition(json::array({mkTrack("t1", json::array({mkWiredWhiteClip(
+      json::array(), {{"instanceKey", "midi:dev-1"}, {"field", "b0/e00/turn"}})}))}));
+  doc["devices"] = json::array({{{"id", "p1"}, {"kind", "midi"}, {"deviceId", "dev-1"}}});
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+  cx.setExternalScalars({{"midi:dev-1", {{"b0/e00/turn", 0.0}}}});
+  CHECK(renderMean(hx, cx) < 20.0);  // the knob at 0: the layer is gone
+  cx.resetInternalExecutor();
+  CHECK(renderMean(hx, cx) < 20.0);
+}
+
+TEST_CASE("devices: Art-Net channels inject into a clip's control.artnet by BARE key",
+          "[comp_devices]") {
+  // The comp's instance keys are namespaced in the shared pool, but the
+  // injected table is keyed by the BUILT sketch's bare keys (clip_<c>_<dev>).
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+  json doc = mkComposition(json::array({mkTrack(
+      "t1", json::array({mkWiredWhiteClip(json::array({mkDevice("art", "control.artnet")}),
+                                          {{"instanceKey", "art"}, {"field", "ch_0"}})}))}));
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.setKeyNamespace("ns1/");
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+  cx.update(0.0);
+  REQUIRE(cx.builtSketch()["instances"].contains("clip_c1_art"));
+  cx.setInjectedScalars({{"clip_c1_art", {{"ch_0", 0.5}}}});
+  const double m = renderMean(hx, cx);
+  INFO("mean " << m << " (expect ~127: ch_0 = 0.5 fades the layer)");
+  CHECK(std::abs(m - 127.0) < 25.0);
+}

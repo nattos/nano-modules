@@ -59,6 +59,46 @@ static std::atomic<uint64_t> g_barrel_present_seq{0};
 uint64_t barrelPresentSeq() { return g_barrel_present_seq.load(std::memory_order_relaxed); }
 
 namespace {
+
+/** Does a built sketch's `instances` object hold a control.artnet card? */
+bool hasArtnetCard(const nlohmann::json& instances) {
+  if (!instances.is_object()) return false;
+  for (const auto& [ikey, inst] : instances.items()) {
+    if (inst.is_object() && inst.value("module_type", std::string()) == "control.artnet")
+      return true;
+  }
+  return false;
+}
+
+/**
+ * Art-Net channels for every control.artnet card in a sketch's `instances`
+ * object, as an injected-scalar table: {instanceKey: {"ch_<i>": value}}.
+ * A card whose universe we have never heard is LEFT OUT: its authored values
+ * stand, exactly as an unseeded wire rail does. Zeroing it would be a
+ * blackout nobody sent.
+ */
+nlohmann::json sampleArtnetCards(artnet::ArtNetHost& ah, const nlohmann::json& instances) {
+  nlohmann::json table = nlohmann::json::object();
+  if (!instances.is_object()) return table;
+  for (const auto& [ikey, inst] : instances.items()) {
+    if (!inst.is_object()) continue;
+    if (inst.value("module_type", std::string()) != "control.artnet") continue;
+    // Field VALUES live under the instance's "state" object; only
+    // module_type sits at the top level.
+    auto sit = inst.find("state");
+    if (sit == inst.end() || !sit->is_object()) continue;
+    const nlohmann::json& st = *sit;
+    const int count = std::clamp(st.value("channel_count", 4), 1, 16);
+    float ch[16] = {};
+    if (!ah.sample(st.value("net", 0), st.value("subnet", 0), st.value("universe", 1),
+                   st.value("base_channel", 1), count, ch))
+      continue;
+    nlohmann::json fields = nlohmann::json::object();
+    for (int i = 0; i < count; ++i) fields["ch_" + std::to_string(i)] = ch[i];
+    table[ikey] = std::move(fields);
+  }
+  return table;
+}
 constexpr unsigned kNumMacros = 16;
 
 #define BRT_LOG(fmt, ...) \
@@ -316,6 +356,10 @@ struct BarrelRuntime::Impl {
     double compElapsed = 0;
     // The next report carries every change-gated field (a client asked).
     bool compResync = true;
+    // Re-read the device feeds (MIDI table, Art-Net cards) against the built
+    // sketch: set on a structure change and on (re)build of the host.
+    bool compDevicesResync = true;
+    bool compHasArtnet = false;
     // The decode pump's counters as last reported (change-gated like the rest).
     int compVideoInjects = -1;
     size_t compVideoSkipped = 0;
@@ -1819,26 +1863,10 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     if (av != pe.lastArtnetVersion && pe.sketch.contains("instances") &&
         pe.sketch["instances"].is_object()) {
       pe.lastArtnetVersion = av;
-      for (auto& [ikey, inst] : pe.sketch["instances"].items()) {
-        if (!inst.is_object()) continue;
-        if (inst.value("module_type", std::string()) != "control.artnet") continue;
-        // Field VALUES live under the instance's "state" object; only
-        // module_type sits at the top level.
-        auto sit = inst.find("state");
-        if (sit == inst.end() || !sit->is_object()) continue;
-        const nlohmann::json& st = *sit;
-        const int count = std::clamp(st.value("channel_count", 4), 1, 16);
-        float ch[16] = {};
-        // A universe we have never heard leaves the instance alone: its
-        // authored values stand, exactly as an unseeded wire rail does. Zeroing
-        // here would be a blackout nobody sent.
-        if (!ah.sample(st.value("net", 0), st.value("subnet", 0),
-                       st.value("universe", 1), st.value("base_channel", 1),
-                       count, ch))
-          continue;
-        for (int i = 0; i < count; ++i)
-          pe.executor->setInjectedScalar(ikey, "ch_" + std::to_string(i), ch[i]);
-      }
+      const nlohmann::json table = sampleArtnetCards(ah, pe.sketch["instances"]);
+      for (const auto& [ikey, fields] : table.items())
+        for (const auto& [field, v] : fields.items())
+          pe.executor->setInjectedScalar(ikey, field, v.get<float>());
     }
   }
 
@@ -2206,6 +2234,7 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
       // The editor's page url: what its dev-server media urls resolve against.
       pe.compMediaBase = m.value("mediaBase", std::string());
       pe.comp->setMediaBase(pe.compMediaBase);
+      pe.compDevicesResync = true;  // a fresh executor holds no device values
     } else if (action == "comp_load_doc") {
       auto doc = nlohmann::json::parse(m.value("json", std::string("{}")), nullptr, false);
       if (!doc.is_discarded()) host.loadDocument(doc);
@@ -2252,6 +2281,36 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
   CompHost& host = *pe.comp;
   comp::CompExecutor& cx = host.executor();
 
+  // Devices → the composition, the barrel's two feeds with the same version
+  // gates: MIDI device values (external scalars; only an ENABLED device
+  // placement's wires survive the build to read them), and Art-Net channels
+  // into in-chain control.artnet cards (injected scalars, by the built
+  // sketch's BARE keys). The Art-Net listener opens only once a card exists.
+  impl_->pollMidi(server);
+  {
+    auto& mh = nano_midi::MidiHost::instance();
+    const uint64_t mv = mh.version();
+    if (mv != pe.lastMidiVersion || pe.compDevicesResync) {
+      pe.lastMidiVersion = mv;
+      cx.setExternalScalars(mh.externalScalars());
+    }
+    static const nlohmann::json kNoInstances = nlohmann::json::object();
+    const nlohmann::json& built = cx.builtSketch();
+    const nlohmann::json* insts = &kNoInstances;
+    if (built.is_object() && built.contains("instances")) insts = &built["instances"];
+    if (pe.compDevicesResync) pe.compHasArtnet = hasArtnetCard(*insts);
+    if (pe.compHasArtnet) {
+      auto& ah = artnet::ArtNetHost::instance();
+      ah.start();
+      const uint64_t av = ah.version();
+      if (av != pe.lastArtnetVersion || pe.compDevicesResync) {
+        pe.lastArtnetVersion = av;
+        cx.setInjectedScalars(sampleArtnetCards(ah, *insts));
+      }
+    }
+    pe.compDevicesResync = false;
+  }
+
   const bool watched = server.key_observed(key);
   const bool hasClients = server.has_clients();
   const double pvInterval = previewIntervalSec();
@@ -2273,6 +2332,7 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
     const uint32_t flags = host.lastFlags();
     const bool structure = (flags & comp::kCompStructureChanged) != 0 || pe.compResync;
     if (structure) {
+      pe.compDevicesResync = true;  // new cards / keys: re-feed next frame
       // Which instances the telemetry reads: (module_type, instance_key).
       pe.compRequired.clear();
       auto req = nlohmann::json::parse(cx.requiredJson(), nullptr, false);

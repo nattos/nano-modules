@@ -334,6 +334,24 @@ struct Builder {
   nlohmann::json instances = nlohmann::json::object();
   int wid = 0;
 
+  /** Out-of-chain wire sources this build keeps: `midi:<uuid>` for every
+   *  ENABLED device placement. A sketch wire from one keeps its src verbatim
+   *  (the executor seeds it from the host's external-scalar table); from any
+   *  other device it drops, so the dest keeps its authored value. */
+  std::set<std::string> externalSrcs;
+
+  /** A wire's src is foldable: a device pushed in this sketch, or an enabled
+   *  external device. */
+  bool srcFoldable(const std::string& srcKey, const std::set<std::string>& pushed) const {
+    return pushed.count(srcKey) || externalSrcs.count(srcKey);
+  }
+  /** The folded src endpoint: an external source verbatim, a local device
+   *  re-keyed to `localKey`. */
+  nlohmann::json foldSrc(const nlohmann::json& src, const std::string& localKey) const {
+    if (externalSrcs.count(src.value("instanceKey", std::string()))) return src;
+    return remapEndpoint(src, localKey);
+  }
+
   struct Writer {
     std::string key;
     std::string field;
@@ -474,10 +492,10 @@ struct Builder {
       if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
       const std::string srcKey = w["src"].value("instanceKey", std::string());
       const std::string destKey = w["dest"].value("instanceKey", std::string());
-      if (!tpushed.count(srcKey) || !tpushed.count(destKey)) continue;
+      if (!srcFoldable(srcKey, tpushed) || !tpushed.count(destKey)) continue;
       nlohmann::json w2 = w;  // {...w} — spread keeps mod/combine/magnitude/...
       w2["id"] = "tw" + std::to_string(wid++);
-      w2["src"] = remapEndpoint(w["src"], trackInstanceKey(track->id, srcKey));
+      w2["src"] = foldSrc(w["src"], trackInstanceKey(track->id, srcKey));
       w2["dest"] = remapEndpoint(w["dest"], trackInstanceKey(track->id, destKey));
       wires.push_back(std::move(w2));
     }
@@ -508,10 +526,10 @@ struct Builder {
       if (w["dest"].value("instanceKey", std::string()) != kLayerTargetId) continue;
       if (w["dest"].value("field", std::string()) != "opacity") continue;
       const std::string srcKey = w["src"].value("instanceKey", std::string());
-      if (!tpushed.count(srcKey)) continue;
+      if (!srcFoldable(srcKey, tpushed)) continue;
       nlohmann::json w2 = w;
       w2["id"] = "tw" + std::to_string(wid++);
-      w2["src"] = remapEndpoint(w["src"], trackInstanceKey(owner->id, srcKey));
+      w2["src"] = foldSrc(w["src"], trackInstanceKey(owner->id, srcKey));
       w2["dest"] = {{"instanceKey", layerKey}, {"field", layerField}};
       wires.push_back(std::move(w2));
     }
@@ -646,10 +664,10 @@ struct Builder {
             if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
             const std::string srcKey = w["src"].value("instanceKey", std::string());
             const std::string destKey = w["dest"].value("instanceKey", std::string());
-            if (!fpushed.count(srcKey) || !fpushed.count(destKey)) continue;
+            if (!srcFoldable(srcKey, fpushed) || !fpushed.count(destKey)) continue;
             nlohmann::json w2 = w;
             w2["id"] = "fw" + std::to_string(wid++);
-            w2["src"] = remapEndpoint(w["src"], clipInstanceKey(fc.id, srcKey));
+            w2["src"] = foldSrc(w["src"], clipInstanceKey(fc.id, srcKey));
             w2["dest"] = remapEndpoint(w["dest"], clipInstanceKey(fc.id, destKey));
             wires.push_back(std::move(w2));
           }
@@ -765,14 +783,14 @@ struct Builder {
       const std::string srcKey = w["src"].value("instanceKey", std::string());
       const std::string destKey = w["dest"].value("instanceKey", std::string());
       const bool destIsLayer = destKey == kLayerTargetId;
-      if (!pushed.count(srcKey) || (!destIsLayer && !pushed.count(destKey))) continue;
+      if (!srcFoldable(srcKey, pushed) || (!destIsLayer && !pushed.count(destKey))) continue;
       if (destIsLayer &&
           (w["dest"].value("field", std::string()) != "opacity" || layerKey.empty())) {
         continue;
       }
       nlohmann::json w2 = w;
       w2["id"] = "cw" + std::to_string(wid++);
-      w2["src"] = remapEndpoint(w["src"], clipInstanceKey(clip.id, srcKey));
+      w2["src"] = foldSrc(w["src"], clipInstanceKey(clip.id, srcKey));
       // The LAYER target is the composite's own opacity — a scalar, and a
       // different field name — so it is rebuilt rather than re-pointed.
       w2["dest"] = destIsLayer
@@ -1017,10 +1035,10 @@ struct Builder {
       if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
       const std::string srcKey = w["src"].value("instanceKey", std::string());
       const std::string destKey = w["dest"].value("instanceKey", std::string());
-      if (!pushedIds.count(srcKey) || !pushedIds.count(destKey)) continue;
+      if (!srcFoldable(srcKey, pushedIds) || !pushedIds.count(destKey)) continue;
       nlohmann::json w2 = w;
       w2["id"] = "tw" + std::to_string(wid++);
-      w2["src"] = remapEndpoint(w["src"], trackInstanceKey(track->id, srcKey));
+      w2["src"] = foldSrc(w["src"], trackInstanceKey(track->id, srcKey));
       w2["dest"] = remapEndpoint(w["dest"], trackInstanceKey(track->id, destKey));
       wires.push_back(std::move(w2));
     }
@@ -1331,6 +1349,9 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
   using namespace build_detail;
   Builder b{cat, railBases, railSigned};
   if (comp) {
+    for (const auto& d : comp->devices) {
+      if (d.kind == "midi" && d.enabled) b.externalSrcs.insert("midi:" + d.deviceId);
+    }
     for (const auto& r : comp->routes) {
       if (r.dest.isPort && r.dest.portId == kPortIn && routeIsLegal(*comp, r))
         b.inRouted.insert(r.dest.trackId);

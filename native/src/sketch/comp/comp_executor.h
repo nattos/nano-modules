@@ -103,6 +103,18 @@ class CompExecutor {
    *  to this comp. Empty (the default) on web. */
   void setKeyNamespace(const std::string& ns);
   const std::string& keyNamespace() const { return keyNamespace_; }
+  /**
+   * Host-fed scalar tables, forwarded to the composite executor (and kept
+   * across resetInternalExecutor). Replace-all, like SketchExecutor's:
+   *   - EXTERNAL: `{"midi:<uuid>": {"b0/e05/turn": 0.42}}` — device controls.
+   *     Only wires the build kept reach them (an ENABLED device placement's).
+   *   - INJECTED: `{"<bare instance key>": {"ch_0": 0.4}}` — in-chain
+   *     `control.artnet` cards. Keys are the BUILT sketch's bare keys
+   *     (`clip_<clip>_<dev>`, `track_<track>_<dev>`), never namespaced: the
+   *     key namespace prefixes the shared instance pool, not the sketch.
+   */
+  void setExternalScalars(const nlohmann::json& values);
+  void setInjectedScalars(const nlohmann::json& table);
   /** The transport pre-pass executor (instance prefix lookups). */
   sketch_executor::SketchExecutor* transportExecutor() { return transportEx_.get(); }
   /** Re-apply every instance's state next frame, on both executors — after a
@@ -250,6 +262,10 @@ class CompExecutor {
   // ── Readbacks (epoch-gated; each returns a persistent scratch string) ──
   /** Ordered (moduleType, instanceKey) pairs of the active chain. */
   const std::string& requiredJson();
+  /** The current composite sketch's structural basis ({chain, wires,
+   *  instances}, authored state — no live outputs). Hosts scan it for
+   *  in-chain cards they feed (control.artnet). Null before a build. */
+  const nlohmann::json& builtSketch() const { return cleanSketch_; }
   /** Ordered instance keys of the active chain (trace remap). */
   const std::string& chainKeysJson();
   /** The decode pump's active set (VideoClipDesc[]; target ∪ displayed while
@@ -371,6 +387,8 @@ class CompExecutor {
   bool clipLoopMode_ = true;
 
   std::unique_ptr<sketch_executor::SketchExecutor> ex_;
+  nlohmann::json externalScalars_ = nlohmann::json::object();
+  nlohmann::json injectedScalars_ = nlohmann::json::object();
 
   nlohmann::json cleanSketch_;  // structural basis (mirror-built, no live outputs)
   nlohmann::json layerTargets_ = nlohmann::json::object();  // ownerId → {instanceKey, field}
