@@ -141,7 +141,11 @@ function createWindow() {
       // Keep this in step with --app-titlebar-h in widgets/app-titlebar.ts.
       trafficLightPosition: { x: 16, y: 7 },
     } : {
-      titleBarOverlay: { color: '#1a1a1a', symbolColor: '#b0b0b0', height: 28 },
+      // The overlay paints its own background: make it <app-titlebar>'s
+      // (--app-bg-color2 / --app-text-color2 in src/style.css), or the
+      // buttons sit in a box of their own. One pixel short of the bar, so the
+      // bar's bottom border runs on under them.
+      titleBarOverlay: { color: '#1a1d24', symbolColor: '#b0b0b0', height: 27 },
     }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

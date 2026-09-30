@@ -116,6 +116,15 @@ html, body {
   overscroll-behavior-x: none;
 }
 
+/* Scrollbars, everywhere: thin, a tint thumb on no track. Windows draws
+   classic grey scrollbars without this; macOS's overlay scrollbars barely
+   change. `scrollbar-color` INHERITS, through shadow roots too, so :root
+   styles every scroller in every component (a `::-webkit-scrollbar` rule here
+   would reach none of them). `scrollbar-width` doesn't: `*` covers this
+   document, widgets/scrollbars.ts the shadow roots. */
+:root { scrollbar-color: var(--app-tint-5) transparent; }
+* { scrollbar-width: thin; }
+
 body {
   background: var(--app-bg-color1);
   color: var(--app-text-color1);

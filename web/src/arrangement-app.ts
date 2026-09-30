@@ -6,6 +6,9 @@
  * timeline-native worker arrives in Milestone 2.
  */
 
+// Before any element class is defined: thin scrollbars in every shadow root.
+import './widgets/scrollbars';
+
 // First: pick the composition engine before the app element can warm one.
 import './views/arrangement/engine/engine-select-boot';
 import './views/arrangement/arrangement-app';

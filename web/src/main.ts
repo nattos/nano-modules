@@ -12,6 +12,9 @@
  * the persisted setting decides.
  */
 
+// Before any element class is defined: thin scrollbars in every shadow root.
+import './widgets/scrollbars';
+
 // Global (document-level) Line Awesome load: <ui-icon> inlines the CSS into
 // its shadow root, but @font-face only registers at document level — without
 // this import every glyph renders as a blank box.
