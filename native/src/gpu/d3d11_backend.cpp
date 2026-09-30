@@ -18,6 +18,7 @@
 // and the failure looks exactly like a GPU fault.
 
 #include "gpu/gpu_backend.h"
+#include "platform/paths.h"
 
 #include <windows.h>
 #include <d3d11_1.h>
@@ -226,6 +227,15 @@ using PFN_D3D11CreateDevice_t = HRESULT(WINAPI*)(
 using PFN_D3DCompile_t = HRESULT(WINAPI*)(
     LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
     LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+using PFN_D3DCreateBlob_t = HRESULT(WINAPI*)(SIZE_T, ID3DBlob**);
+
+/// FNV-1a, 64-bit, from `seed` — two seeds give the shader cache a file name
+/// and an independent check on what's inside it.
+uint64_t fnv1a64(const std::string& s, uint64_t seed) {
+  uint64_t h = seed;
+  for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; }
+  return h;
+}
 
 class D3D11Backend : public GPUBackend {
  public:
@@ -1105,7 +1115,10 @@ class D3D11Backend : public GPUBackend {
     if (!create) { std::fprintf(stderr, "[d3d11] no D3D11CreateDevice\n"); return; }
 
     HMODULE comp = LoadLibraryA("d3dcompiler_47.dll");
-    if (comp) compile_ = (PFN_D3DCompile_t)GetProcAddress(comp, "D3DCompile");
+    if (comp) {
+      compile_ = (PFN_D3DCompile_t)GetProcAddress(comp, "D3DCompile");
+      createBlob_ = (PFN_D3DCreateBlob_t)GetProcAddress(comp, "D3DCreateBlob");
+    }
     if (!compile_) {
       std::fprintf(stderr,
           "[d3d11] d3dcompiler_47.dll not usable — no shader can be compiled. "
@@ -1269,9 +1282,12 @@ class D3D11Backend : public GPUBackend {
 
   // FXC is slow, and the same source gets compiled repeatedly: every effect
   // instance builds its own PSOs, and an effect with six entry points in one
-  // shader compiles that source six times. The suite spends most of its wall
-  // clock here under wine. Cache on (source, entry, target) — the compiler is
-  // a pure function of exactly those three.
+  // shader compiles that source six times. Cache on (source, entry, target) —
+  // the compiler is a pure function of exactly those three.
+  //
+  // And across runs, on disk (<dataRoot>/Cache/Shaders): a cold start compiles
+  // every effect's shaders, and a few take seconds each in FXC — the
+  // compositor took 26 s to come up on real hardware, 25 of them here.
   bool compile(const std::string& src, const std::string& entry,
                const char* target, Com<ID3DBlob>& out) {
     if (!compile_) return false;
@@ -1281,20 +1297,73 @@ class D3D11Backend : public GPUBackend {
       out.p->AddRef();
       return true;
     }
-    Com<ID3DBlob> err;
-    HRESULT hr = compile_(src.data(), src.size(), "nano", nullptr, nullptr,
-                          entry.c_str(), target, 0, 0, out.put(), err.put());
-    if (FAILED(hr)) {
-      std::fprintf(stderr, "[d3d11] compile %s (%s) failed: %s\n", entry.c_str(),
-                   target,
-                   err ? (const char*)err->GetBufferPointer() : "(no message)");
-      std::fflush(stderr);
-      if (strictMode()) std::abort();
-      return false;
+    if (!loadCachedBlob(key, out)) {
+      Com<ID3DBlob> err;
+      HRESULT hr = compile_(src.data(), src.size(), "nano", nullptr, nullptr,
+                            entry.c_str(), target, 0, 0, out.put(), err.put());
+      if (FAILED(hr)) {
+        std::fprintf(stderr, "[d3d11] compile %s (%s) failed: %s\n", entry.c_str(),
+                     target,
+                     err ? (const char*)err->GetBufferPointer() : "(no message)");
+        std::fflush(stderr);
+        if (strictMode()) std::abort();
+        return false;
+      }
+      storeCachedBlob(key, out.p);
     }
     out.p->AddRef();              // the cache holds a reference of its own
     blobCache_.emplace(key, out.p);
     return true;
+  }
+
+  // The on-disk half. A file is <hash A>.dxbc holding a magic, hash B (a
+  // second seed over the same key, so a name collision reads as a miss) and
+  // the DXBC. Written atomically; anything unreadable is a miss.
+  static constexpr char kCacheMagic[8] = {'N', 'D', 'X', 'B', 'C', '0', '0', '1'};
+
+  const std::string& shaderCacheDir() {
+    if (!cacheDirResolved_) {
+      cacheDirResolved_ = true;
+      const std::string root = nano_paths::dataRootPath();
+      if (!root.empty()) {
+        const std::string cache = nano_paths::joinPath(root, "Cache");
+        const std::string dir = nano_paths::joinPath(cache, "Shaders");
+        if (nano_paths::ensureDir(root) && nano_paths::ensureDir(cache) && nano_paths::ensureDir(dir)) {
+          cacheDir_ = dir;
+        }
+      }
+    }
+    return cacheDir_;
+  }
+
+  std::string cachePath(const std::string& key) {
+    char name[32];
+    std::snprintf(name, sizeof name, "%016llx.dxbc",
+                  (unsigned long long)fnv1a64(key, 14695981039346656037ull));
+    return nano_paths::joinPath(shaderCacheDir(), name);
+  }
+
+  bool loadCachedBlob(const std::string& key, Com<ID3DBlob>& out) {
+    if (!createBlob_ || shaderCacheDir().empty()) return false;
+    std::string bytes;
+    if (!nano_paths::readFileBytes(cachePath(key), bytes)) return false;
+    const uint64_t check = fnv1a64(key, 0x9e3779b97f4a7c15ull);
+    if (bytes.size() <= 16 || std::memcmp(bytes.data(), kCacheMagic, 8) != 0 ||
+        std::memcmp(bytes.data() + 8, &check, 8) != 0) {
+      return false;
+    }
+    if (FAILED(createBlob_(bytes.size() - 16, out.put()))) return false;
+    std::memcpy(out->GetBufferPointer(), bytes.data() + 16, bytes.size() - 16);
+    return true;
+  }
+
+  void storeCachedBlob(const std::string& key, ID3DBlob* blob) {
+    if (shaderCacheDir().empty()) return;
+    const uint64_t check = fnv1a64(key, 0x9e3779b97f4a7c15ull);
+    std::string bytes(kCacheMagic, 8);
+    bytes.append(reinterpret_cast<const char*>(&check), 8);
+    bytes.append(static_cast<const char*>(blob->GetBufferPointer()), blob->GetBufferSize());
+    nano_paths::writeFileAtomic(cachePath(key), bytes);  // best effort: a miss next time
   }
 
   int32_t makeRenderPSO(int32_t vsHandle, const std::string& vsEntry,
@@ -1422,6 +1491,9 @@ class D3D11Backend : public GPUBackend {
   // renderSetVertexBuffer — see there.
   uint32_t vertexStride_ = 0;
   PFN_D3DCompile_t compile_ = nullptr;
+  PFN_D3DCreateBlob_t createBlob_ = nullptr;
+  bool cacheDirResolved_ = false;
+  std::string cacheDir_;
   std::vector<Resource> resources_;
   std::vector<int32_t> free_;
   std::unordered_map<std::string, ID3DBlob*> blobCache_;

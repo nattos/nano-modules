@@ -15,6 +15,9 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -212,4 +215,70 @@ TEST_CASE("copyTexture across formats keeps red and blue apart",
   CHECK((int)px[1] == 0);
   CHECK((int)px[2] == 0);
   CHECK((int)px[3] == 255);
+}
+
+namespace {
+
+/// The gradient kernel, run once on `gpu`: its pixels, or empty on any failure.
+std::vector<uint8_t> renderGradient(gpu::GPUBackend& gpu) {
+  const uint32_t N = 16;
+  const int32_t tex = gpu.createTexture(N, N, /*RGBA8*/ 1);
+  const int32_t lib = gpu.createShaderModule(gradientSource(gpu.getBackend()));
+  if (tex < 0 || lib < 0) return {};
+  const int32_t pso = gpu.createComputePSO(lib, "nano_gradient");
+  if (pso < 0) return {};
+  const int32_t pass = gpu.beginComputePass();
+  gpu.computeSetPSO(pass, pso);
+  gpu.computeSetTexture(pass, tex, 0, 1);
+  gpu.computeDispatch(pass, N / 8, N / 8, 1);
+  gpu.endComputePass(pass);
+  gpu.submit();
+  return gpu.readbackTexture(tex, N, N);
+}
+
+}  // namespace
+
+// D3D11 keeps compiled DXBC on disk (<dataRoot>/Cache/Shaders): FXC made a
+// cold compositor start take 26 s. A fresh backend must pick the blobs up, and
+// a damaged one must read as a miss and recompile — never a broken shader.
+TEST_CASE("D3D11 compiled shaders persist across backends; a damaged entry recompiles",
+          "[gpu_conformance]") {
+  namespace fs = std::filesystem;
+  {
+    auto probe = gpu::createBackend();
+    if (!probe || probe->getBackend() != kBackendD3D11) SKIP("the DXBC cache is D3D11's");
+  }
+  const fs::path root = fs::temp_directory_path() / ("nano_dxbc_" + std::to_string(std::rand()));
+  fs::remove_all(root);
+#ifdef _WIN32
+  _putenv_s("NANO_DATA_DIR", root.string().c_str());
+#endif
+  const fs::path dir = root / "Cache" / "Shaders";
+
+  std::vector<uint8_t> cold;
+  { auto gpu = gpu::createBackend(); cold = renderGradient(*gpu); }
+  REQUIRE_FALSE(cold.empty());
+  std::vector<fs::path> files;
+  for (const auto& e : fs::directory_iterator(dir)) files.push_back(e.path());
+  REQUIRE(files.size() == 1);
+  const auto stamp = fs::last_write_time(files[0]);
+
+  // Warm: served from the file, which stays as it was.
+  std::vector<uint8_t> warm;
+  { auto gpu = gpu::createBackend(); warm = renderGradient(*gpu); }
+  CHECK(warm == cold);
+  CHECK((fs::last_write_time(files[0]) == stamp));
+
+  // Damaged: a miss, recompiled and rewritten.
+  std::ofstream(files[0], std::ios::binary | std::ios::trunc) << "NDXBC001 not a shader at all";
+  std::vector<uint8_t> repaired;
+  { auto gpu = gpu::createBackend(); repaired = renderGradient(*gpu); }
+  CHECK(repaired == cold);
+  CHECK(fs::file_size(files[0]) > 64);
+
+#ifdef _WIN32
+  _putenv_s("NANO_DATA_DIR", "");
+#endif
+  std::error_code ec;
+  fs::remove_all(root, ec);
 }
