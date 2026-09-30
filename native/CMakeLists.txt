@@ -354,8 +354,8 @@ endif()
 #
 # A portable core (DXV, the blitter, routing, the pump) plus one platform layer:
 # stills, url fetch and the encoder (AVFoundation/ImageIO on macOS; WIC and
-# WinHTTP on Windows, whose video decode and encode are still to come — see
-# COMPOSITOR.md M4).
+# WinHTTP and Media Foundation decode on Windows, whose encode is still to come
+# — see COMPOSITOR.md M4).
 if(APPLE OR WIN32)
   set(MEDIA_SHADER_DIR "${CMAKE_SOURCE_DIR}/src/media/shaders")
   set(MEDIA_SHADER_HEADERS
@@ -402,9 +402,10 @@ if(APPLE OR WIN32)
   else()
     target_sources(nano_media PRIVATE
       src/media/wic_source.cpp
+      src/media/mf_source.cpp
       src/media/media_fetch_win.cpp
       src/media/video_encoder_win.cpp)
-    target_link_libraries(nano_media PUBLIC windowscodecs ole32 winhttp)
+    target_link_libraries(nano_media PUBLIC windowscodecs ole32 winhttp mfplat mfreadwrite)
   endif()
 endif()
 

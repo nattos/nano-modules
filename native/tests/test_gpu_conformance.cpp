@@ -217,6 +217,7 @@ TEST_CASE("copyTexture across formats keeps red and blue apart",
   CHECK((int)px[3] == 255);
 }
 
+#ifdef _WIN32  // D3D11 only: a SKIP elsewhere would read as a ctest failure
 namespace {
 
 /// The gradient kernel, run once on `gpu`: its pixels, or empty on any failure.
@@ -282,3 +283,4 @@ TEST_CASE("D3D11 compiled shaders persist across backends; a damaged entry recom
   std::error_code ec;
   fs::remove_all(root, ec);
 }
+#endif  // _WIN32

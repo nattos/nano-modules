@@ -9,7 +9,7 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-crossfade
  */
 
-import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -33,7 +33,7 @@ beforeAll(() => { URL = arrangementUrl(BASE); });
 describe('Crossfade transition (GPU)', () => {
   jest.setTimeout(180_000);
 
-  windowsGap(backend, 'H.264 decode (M4 step 4)')('an announced follow launch crossfades: both pumps overlap, then the fork releases', async () => {
+  it('an announced follow launch crossfades: both pumps overlap, then the fork releases', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.on('pageerror', (err) => errors.push(String(err)));

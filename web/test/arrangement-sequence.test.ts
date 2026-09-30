@@ -22,7 +22,7 @@
 
 import { interiorGridUVs, lumaSpread, sampleMonitor, waitForMonitor } from './arr-test-helpers';
 
-import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -207,7 +207,7 @@ describe('Sequence interior: follow autopilot on real media (GPU)', () => {
     throw new Error(`timeout waiting for ${label}; still=${from}`);
   }
 
-  windowsGap(backend, 'H.264 decode (M4 step 4)')('hops A→B→A inside the interior, priming the incoming sub-clip each time', async () => {
+  it('hops A→B→A inside the interior, priming the incoming sub-clip each time', async () => {
     const errors: string[] = [];
     page.removeAllListeners('pageerror');
     page.on('pageerror', (err) => errors.push(String(err)));

@@ -16,6 +16,7 @@
 
 #include "wasm_paths.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <memory>
@@ -54,7 +55,9 @@ struct Gpu {
   bool ok() const { return backend && backend->getBackend() != 1; }  // native: Metal or D3D11
 
   int decoded(FrameSource& s, int idx, int32_t tex) {
-    REQUIRE(s.decode(backend.get(), idx, tex));
+    const bool ok = s.decode(backend.get(), idx, tex);
+    INFO("decode " << idx << ": " << s.error());
+    REQUIRE(ok);
     backend->submit();
     return rampFrame(backend->readbackTexture(tex, s.width(), s.height()));
   }
@@ -64,7 +67,7 @@ struct Gpu {
 
 TEST_CASE("openFrameSource routes each file to its decoder", "[frame_source]") {
   CHECK(open("test_dxv.mov")->codec().substr(0, 2) == "DX");
-  if (kPlatformDecodesVideo) CHECK(open("test_h264.mp4")->codec() == "avc1");
+  CHECK(open("test_h264.mp4")->codec() == "avc1");
   const std::string png = open("test_image_rgba.png")->codec();  // image:public.png / image:png
   CHECK(png.rfind("image:", 0) == 0);
   CHECK(png.find("png") != std::string::npos);
@@ -75,11 +78,10 @@ TEST_CASE("openFrameSource routes each file to its decoder", "[frame_source]") {
   // Every decoder's refusal is named, not just the last one's.
   CHECK(why.find("dxv:") != std::string::npos);
   CHECK(why.find("image:") != std::string::npos);
-  if (kPlatformDecodesVideo) CHECK(why.find("avfoundation:") != std::string::npos);
+  CHECK(why.find(std::string(kPlatformVideoDecoder) + ":") != std::string::npos);
 }
 
-TEST_CASE("an AVFoundation source reports the container's shape", "[frame_source]") {
-  NANO_REQUIRE_VIDEO_DECODE();
+TEST_CASE("the platform video source reports the container's shape", "[frame_source]") {
   auto s = open("test_h264_ramp.mp4");
   CHECK(s->width() == 64);
   CHECK(s->height() == 64);
@@ -88,8 +90,7 @@ TEST_CASE("an AVFoundation source reports the container's shape", "[frame_source
   CHECK(s->formatCode() == 0);  // BGRA8, sampled by the pump's blit
 }
 
-TEST_CASE("AVFoundation frames are exact: forward, backward, mid-GOP", "[frame_source][gpu]") {
-  NANO_REQUIRE_VIDEO_DECODE();
+TEST_CASE("platform video frames are exact: forward, backward, mid-GOP", "[frame_source][gpu]") {
   Gpu g;
   if (!g.ok()) SKIP("No GPU device available");
   auto s = open("test_h264_ramp.mp4");
@@ -142,6 +143,13 @@ TEST_CASE("decode timing on a real clip", "[.bench]") {
   Gpu g;
   if (!g.ok()) SKIP("No GPU device available");
   std::string why;
+  double openMs = 0;
+  for (int k = 0; k < 3; k++) {  // the first open pays one-time setup; report the last
+    const auto t0 = std::chrono::steady_clock::now();
+    auto probe = openFrameSource(path, &why);
+    openMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    REQUIRE(probe);
+  }
   auto s = openFrameSource(path, &why);
   INFO(why);
   REQUIRE(s);
@@ -166,7 +174,8 @@ TEST_CASE("decode timing on a real clip", "[.bench]") {
     seekSum += ms;
     seekMax = std::max(seekMax, ms);
   }
-  WARN(s->codec() << " " << s->width() << "x" << s->height() << ": sequential mean "
+  WARN(s->codec() << " " << s->width() << "x" << s->height() << ": open " << openMs
+                  << " ms, sequential mean "
                   << seqSum / n << " ms (max " << seqMax << "), seek mean " << seekSum / seeks
                   << " ms (max " << seekMax << ")");
 }

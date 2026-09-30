@@ -8,7 +8,7 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-follow
  */
 
-import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
+import { arrangementUrl, forEachCompBackend } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -146,7 +146,7 @@ describe('Follow actions (GPU)', () => {
     expect(delta!).toBeLessThan(1.7);
   });
 
-  windowsGap(backend, 'H.264 decode (M4 step 4)')('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
+  it('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
     // The user-visible artifact this pins: with warm-only precache the follow
     // launch always DEFERRED (warm pumps never inject → readiness can't latch
     // pre-request), and the 2-4 frame commit round-trip rendered the outgoing
@@ -191,13 +191,11 @@ describe('Follow actions (GPU)', () => {
     });
 
     // The INITIAL launch legitimately defers (cold media, Precise): wait for
-    // the commit, then baseline the pending-window counter.
+    // the commit.
     await page.waitForFunction((x: any) => {
       const s = (window as any).arrangementStore.sceneLaunchState[x.st];
       return !!s && s.sceneId === x.a;
     }, { timeout: 20_000 }, ids);
-    const basePending = await page.evaluate(
-      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
 
     // The candidate precache arms immediately (loop pass 1.83 s < the 2 s
     // window): B must ship PRIMED and its pump must inject the entry frame.
@@ -206,6 +204,12 @@ describe('Follow actions (GPU)', () => {
       const primed = bridge?.compPumpDescs?.some((d: any) => d.clipId === x.b && d.prime);
       return !!primed && !!bridge?.videoClipPrimed(x.b);
     }, { timeout: 15_000 }, ids);
+    // Baseline the pending-window counter only NOW: the store can show A
+    // before the engine's report of that initial deferral lands (across a LAN
+    // it lands after), and by the time B is primed that cycle is long over —
+    // while the first hop (~1.83 s in) hasn't happened yet.
+    const basePending = await page.evaluate(
+      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
 
     // Three hops of the ping-pong (A→B→A→B), every one a fast-path commit.
     let cur: string | null = ids.a;
@@ -221,7 +225,7 @@ describe('Follow actions (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  windowsGap(backend, 'H.264 decode (M4 step 4)')('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
+  it('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
     // Six scenes; the follower on A picks LAST (ordinal 5) — beyond the
     // 4-nearest heuristic, so only the effect's announce can prime it. The
     // pin: the announced target ships primed and the hop commits with zero
@@ -264,14 +268,12 @@ describe('Follow actions (GPU)', () => {
     });
 
     // The initial launch legitimately defers (cold media) — wait for the
-    // commit, then baseline the pending-window counter.
+    // commit.
     await page.waitForFunction((x: any) => {
       const s = (window as any).arrangementStore.sceneLaunchState[x.st];
       const pend = (globalThis as any).__arrScenesPending ?? {};
       return !!s && s.sceneId === x.a && !pend[x.st];
     }, { timeout: 20_000 }, ids);
-    const basePending = await page.evaluate(
-      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
 
     // The ANNOUNCED target (ordinal 5) must ship primed with a real injected
     // entry frame — proximity alone would never reach it from ordinal 0.
@@ -280,6 +282,9 @@ describe('Follow actions (GPU)', () => {
       const primed = bridge?.compPumpDescs?.some((d: any) => d.clipId === x.last && d.prime);
       return !!primed && !!bridge?.videoClipPrimed(x.last);
     }, { timeout: 15_000 }, ids);
+    // Baseline now, not at the commit: see the ping-pong case above.
+    const basePending = await page.evaluate(
+      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
 
     // The follow fires at the first looped edge (~1.83 s) → LAST, fast-commit.
     const next = await waitForSceneChange(ids.st, ids.a, 'A jumps to LAST');

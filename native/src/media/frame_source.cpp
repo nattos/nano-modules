@@ -6,6 +6,8 @@
 #include "image_source.h"
 #ifdef __APPLE__
 #include "avf_source.h"
+#elif defined(_WIN32)
+#include "mf_source.h"
 #endif
 
 namespace nano_media {
@@ -20,7 +22,7 @@ bool FrameSource::decode(gpu::GPUBackend* backend, int idx, int32_t outTexHandle
 }
 
 std::unique_ptr<FrameSource> openFrameSource(const std::string& path, std::string* error) {
-  // DXV first: AVFoundation would happily parse a DXV .mov and then fail to
+  // DXV first: AVFoundation (or Media Foundation) would happily parse a DXV .mov and then fail to
   // decode it (no system codec), and the codec tag settles it for free.
   auto dxv = std::make_unique<DxvSource>();
   if (dxv->open(path)) return dxv;
@@ -32,6 +34,10 @@ std::unique_ptr<FrameSource> openFrameSource(const std::string& path, std::strin
   e.clear();
   if (auto vid = openAvfVideoSource(path, &e)) return vid;
   why += "; avfoundation: " + e;
+#elif defined(_WIN32)
+  e.clear();
+  if (auto vid = openMfVideoSource(path, &e)) return vid;
+  why += "; mediafoundation: " + e;
 #endif
   if (error) *error = why;
   return nullptr;

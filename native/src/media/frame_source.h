@@ -7,6 +7,8 @@
 //   DxvSource        (dxv_source.h)  DXV3 via the reused wasm demuxer + BC1 blit
 //   AvfVideoSource   (avf_source.mm) everything AVFoundation decodes (H.264,
 //                                    HEVC, ProRes, ...)
+//   MfVideoSource    (mf_source.cpp) everything Media Foundation decodes, on
+//                                    Windows (H.264, HEVC with the extension, ...)
 //   ImageFrameSource (image_source.h: avf_source.mm over ImageIO, wic_source.cpp
 //                    over WIC) a still (PNG, JPEG, ...) as a 1-frame video
 //
@@ -81,7 +83,8 @@ class FrameSource {
 
 /**
  * Open `path` with the first decoder that takes it: DXV (the codec tag), then
- * a still image, then AVFoundation. Null with `*error` naming every refusal
+ * a still image, then the platform's video decoder (AVFoundation / Media
+ * Foundation). Null with `*error` naming every refusal
  * when nothing can.
  */
 std::unique_ptr<FrameSource> openFrameSource(const std::string& path, std::string* error);

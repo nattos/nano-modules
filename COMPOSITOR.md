@@ -481,15 +481,23 @@ works. Order:
    - **Adapter trap:** Electron's GPU process must open the handle on the *same adapter*. On
      hybrid-GPU laptops it may not. Put the adapter LUID in the announce, and have the web side fall
      back to lanes on a mismatch. This is the open "which GPU" question from the port notes.
-4. **Media Foundation decode** (`MfVideoSource : FrameSource`).
-   - Use `IMFSourceReader` with CPU output (`MFVideoFormat_RGB32` via
-     `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING`), matching AVF's CPU-buffer `prepare()` →
-     render-thread `upload()` split.
-   - Resist sharing our D3D11 device with MF's DXVA path at first. That needs
-     `ID3D10Multithread::SetMultithreadProtected` on a device the engine assumes is single-threaded.
-   - Exact-frame seeks use the same logic as AVF: `SetCurrentPosition` lands on a prior keyframe;
-     decode forward and drop samples until the timestamp covers the target. Pin it with the same
-     `test_h264_ramp.mp4` exactness test (grey `16+3N`).
+4. **Media Foundation decode — DONE (2026-09-30)** (`src/media/mf_source.cpp`, `MfVideoSource`).
+   - `IMFSourceReader` → RGB32, read back and repacked as opaque BGRA8 in `prepare()`, one
+     `writeTexture` in `upload()` — AVF's CPU-buffer split. Random access exactly as AVF: read
+     forward within ~a second, else seek; frame index = PTS (from the FIRST frame's — an MP4's first
+     PTS isn't 0) × fps. Seeks aim half a frame early and are clamped inside `MF_PD_DURATION`
+     (the last frames' times lie past it); a final sample can arrive WITH the end-of-stream flag.
+   - Hardware decode + colour conversion (DXVA) on a PRIVATE multithread-protected D3D11 device
+     behind an `IMFDXGIDeviceManager` — never the engine's device. Software MF seeked 10x slower
+     than AVF (231 ms vs 23 on a 720p single-IDR clip); DXVA: 64 ms. `NANO_MF_SOFTWARE=1` forces
+     software.
+   - COM/MF are process-wide (`CoIncrementMTAUsage` + one `MFStartup`), never torn down: a
+     per-thread teardown in a thread_local destructor runs under the loader lock and deadlocked the
+     pump's decode threads.
+   - Pinned by the same `test_h264_ramp.mp4` exactness test (forward, backward, mid-GOP) and the
+     async pump cases, on the Ally; the web suites' H.264 cases run there too.
+   - Still to do: skip the RGB32 conversion of frames a seek decodes past (read native NV12, convert
+     only the wanted one) — the remaining 3x on seeks.
 5. **Media Foundation encode** (`VideoEncoder`'s Windows twin).
    - `IMFSinkWriter` → H.264 in MP4 with `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`.
    - Tag `MF_MT_VIDEO_PRIMARIES` / `MF_MT_TRANSFER_FUNCTION` / `MF_MT_YUV_MATRIX` as BT.709. Untagged

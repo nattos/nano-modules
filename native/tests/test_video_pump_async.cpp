@@ -84,7 +84,6 @@ struct Harness {
 }  // namespace
 
 TEST_CASE("async: not ready while opening, then the exact frame", "[video_pump][gpu]") {
-  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -100,7 +99,6 @@ TEST_CASE("async: not ready while opening, then the exact frame", "[video_pump][
 }
 
 TEST_CASE("async: playback binds every frame exactly, ready only when it is", "[video_pump][gpu]") {
-  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -128,7 +126,6 @@ TEST_CASE("async: playback binds every frame exactly, ready only when it is", "[
 }
 
 TEST_CASE("async: a backward seek lands exactly", "[video_pump][gpu]") {
-  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -154,7 +151,6 @@ TEST_CASE("async: a failed open is skipped and ready", "[video_pump][gpu]") {
 }
 
 TEST_CASE("async: a clip leaving mid-decode tears down without blocking", "[video_pump][gpu]") {
-  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -167,7 +163,6 @@ TEST_CASE("async: a clip leaving mid-decode tears down without blocking", "[vide
 }
 
 TEST_CASE("sync mode is unchanged: the frame is bound on the first pump", "[video_pump][gpu]") {
-  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/false);
