@@ -547,7 +547,18 @@ works. Order:
      window is hidden at once and destroyed 2 s later (the render thread may still present to it
      for a frame), and the main thread keeps pumping while the render thread shuts down.
    - **Pacing**: a thread waits on the first output's `IDXGIOutput::WaitForVBlank` and ticks the
-     render thread at most `--hz` times a second.
+     render thread at most `--hz` times a second — unless the output's refresh is VARIABLE
+     (FreeSync / G-Sync, which Windows applies to a fullscreen flip-model window): the panel then
+     refreshes when we present, and pacing on its vblanks feeds back (the Ally's 120 Hz panel
+     settled at ~47 fps). Seen as far fewer vblanks than the nominal rate (< 85%), the render loop
+     keeps its own clock and the panel follows it (~66 vblanks/s, 60 fps); back near nominal
+     (≥ 95%: a window, a fixed projector) vblanks pace again. `NANO_DISPLAY_TRACE=1` logs the rate.
+   - **Shown with `SetWindowPos`, never `ShowWindow`**: a process's first `ShowWindow` takes the
+     launcher's STARTUPINFO show state instead — maximised from a shortcut, HIDDEN from Electron
+     (`windowsHide`). A rehearsal window passes through the topmost band on the way up, or it
+     opens behind the editor (another process's foreground window). A fullscreen output is marked
+     with `ITaskbarList2::MarkFullscreenWindow`, or the taskbar stays over it (topmost alone
+     isn't enough for a window that never activates).
    - **Spout** (`tools/compositor/spout_outputs_win.cpp`): the vendored SENDER core
      (`third_party/spout`: names, sender info, frame count — not SpoutDX, whose model is "copy
      your texture in"). The sender's BGRA8 legacy-shared texture is made on a device of the
@@ -562,10 +573,13 @@ works. Order:
    - Verified on the Ally: `test_comp_displays` (all 7, incl. a swap chain on a never-shown window —
      desktop session; session 0 has no DWM: `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`),
      `test_spout_outputs` (a receiver finds the sender through Spout's registry and reads the
-     engine's pixels), `arrangement-displays` e2e remote (all 8), and the real provider in the
-     desktop session with no window opened (screens report; a Spout display at 59 fps, read back
-     by a separate receiver). NOT yet seen: a fullscreen or rehearsal window on a real screen, and
-     vblank pacing under one.
+     engine's pixels), `arrangement-displays` e2e remote (all 8), the real provider in the desktop session (screens
+     report; a Spout display at 59 fps, read back by a separate receiver), and ON SCREEN, checked
+     by screenshots of the Ally's desktop: a rehearsal window where it was asked, in front,
+     unfocused; fullscreen Fit (a square show pillarboxed) and Stretch over the taskbar, the
+     orange top-left quadrant the right way up; identify; Ctrl+Shift+D clearing it all. (A test
+     injecting that chord must run elevated when an elevated window has focus: UIPI drops the
+     input silently.)
 7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
    steps 1–5 hold (they do as of 2026-09-30, in the test harness). The packaged Windows app now
    carries `nano_compositor.exe` (`build/bin-win` → `nano/bin`) and has run with

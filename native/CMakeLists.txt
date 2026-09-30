@@ -1570,7 +1570,7 @@ if(NANO_HAS_GPU_BACKEND)
       # the barrel inside a host must not open windows).
       target_sources(nano_compositor PRIVATE tools/compositor/display_windows_win.cpp
         tools/compositor/spout_outputs_win.cpp)
-      target_link_libraries(nano_compositor PRIVATE spout_core user32 gdi32)
+      target_link_libraries(nano_compositor PRIVATE spout_core user32 gdi32 ole32 uuid)
 
       # Spout outputs end to end in one process (sender → receiver → pixels).
       if(TARGET Catch2::Catch2WithMain)

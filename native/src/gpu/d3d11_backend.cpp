@@ -1147,7 +1147,11 @@ class D3D11Backend : public GPUBackend {
         if (FAILED(hr)) { hrFail("swap chain back buffer", hr); return false; }
       }
       // Last, so a present that bails above never takes a slot it won't use.
-      if (t.waitable && WaitForSingleObjectEx(t.waitable, 0, FALSE) != WAIT_OBJECT_0) return false;
+      if (t.waitable && WaitForSingleObjectEx(t.waitable, 0, FALSE) != WAIT_OBJECT_0) {
+        static const bool tr = std::getenv("NANO_DISPLAY_TRACE") != nullptr;
+        if (tr) std::fprintf(stderr, "[d3d11] present skipped: latency slot busy\n");
+        return false;
+      }
       rtv = t.backRtv.get();
       dw = t.w;
       dh = t.h;

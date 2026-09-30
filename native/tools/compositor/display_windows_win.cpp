@@ -23,12 +23,16 @@
 //
 // A closed window is HIDDEN at once and destroyed a moment later: the render
 // thread may still hold a swap chain on it for a frame.
+//
+// NANO_DISPLAY_TRACE=1 logs the pacing monitor's vblank rate each second (and
+// the backend each skipped present).
 
 #include "compositor/display_windows.h"
 #include "compositor/spout_outputs.h"
 
 #include <windows.h>
 #include <dxgi.h>
+#include <shobjidl.h>
 
 #include <algorithm>
 #include <chrono>
@@ -253,6 +257,7 @@ class WinDisplayWindows final : public DisplayWindows {
     for (auto& r : retired_) DestroyWindow(r.hwnd);
     for (auto& [hwnd, at] : identifyWindows_) DestroyWindow(hwnd);
     if (control_) DestroyWindow(control_);
+    if (taskbar_) taskbar_->Release();
   }
 
   const NanoDisplayProvider* provider() override { return &provider_; }
@@ -659,6 +664,10 @@ class WinDisplayWindows final : public DisplayWindows {
     if (want && !hotKey_) {
       hotKey_ = RegisterHotKey(control_, kHotKeyDisable, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
                                'D') != 0;
+      if (!hotKey_) {
+        std::fprintf(stderr, "[displays] Ctrl+Shift+D unavailable (RegisterHotKey: error %lu)\n",
+                     (unsigned long)GetLastError());
+      }
     } else if (!want && hotKey_) {
       UnregisterHotKey(control_, kHotKeyDisable);
       hotKey_ = false;
@@ -719,6 +728,36 @@ class WinDisplayWindows final : public DisplayWindows {
     return outer;
   }
 
+  /// Up, without taking focus from the editor. Never ShowWindow: a process's
+  /// FIRST ShowWindow takes the launcher's STARTUPINFO show state instead of
+  /// ours — maximised from a shortcut, HIDDEN from Electron (windowsHide).
+  /// A rehearsal window comes up IN FRONT (the editor, another process, is
+  /// the foreground window: HWND_TOP alone would leave it behind) by passing
+  /// through the topmost band and straight back out.
+  static void show(HWND hwnd, bool topmost) {
+    const UINT f = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, f | SWP_SHOWWINDOW);
+    if (!topmost) SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, f);
+  }
+
+  /// Tell the shell a fullscreen output IS fullscreen, so the taskbar goes
+  /// under it (it stays over any topmost window it doesn't know about).
+  void markFullscreen(HWND hwnd, bool on) {
+    if (!taskbar_) {
+      if (taskbarFailed_) return;
+      CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+      if (FAILED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_ITaskbarList2, (void**)&taskbar_)) ||
+          FAILED(taskbar_->HrInit())) {
+        if (taskbar_) taskbar_->Release();
+        taskbar_ = nullptr;
+        taskbarFailed_ = true;
+        return;
+      }
+    }
+    taskbar_->MarkFullscreenWindow(hwnd, on ? TRUE : FALSE);
+  }
+
   bool openOut(const Want& w) {
     const HINSTANCE inst = GetModuleHandleW(nullptr);
     Out o;
@@ -731,7 +770,7 @@ class WinDisplayWindows final : public DisplayWindows {
                                r.top, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst,
                                this);
       if (!o.hwnd) return false;
-      ShowWindow(o.hwnd, SW_SHOWNA);  // up, without taking focus from the editor
+      show(o.hwnd, false);
     } else {
       RECT r;
       if (!screenRect(w.screenUuid, &r)) return false;
@@ -739,7 +778,8 @@ class WinDisplayWindows final : public DisplayWindows {
                                wide(w.name).c_str(), WS_POPUP, r.left, r.top, r.right - r.left,
                                r.bottom - r.top, nullptr, nullptr, inst, this);
       if (!o.hwnd) return false;
-      ShowWindow(o.hwnd, SW_SHOWNOACTIVATE);
+      show(o.hwnd, true);
+      markFullscreen(o.hwnd, true);
     }
     outs_[w.placementId] = o;
     updateSurface(outs_[w.placementId]);
@@ -747,6 +787,7 @@ class WinDisplayWindows final : public DisplayWindows {
   }
 
   void closeOut(Out& o) {
+    if (!o.want.window) markFullscreen(o.hwnd, false);
     ShowWindow(o.hwnd, SW_HIDE);
     retired_.push_back({o.hwnd, nowSec()});
     std::lock_guard<std::mutex> lk(mu_);
@@ -819,9 +860,22 @@ class WinDisplayWindows final : public DisplayWindows {
     if (mon == pacingMonitor_) return;
     pacingMonitor_ = mon;
     IDXGIOutput* next = mon ? outputFor(mon) : nullptr;
+    double hz = 0;  // the monitor's nominal refresh
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (mon && GetMonitorInfoW(mon, &mi)) {
+      std::lock_guard<std::mutex> lk(mu_);
+      for (const auto& sc : screens_) {
+        if (sc.gdi == mi.szDevice) hz = sc.hz;
+      }
+    }
     std::lock_guard<std::mutex> lk(vmu_);
     if (pacingOutput_) pacingOutput_->Release();
     pacingOutput_ = next;
+    pacingHz_ = hz;
+    variable_ = false;
+    rateCount_ = 0;
+    rateAt_ = 0;
     linkActive_ = next != nullptr;
     lastTick_ = 0;
     vcv_.notify_all();
@@ -829,6 +883,14 @@ class WinDisplayWindows final : public DisplayWindows {
 
   /// Waits for each vblank of the pacing output and hands the render thread a
   /// tick — at most `maxHz` of them (a 144 Hz monitor still renders at 60).
+  ///
+  /// Unless the output's refresh is VARIABLE (FreeSync / G-Sync, which
+  /// Windows applies to a fullscreen flip-model window): then the panel
+  /// refreshes when WE present, and pacing on its vblanks feeds back on itself
+  /// (the Ally's 120 Hz panel settled at ~47 fps). It shows as far fewer
+  /// vblanks than the nominal rate; the render loop then keeps its own clock
+  /// and the panel follows it. Back near the nominal rate (a window, a fixed
+  /// projector), vblanks pace again.
   void vsyncLoop() {
     std::unique_lock<std::mutex> lk(vmu_);
     for (;;) {
@@ -841,11 +903,43 @@ class WinDisplayWindows final : public DisplayWindows {
       const bool ok = SUCCEEDED(out->WaitForVBlank());
       out->Release();
       const double t = nowSec();
-      // A monitor asleep (or a failed wait) returns at once: don't spin.
-      if (!ok || t - before < 0.001) std::this_thread::sleep_for(std::chrono::milliseconds(ok ? 1 : 16));
+      // A wait can return at once with the vblank already reported (it
+      // happens under a fullscreen swap chain): a vblank is new only if it
+      // comes at least 4 ms (240 Hz) after the last one. Only a long run of
+      // repeats — a monitor asleep — or a failed wait backs off. (Never a
+      // short sleep here: Windows rounds one up to its ~15 ms timer tick, a
+      // whole vblank missed at 60 Hz, two at 120.)
+      (void)before;
+      const bool fresh = ok && t - lastVblank_ >= 0.004;
+      if (fresh) lastVblank_ = t;
+      fastInARow_ = fresh ? 0 : fastInARow_ + 1;
+      if (!ok || fastInARow_ > 64) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        fastInARow_ = 0;
+      }
       lk.lock();
       if (vstop_) break;
-      if (!ok) continue;
+      if (!fresh) continue;
+      rateCount_++;
+      if (rateAt_ <= 0) rateAt_ = t;
+      if (t - rateAt_ >= 1.0) {
+        const double rate = rateCount_ / (t - rateAt_);
+        if (pacingHz_ > 0 && !variable_ && rate < 0.85 * pacingHz_) {
+          variable_ = true;
+          linkActive_ = false;
+          vcv_.notify_all();
+        } else if (variable_ && rate >= 0.95 * pacingHz_) {
+          variable_ = false;
+          linkActive_ = true;
+        }
+        if (trace_) {
+          std::fprintf(stderr, "[displays] %.0f vblanks/s of %.0f Hz%s\n", rate, pacingHz_,
+                       variable_ ? " (variable: own clock)" : "");
+        }
+        rateCount_ = 0;
+        rateAt_ = t;
+      }
+      if (!linkActive_) continue;
       if (lastTick_ > 0 && t - lastTick_ < 0.9 / std::max(1.0, maxHz_)) continue;
       vsyncDt_ = lastTick_ > 0 ? std::clamp(t - lastTick_, 0.0, 0.25) : 1.0 / std::max(1.0, maxHz_);
       lastTick_ = t;
@@ -911,7 +1005,7 @@ class WinDisplayWindows final : public DisplayWindows {
     SetLayeredWindowAttributes(hwnd, 0, 204, LWA_ALPHA);  // 80% black
     const int radius = MulDiv(48, (int)dpiX, 96);
     SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius), FALSE);
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    show(hwnd, true);
     UpdateWindow(hwnd);
     identifyWindows_.push_back({hwnd, nowSec()});
   }
@@ -934,6 +1028,8 @@ class WinDisplayWindows final : public DisplayWindows {
   std::vector<Retired> retired_;
   std::vector<std::pair<HWND, double>> identifyWindows_;
   bool hotKey_ = false;
+  ITaskbarList2* taskbar_ = nullptr;
+  bool taskbarFailed_ = false;
   bool killed_ = false;  // Ctrl+Shift+D pressed; cleared once the page sends no wants
   SpoutOutputs spout_;
   std::set<std::string> spoutKeys_;  // placements with a Spout sender
@@ -951,6 +1047,13 @@ class WinDisplayWindows final : public DisplayWindows {
   uint64_t vsyncSeen_ = 0;
   double vsyncDt_ = 1.0 / 60;
   double lastTick_ = 0;
+  int fastInARow_ = 0;  // vsync thread only
+  double lastVblank_ = 0;
+  double pacingHz_ = 0;    // the pacing monitor's nominal refresh
+  bool variable_ = false;  // its refresh follows our presents (VRR): own clock
+  int rateCount_ = 0;      // fresh vblanks since rateAt_
+  double rateAt_ = 0;
+  bool trace_ = std::getenv("NANO_DISPLAY_TRACE") != nullptr;  // the vblank rate, per second
 };
 
 }  // namespace
