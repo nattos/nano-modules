@@ -10,6 +10,9 @@
 #   <root>/fonts/default.ttf     the text service's primary face, native side
 #   <root>/ffgl/                 NanoBarrel.bundle + libbridge_server.dylib
 #   <root>/ffgl-win/             NanoBarrel.dll + libbridge_server.dll
+#   <root>/bin/                  nano_compositor + libbridge_server.dylib
+#   <root>/bin-win/              nano_compositor.exe + libbridge_server.dll
+#   <root>/native/<plat>-<arch>/ the shared-surface addon (darwin-arm64, win32-x64)
 #
 # In a dev tree the root IS the repo's build/, which is where the wasm already
 # lands and where the plugin finds it by walking up from its own image — so this
@@ -140,8 +143,28 @@ if [ "${SKIP_FFGL:-0}" != "1" ]; then
   fi
 fi
 
-# The desktop app's native addon (shared preview surfaces). macOS only for
-# now; the script is a no-op elsewhere, and the app falls back without it.
+# The Windows compositor, into its own directory for the same reason as
+# ffgl-win/: the win block maps it to nano/bin. Cross-built (native/build-win).
+if [ "${SKIP_COMPOSITOR:-0}" != "1" ]; then
+  wb="$repo/native/build-win"
+  if [ -f "$wb/nano_compositor.exe" ] && [ -f "$wb/libbridge_server.dll" ]; then
+    mkdir -p "$root/bin-win"
+    strip_bin="$(command -v llvm-strip || echo /opt/homebrew/opt/llvm/bin/llvm-strip)"
+    for f in nano_compositor.exe libbridge_server.dll; do
+      if [ -x "$strip_bin" ]; then
+        "$strip_bin" --strip-all -o "$root/bin-win/$f" "$wb/$f"
+      else
+        cp -f "$wb/$f" "$root/bin-win/$f"
+      fi
+    done
+  else
+    echo "note: no built native/build-win/nano_compositor.exe — a Windows arrangement"
+    echo "      package from this root would run only its browser engine"
+  fi
+fi
+
+# The desktop app's native addon (shared preview surfaces), for macOS and —
+# cross-built — Windows; the app falls back to the socket transport without it.
 if [ "${SKIP_NATIVE_ADDON:-0}" != "1" ]; then
   bash "$web/native/build.sh" || echo "note: native addon not built — previews will use the socket transport"
 fi

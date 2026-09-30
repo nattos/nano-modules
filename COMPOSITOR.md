@@ -468,19 +468,41 @@ works. Order:
      good after one oversized reply (patched to its level-triggered path,
      `cmake/patch-ixwebsocket-windows.sh`); and the harness raced the engine's effect catalog,
      which only showed across a LAN.
-3. **Shared preview surfaces on D3D11.** This also lifts Remote Control off the lanes on Windows.
-   - `createSharedSurface`: a BGRA texture with `D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
-     D3D11_RESOURCE_MISC_SHARED`, and `IDXGIResource1::CreateSharedHandle` with a **name**
-     (`Local\nano_surf_<pid>_<n>`). The token in the NBPS announce identifies the name.
-   - The addon's Windows half (`web/native/nano_shared_surface`) calls
-     `ID3D11Device1::OpenSharedResourceByName`, or opens it as an NT handle, and gives Electron
-     `handle: { ntHandle }`.
-   - **Completion:** macOS announces a slot only after the blit completes. On D3D11, issue a
-     `D3D11_QUERY_EVENT` after the blit and poll `GetData` before announcing. Never block the render
-     thread on it.
-   - **Adapter trap:** Electron's GPU process must open the handle on the *same adapter*. On
-     hybrid-GPU laptops it may not. Put the adapter LUID in the announce, and have the web side fall
-     back to lanes on a mismatch. This is the open "which GPU" question from the port notes.
+3. **Shared preview surfaces on D3D11 — DONE (2026-09-30).** The desktop app's previews reach the
+   page GPU to GPU on Windows too, and Remote Control's do with the D3D11 barrel (the same
+   `publishSurfaceFrame`; not yet run against a Windows Resolume).
+   - `createSharedSurface` (`d3d11_backend.cpp`): a BGRA8 texture, `MISC_SHARED |
+     MISC_SHARED_NTHANDLE`, no keyed mutex, shared under a NAME, `Local\nano_surf_<pid>_<serial>`.
+     The NBPS token is pid·2^24 + serial: below 2^53 so it survives a JS number, and a serial is
+     never reused (a handle value is, the moment one closes — an editor would keep showing a
+     surface it imported earlier under the same number). `gpu/shared_surface_win.h` holds the
+     scheme and the consumer's open; producer, addon and test all include it.
+   - The addon's Windows half opens the name with `D3DKMTOpenNtHandleFromName` (gdi32; the
+     session's `BaseNamedObjects` path, no D3D device) and hands Electron `handle: { ntHandle }`.
+     It is cross-built with zig (`web/native/build.sh`) and resolves `napi_*` from the host
+     executable at run time, so there is no `node.lib`.
+   - **Completion:** an `ID3D11Fence` signalled after the blit, waited on by a thread of the
+     backend's own, which then runs `done`. That is Metal's completion handler, and it never
+     blocks the render thread; an event query would have to be polled on the context's thread.
+     No fence (pre-1703 Windows) means no sharing: lanes.
+   - The blit is a GPU scaler (one triangle, a grid of bilinear taps over each output pixel's
+     footprint; the RTV does RGBA→BGRA). The LANES now use it too: `readbackTextureScaled` used
+     to read the whole frame back and box-filter it on the CPU.
+   - **Electron needs GPU compositing** to import: without it `importSharedTexture` dereferences
+     a null shared-image context and the app aborts on the first preview. That is any session
+     where Chromium falls back to software, e.g. an SSH session (session 0). `main.cjs` checks
+     `app.getGPUFeatureStatus().gpu_compositing` at support time and before each import, and the
+     page turns surfaces off after three failed imports in a row (`MAX_IMPORT_FAILURES`), so
+     the requests go back to the lanes. Before this, a failed import just left the monitor black.
+   - Measured on the Ally, 1280×720 at 31 fps (hidden window), as % of one core: lanes put
+     Electron at 27% and the compositor at 34.5%; surfaces put them at 14% and 9%.
+   - `web/test-tools/surface_check.mjs` checks a running app over CDP (or an SSH tunnel). It
+     compares an orange top-left quadrant in the preview texture against the engine's own
+     readback. It passes on the Ally (desktop session) and on macOS; `test_shared_surface` is
+     portable now and reads the surface the consumer's way (by name, on a second device).
+   - Still open: the **adapter trap**. There's no LUID check yet, so on a hybrid-GPU laptop where
+     Chromium and the producer pick different GPUs, the imports fail and the page falls back to
+     lanes. That's safe, but the fallback path hasn't been exercised on real hybrid hardware.
 4. **Media Foundation decode — DONE (2026-09-30)** (`src/media/mf_source.cpp`, `MfVideoSource`).
    - `IMFSourceReader` → RGB32, read back and repacked as opaque BGRA8 in `prepare()`, one
      `writeTexture` in `upload()` — AVF's CPU-buffer split. Random access exactly as AVF: read
@@ -513,8 +535,10 @@ works. Order:
      device path, not its index.
    - **Spout** via SpoutDX (BSD), on our D3D11 device.
 7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
-   steps 1–5 hold (they do as of 2026-09-30, in the test harness; the packaged Windows app still has
-   to be run with it). Step 4, general formats, was the gate.
+   steps 1–5 hold (they do as of 2026-09-30, in the test harness). The packaged Windows app now
+   carries `nano_compositor.exe` (`build/bin-win` → `nano/bin`) and has run with
+   `NANO_ARRANGEMENT_ENGINE=native` on the Ally: the compositor starts and previews arrive as
+   surfaces. Nobody has worked a real show in it yet. Step 4, general formats, was the gate.
 
 ---
 

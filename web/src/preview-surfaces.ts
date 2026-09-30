@@ -84,6 +84,11 @@ interface Held { tex: Imported; lastSeen: number }
  *  (a resize) or a monitor that closed; drop our reference. */
 const STALE_MS = 5000;
 
+/** Imports that fail this many times running turn the transport off for the
+ *  session: the producer and this GPU can't share (another adapter, a GPU
+ *  process that fell back to software), and the lanes still work. */
+const MAX_IMPORT_FAILURES = 3;
+
 /** Where a frame's time goes, for surface_profile.mjs and devtools
  *  (`window.__previewSurfaces.stats`). Totals in ms. */
 export interface SurfaceStats {
@@ -97,10 +102,16 @@ export interface SurfaceStats {
 class PreviewSurfaces {
   readonly stats: SurfaceStats = { frames: 0, imports: 0, importMs: 0, copyMs: 0, gpuWaitMs: 0 };
   private enabled = false;
+  private importFailures = 0;
+  private disabledListeners: Array<() => void> = [];
   private held = new Map<number, Held>();
   private waiting = new Map<number, (tex: Imported | null) => void>();
 
   get active(): boolean { return this.enabled; }
+
+  /** Called once if the transport turns itself off (see MAX_IMPORT_FAILURES):
+   *  re-send the preview requests without the surface flag. */
+  onDisabled(listener: () => void): void { this.disabledListeners.push(listener); }
 
   /** Turn the transport on if this is the desktop app and its shell can import
    *  surfaces. Safe to call more than once. */
@@ -140,7 +151,8 @@ class PreviewSurfaces {
     try {
       const t0 = performance.now();
       const tex = await this.open(msg);
-      if (!tex) return;
+      if (!tex) { this.importFailed(); return; }
+      this.importFailures = 0;
       const t1 = performance.now();
       const frame = tex.getVideoFrame();
       try {
@@ -180,6 +192,13 @@ class PreviewSurfaces {
     const tex = await arrived;
     if (tex) { this.held.set(msg.token, { tex, lastSeen: now }); this.stats.imports++; }
     return tex;
+  }
+
+  private importFailed(): void {
+    if (++this.importFailures < MAX_IMPORT_FAILURES || !this.enabled) return;
+    this.enabled = false;
+    console.warn('[preview-surfaces] surfaces could not be imported; previews fall back to the socket transport');
+    for (const l of this.disabledListeners) l();
   }
 
   private sweep(): void {

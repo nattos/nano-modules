@@ -766,6 +766,10 @@ function connectBarrel(url: string) {
     console.log('[barrel] previews: shared GPU surfaces');
     traceController.requestFlush();
   });
+  previewSurfaces.onDisabled(() => {
+    surfaces = false;
+    traceController.requestFlush();
+  });
   appController.setBarrelPreviewPusher((tracePoints) => {
     // Sidechannel thumbnails route to each channel's writer instance.
     const writers: Record<string, string> = {};

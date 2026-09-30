@@ -24,6 +24,7 @@ import * as paths from './state/paths';
 import { exportComposition, canExport } from './views/arrangement/engine/export-renderer';
 import { debugPerf } from './views/arrangement/state/debug-perf';
 import { previewSurfaces } from './preview-surfaces';
+import { previewGpu } from './preview-gpu';
 import { midiController } from './state/midi-controller';
 import { bootArrangementMidi } from './views/arrangement/state/arr-midi';
 import { bootArrangementDisplays } from './views/arrangement/state/arr-displays';
@@ -50,6 +51,7 @@ import { outputMaster } from './views/arrangement/state/output-master';
 (window as any).__debugPerf = debugPerf;
 // Shared-surface preview transport stats (native engine in the desktop app).
 (window as any).__previewSurfaces = previewSurfaces;
+(window as any).__previewGpu = previewGpu;
 // The MIDI device library + Web MIDI (devices the show includes drive its wires).
 (window as any).midiController = midiController;
 // The light library (types, rigs) + test patterns.

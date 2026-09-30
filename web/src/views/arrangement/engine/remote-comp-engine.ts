@@ -168,6 +168,10 @@ export class RemoteCompEngine implements CompEngine {
       this.surfaces = true;
       this.pushRequests();
     });
+    previewSurfaces.onDisabled(() => {
+      this.surfaces = false;
+      this.pushRequests();
+    });
   }
 
   // ── CompEngine ─────────────────────────────────────────────────────────

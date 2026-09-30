@@ -313,7 +313,8 @@ ipcMain.handle('nano.setModulePaths', (_e, rows) => {
 
 // -- Barrel previews as shared GPU surfaces (src/preview-surfaces.ts) -------
 // The FFGL plugin scales each preview into a surface this process can open
-// (a global IOSurface on macOS) and announces its token. Importing one into
+// (a global IOSurface on macOS; on Windows a D3D11 texture shared under a name
+// the token encodes) and announces its token. Importing one into
 // Chromium is MAIN-PROCESS ONLY (sharedTexture.importSharedTexture), and needs
 // the surface as a handle LOCAL to this process — which is what the
 // nano_shared_surface addon's lookup(token) returns. Each token is imported
@@ -349,24 +350,43 @@ function importsFor(contents) {
   return m;
 }
 
+// Importing needs GPU compositing: without it (a blocklisted driver, a
+// non-interactive session, a GPU process that fell back to software) there is
+// no shared-image context in this process, and Electron's importSharedTexture
+// dereferences it anyway — the whole app went down with the first preview.
+function gpuCompositing() {
+  try {
+    return String(app.getGPUFeatureStatus().gpu_compositing || '').startsWith('enabled');
+  } catch {
+    return false;
+  }
+}
+
 // NANO_DISABLE_SURFACES=1 keeps the socket transport — for comparing the two
 // (web/test-tools/surface_profile.mjs) and as a field workaround.
 ipcMain.handle('nano.surfaceSupport', () =>
-  !!surfaceAddon && process.env.NANO_DISABLE_SURFACES !== '1');
+  !!surfaceAddon && process.env.NANO_DISABLE_SURFACES !== '1' && gpuCompositing());
+
+// NANO_SURFACE_TRACE=1 logs each import step (diagnosing a platform's first run).
+const surfaceTrace = process.env.NANO_SURFACE_TRACE === '1'
+  ? (...a) => console.log('[surface]', ...a) : () => {};
 
 ipcMain.handle('nano.importSurface', async (event, { token, width, height } = {}) => {
   if (!surfaceAddon || !(token > 0) || !(width > 0) || !(height > 0)) return false;
   const imports = importsFor(event.sender);
   let imported = imports.get(token);
   if (!imported) {
+    if (!gpuCompositing()) return false;  // it can drop to software mid-run
+    surfaceTrace('lookup', token, width, height);
     const handle = surfaceAddon.lookup(token);
+    surfaceTrace('lookup ->', handle ? handle.toString('hex') : handle);
     if (!handle) return false;
     try {
       imported = sharedTexture.importSharedTexture({
         textureInfo: {
           pixelFormat: 'bgra',
           codedSize: { width, height },
-          handle: { ioSurface: handle },
+          handle: process.platform === 'win32' ? { ntHandle: handle } : { ioSurface: handle },
         },
         // Every process has let go: drop the addon's reference too.
         allReferencesReleased: () => surfaceAddon.release(handle),
@@ -376,10 +396,12 @@ ipcMain.handle('nano.importSurface', async (event, { token, width, height } = {}
       console.warn(`[electron] importSharedTexture(${token}) failed: ${err.message}`);
       return false;
     }
+    surfaceTrace('imported', token);
     imports.set(token, imported);
   }
   await sharedTexture.sendSharedTexture(
     { frame: event.sender.mainFrame, importedSharedTexture: imported }, token);
+  surfaceTrace('sent', token);
   return true;
 });
 

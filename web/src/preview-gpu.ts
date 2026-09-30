@@ -154,13 +154,44 @@ class PreviewGpu {
       const texture = device.createTexture({
         size: [width, height],
         format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        // COPY_SRC only so readPixels (probes) can copy it out.
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC
+          | GPUTextureUsage.RENDER_ATTACHMENT,
       });
       frame = { kind: 'gpu', texture, width, height };
       this.textures.set(traceId, frame);
     }
     return frame;
   }
+
+  /** A trace's current pixels (RGBA8, tightly packed), read back from its GPU
+   *  texture — for probes and tests (`window.__previewGpu`), never per frame. */
+  async readPixels(traceId: string): Promise<{ width: number; height: number; data: Uint8Array } | null> {
+    const device = this.device;
+    const frame = this.textures.get(traceId);
+    if (!device || !frame) return null;
+    const bytesPerRow = Math.ceil((frame.width * 4) / 256) * 256;
+    const buf = device.createBuffer({
+      size: bytesPerRow * frame.height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: frame.texture }, { buffer: buf, bytesPerRow },
+      [frame.width, frame.height]);
+    device.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const src = new Uint8Array(buf.getMappedRange());
+    const data = new Uint8Array(frame.width * frame.height * 4);
+    for (let y = 0; y < frame.height; y++) {
+      data.set(src.subarray(y * bytesPerRow, y * bytesPerRow + frame.width * 4), y * frame.width * 4);
+    }
+    buf.unmap();
+    buf.destroy();
+    return { width: frame.width, height: frame.height, data };
+  }
+
+  /** The trace ids that currently have a texture. */
+  traceIds(): string[] { return [...this.textures.keys()]; }
 
   /** Free a trace's texture when its monitor goes away. */
   release(traceId: string): void {

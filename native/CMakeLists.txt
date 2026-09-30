@@ -2008,11 +2008,13 @@ if(NANO_HAS_GPU_BACKEND)
 
     # Cross-process shared surfaces (the desktop preview transport): write
     # through the backend, read back by share token as the consumer would.
-    if(APPLE)
-      add_executable(test_shared_surface tests/test_shared_surface.mm)
-      target_link_libraries(test_shared_surface PRIVATE gpu_backend
-        "-framework IOSurface" "-framework CoreFoundation" Catch2::Catch2WithMain)
-      target_compile_options(test_shared_surface PRIVATE -fobjc-arc)
+    if(APPLE OR WIN32)
+      add_executable(test_shared_surface tests/test_shared_surface.cpp)
+      target_link_libraries(test_shared_surface PRIVATE gpu_backend Catch2::Catch2WithMain)
+      if(APPLE)
+        target_link_libraries(test_shared_surface PRIVATE
+          "-framework IOSurface" "-framework CoreFoundation")
+      endif()
       catch_discover_tests(test_shared_surface)
     endif()
 

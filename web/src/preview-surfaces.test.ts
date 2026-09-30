@@ -31,6 +31,14 @@ describe('NBPS (shared-surface preview announcements)', () => {
                         seq: 77, token: 4242 });
   });
 
+  it('keeps a Windows token (pid·2^24 + serial, past 2^32) exact', () => {
+    // native/src/gpu/shared_surface_win.h: tokens stay below 2^53 on purpose.
+    const token = (268435455n << 24n) + 7n;  // pid 2^28-1, serial 7: past 2^32, below 2^53
+    const m = parseNbps(nbps({ slot: 0, key: 'k', traceId: 't', w: 2, h: 2, seq: 1, token }));
+    expect(m?.token).toBe(Number(token));
+    expect(BigInt(m!.token)).toBe(token);
+  });
+
   it('refuses NBPV, a future version, and a truncated message', () => {
     const good = nbps({ slot: 0, key: 'k', traceId: 't', w: 1, h: 1, seq: 1, token: 1n });
     const nbpv = good.slice(0);

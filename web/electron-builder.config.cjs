@@ -41,8 +41,10 @@
  * Windows carries no .aot sidecars: the Windows build sets NANO_WASM_AOT=OFF
  * because a sidecar is per-ABI as well as per-arch.
  *
- * There are NO native node modules here, so a Windows target cross-builds from
- * macOS without a rebuild step.
+ * The one native node module (web/native's shared-surface addon) is built by
+ * stage_resources.sh for BOTH platforms and rides in extraResources, loaded by
+ * path — so a Windows target still cross-builds from macOS without a rebuild
+ * step.
  */
 
 const PRODUCTS = {
@@ -50,8 +52,8 @@ const PRODUCTS = {
     appId: 'com.nano.modules',
     productName: 'NanoModules',
     plugin: false,
-    // The native composition engine (bin/nano_compositor, macOS for now) —
-    // opt-in via NANO_ARRANGEMENT_ENGINE=native until it reaches parity.
+    // The native composition engine (bin/nano_compositor) — the default on
+    // macOS; opt-in on Windows via NANO_ARRANGEMENT_ENGINE=native (M4 step 7).
     compositor: true,
   },
   remote: {
@@ -210,12 +212,22 @@ module.exports = {
       { target: 'nsis', arch: ['x64'] },
       { target: 'portable', arch: ['x64'] },
     ],
-    extraResources: product.plugin ? [
-      // Lands at the SAME nano/ffgl path as on macOS, so resource_root.h's
-      // walk-up finds the root from either. libbridge_server.dll must stay
-      // NanoBarrel.dll's direct sibling for the same one-image-per-path reason.
-      { from: '../build/ffgl-win', to: 'nano/ffgl', filter: ['**/*'] },
-    ] : [],
+    extraResources: [
+      ...(product.plugin ? [
+        // Lands at the SAME nano/ffgl path as on macOS, so resource_root.h's
+        // walk-up finds the root from either. libbridge_server.dll must stay
+        // NanoBarrel.dll's direct sibling for the same one-image-per-path reason.
+        { from: '../build/ffgl-win', to: 'nano/ffgl', filter: ['**/*'] },
+      ] : []),
+      ...(product.compositor ? [
+        // The native composition engine, cross-built (native/build-win).
+        { from: '../build/bin-win', to: 'nano/bin', filter: ['nano_compositor.exe', 'libbridge_server.dll'] },
+      ] : []),
+      // The shared-surface addon, for whichever of the two talks to a producer
+      // (a cross-built DLL — see web/native/build.sh).
+      { from: '../build/native/win32-x64', to: 'nano/native/win32-x64',
+        filter: ['nano_shared_surface.node'] },
+    ],
   },
 
   nsis: {

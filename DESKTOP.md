@@ -248,7 +248,9 @@ How it fits together:
   processes' GPU work. Unreleased slots are reclaimed after a second
   (`NANO_SURFACE_RECLAIM_MS`).
 - **Surfaces** (`GPUBackend::createSharedSurface`): global IOSurfaces on macOS,
-  opened by ID the way Syphon's are.
+  opened by ID the way Syphon's are; on Windows D3D11 textures shared under a
+  name the token encodes (`native/src/gpu/shared_surface_win.h`), opened as an
+  NT handle. D3D11 completes on an `ID3D11Fence` its own thread waits on.
 - **Main process** (`electron/main.cjs`): the `nano_shared_surface` addon
   (`web/native/`, built by `stage_resources.sh` into `build/native/`) turns a
   token into a process-local handle; `importSharedTexture` is main-only, so the
@@ -258,8 +260,12 @@ How it fits together:
   release.
 
 Anything that can't share falls back to the lanes per request: a browser
-editor, a missing addon, `NANO_DISABLE_SURFACES=1`, and **Windows** (the D3D11
-backend doesn't implement shared surfaces yet — named NT handles, next).
+editor, a missing addon, `NANO_DISABLE_SURFACES=1`, a Chromium without GPU
+compositing (importing then crashes Electron, so the shell refuses), and any
+surface that fails to import three times running (another GPU). On Windows the
+addon is cross-built from macOS with zig. `NANO_SURFACE_TRACE=1` logs each
+import step in the main process; `web/test-tools/surface_check.mjs` checks a
+running app's pixels end to end.
 
 ## How the app is served
 

@@ -18,19 +18,25 @@
 // and the failure looks exactly like a GPU fault.
 
 #include "gpu/gpu_backend.h"
+#include "gpu/shared_surface_win.h"
 #include "platform/paths.h"
 
 #include <windows.h>
-#include <d3d11_1.h>
+#include <d3d11_4.h>
 #include <d3dcompiler.h>
 
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -219,6 +225,10 @@ struct Resource {
   uint32_t vertexStride = 0;
 
   Com<ID3D11SamplerState> sampler;
+
+  // A shared preview surface's NT handle (createSharedSurface): it keeps the
+  // surface's name alive for the consumer to open. Closed in release().
+  HANDLE shared = nullptr;
 };
 
 using PFN_D3D11CreateDevice_t = HRESULT(WINAPI*)(
@@ -241,6 +251,13 @@ class D3D11Backend : public GPUBackend {
  public:
   D3D11Backend() { init(); }
   ~D3D11Backend() override {
+    {
+      std::lock_guard<std::mutex> lk(fenceMu_);
+      fenceStop_ = true;
+      fenceCv_.notify_all();
+    }
+    if (fenceThread_.joinable()) fenceThread_.join();
+    for (auto& r : resources_) if (r.shared) CloseHandle(r.shared);
     resources_.clear();
     for (auto& kv : blobCache_) if (kv.second) kv.second->Release();
   }
@@ -912,63 +929,103 @@ class D3D11Backend : public GPUBackend {
                                        uint32_t h) override {
     Resource* r = get(textureHandle, Kind::Texture);
     if (!r || !r->texture || !w || !h) return {};
-
-    D3D11_TEXTURE2D_DESC td{};
-    ((ID3D11Texture2D*)r->texture.get())->GetDesc(&td);
-    td.Usage = D3D11_USAGE_STAGING;
-    td.BindFlags = 0;
-    td.MiscFlags = 0;
-    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    Com<ID3D11Texture2D> staging;
-    HRESULT hr = device_->CreateTexture2D(&td, nullptr, staging.put());
-    if (FAILED(hr)) { hrFail("CreateTexture2D(staging)", hr); return {}; }
-
-    ctx_->CopyResource(staging.get(), r->texture.get());
-    ctx_->Flush();
-    D3D11_MAPPED_SUBRESOURCE m{};
-    hr = ctx_->Map(staging.get(), 0, D3D11_MAP_READ, 0, &m);
-    if (FAILED(hr)) { hrFail("Map(staging texture)", hr); return {}; }
-
-    const uint32_t bpp = bytesPerPixel(r->format);
-    std::vector<uint8_t> out((size_t)w * h * bpp);
-    for (uint32_t y = 0; y < h; ++y) {
-      std::memcpy(out.data() + (size_t)y * w * bpp,
-                  (const uint8_t*)m.pData + (size_t)y * m.RowPitch,
-                  (size_t)w * bpp);
-    }
-    ctx_->Unmap(staging.get(), 0);
-    return out;
+    return readbackRaw((ID3D11Texture2D*)r->texture.get(), bytesPerPixel(r->format), w, h);
   }
 
   std::vector<uint8_t> readbackTextureScaled(int32_t textureHandle,
                                              uint32_t srcW, uint32_t srcH,
                                              uint32_t dstW,
                                              uint32_t dstH) override {
-    // Metal uses MPSImageLanczosScale; there is no D3D equivalent, and the one
-    // consumer in scope (preview thumbnails) checks a flat-colour mean, so a
-    // box filter is sufficient and obviously correct.
-    //
-    // The output is ALWAYS RGBA8, whatever the source format — the callers
-    // (barrel preview capture) read 4 bytes per pixel. Metal gets that for free
-    // by scaling into an RGBA8 scratch; here a float source has to be converted,
-    // not reinterpreted, or a 16F sketch's thumbnail comes back at double size
-    // and every channel is garbage.
-    auto full = readbackTexture(textureHandle, srcW, srcH);
-    if (full.empty() || !dstW || !dstH) return {};
+    // Scaled ON THE GPU into an RGBA8 scratch at the output size, and only
+    // that comes back: a 1080p monitor used to read the whole frame back and
+    // box-filter it on the CPU, every frame. The output is ALWAYS RGBA8,
+    // whatever the source format — the callers (barrel preview capture) read 4
+    // bytes per pixel; sampling converts a float source rather than
+    // reinterpreting it.
     Resource* r = get(textureHandle, Kind::Texture);
-    const DXGI_FORMAT fmt = r ? r->format : DXGI_FORMAT_R8G8B8A8_UNORM;
-    const uint32_t bpp = bytesPerPixel(fmt);
-    std::vector<uint8_t> out((size_t)dstW * dstH * 4);
-    for (uint32_t y = 0; y < dstH; ++y) {
-      const uint32_t sy = srcH ? (y * srcH / dstH) : 0;
-      for (uint32_t x = 0; x < dstW; ++x) {
-        const uint32_t sx = srcW ? (x * srcW / dstW) : 0;
-        const uint8_t* src = full.data() + ((size_t)sy * srcW + sx) * bpp;
-        uint8_t* dst = out.data() + ((size_t)y * dstW + x) * 4;
-        toRgba8(fmt, src, dst);
-      }
+    if (r && dstW && dstH && srcW && srcH && canScaleFrom(*r)) {
+      Scratch* s = scaleScratch(dstW, dstH);
+      if (s && scaleInto(*r, srcW, srcH, s->rtv.get(), dstW, dstH))
+        return readbackRaw(s->tex.get(), 4, dstW, dstH);
     }
-    return out;
+    return readbackTextureScaledCpu(textureHandle, srcW, srcH, dstW, dstH);
+  }
+
+  // --- Cross-process shared surfaces (see gpu_backend.h) --------------------
+  //
+  // A BGRA8 texture shared as a NAMED NT handle (gpu/shared_surface_win.h has
+  // the name and token scheme, and the consumer's open). No keyed mutex: the
+  // barrel's slot ring + preview_release handshake is what keeps the two
+  // processes off one surface at once, as on Metal. What D3D11 adds is knowing
+  // when the GPU has FINISHED writing: an ID3D11Fence signalled after the
+  // blit, waited on by a thread of our own, which then runs `done` — the
+  // counterpart of Metal's completion handler. Without fences (pre-1703
+  // Windows, or an old driver) there are no shared surfaces: -1, and the
+  // caller keeps the socket transport.
+  int32_t createSharedSurface(uint32_t w, uint32_t h, uint64_t* shareToken) override {
+    if (shareToken) *shareToken = 0;
+    if (!device_ || !w || !h || !fence_ || !ctx4_ || !ensureScaler()) return -1;
+    uint64_t token = 0;
+    do {
+      token = nano_surface_token(GetCurrentProcessId(), ++surfaceSerial_);
+    } while (!token && (surfaceSerial_ & NANO_SURFACE_SERIAL_MASK) == 0);
+    if (!token) return -1;  // a pid too large for a 53-bit token
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w; td.Height = h;
+    td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    td.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    Com<ID3D11Texture2D> tex;
+    HRESULT hr = device_->CreateTexture2D(&td, nullptr, tex.put());
+    if (FAILED(hr)) { hrFail("CreateTexture2D(shared surface)", hr); return -1; }
+    Com<IDXGIResource1> dxgiRes;
+    hr = tex->QueryInterface(__uuidof(IDXGIResource1), (void**)dxgiRes.put());
+    if (FAILED(hr)) { hrFail("QueryInterface(IDXGIResource1)", hr); return -1; }
+    wchar_t name[64];
+    nano_surface_win32_name(token, name, 64);
+    HANDLE shared = nullptr;
+    hr = dxgiRes->CreateSharedHandle(nullptr, NANO_SURFACE_ACCESS, name, &shared);
+    if (FAILED(hr)) { hrFail("CreateSharedHandle", hr); return -1; }
+
+    Resource r;
+    r.kind = Kind::Texture;
+    r.format = td.Format;
+    r.width = w; r.height = h; r.depth = 1;
+    r.bindFlags = td.BindFlags;
+    r.texture.p = tex.p; tex.p = nullptr;
+    r.shared = shared;
+    makeTextureViews(r);
+    if (!r.texRtv) { CloseHandle(shared); return -1; }
+    if (shareToken) *shareToken = token;
+    return store(std::move(r));
+  }
+
+  bool blitScaledToSurfaceAsync(int32_t src, int32_t surface,
+                                std::function<void()> done) override {
+    Resource* s = get(src, Kind::Texture);
+    Resource* d = get(surface, Kind::Texture);
+    if (!s || !d || !d->shared || !d->texRtv || !done || !fence_ || !ctx4_) return false;
+    if (!canScaleFrom(*s) ||
+        !scaleInto(*s, s->width, s->height, d->texRtv.get(), d->width, d->height)) {
+      return false;
+    }
+    const uint64_t value = ++fenceValue_;
+    ctx4_->Signal(fence_.get(), value);
+    ctx_->Flush();  // the blit must actually reach the GPU for the fence to pass
+    std::lock_guard<std::mutex> lk(fenceMu_);
+    if (!fenceThread_.joinable()) fenceThread_ = std::thread([this] { fenceLoop(); });
+    fenceQ_.push_back({value, std::move(done)});
+    fenceCv_.notify_all();
+    return true;
+  }
+
+  void drainPreviewReadbacks() override {
+    std::unique_lock<std::mutex> lk(fenceMu_);
+    fenceCv_.wait(lk, [this] { return fenceQ_.empty() && !fenceBusy_; });
   }
 
   // Adopt a texture created OUTSIDE the backend — the FFGL barrel's interop
@@ -1008,6 +1065,7 @@ class D3D11Backend : public GPUBackend {
   void release(int32_t handle) override {
     if (handle <= 0 || (size_t)handle >= resources_.size()) return;
     Resource& r = resources_[handle];
+    if (r.shared) CloseHandle(r.shared);
     for (auto& kv : r.texUavByMip) if (kv.second) kv.second->Release();
     r.texUavByMip.clear();
     r = Resource{};
@@ -1171,6 +1229,20 @@ class D3D11Backend : public GPUBackend {
     rd.ScissorEnable = TRUE;           // setViewport sets a matching rect
     hr = device_->CreateRasterizerState(&rd, raster_.put());
     if (FAILED(hr)) hrFail("CreateRasterizerState", hr);
+
+    // Fences (D3D11.4, Windows 10 1703+) — what shared surfaces complete on.
+    Com<ID3D11Device5> dev5;
+    if (SUCCEEDED(device_->QueryInterface(__uuidof(ID3D11Device5), (void**)dev5.put())) &&
+        SUCCEEDED(ctx_->QueryInterface(__uuidof(ID3D11DeviceContext4), (void**)ctx4_.put()))) {
+      if (FAILED(dev5->CreateFence(0, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence),
+                                   (void**)fence_.put()))) {
+        fence_.reset();
+      }
+    }
+    if (!fence_) {
+      ctx4_.reset();
+      std::fprintf(stderr, "[d3d11] no ID3D11Fence -- shared preview surfaces unavailable\n");
+    }
   }
 
   DXGI_FORMAT resolveFormat(int32_t code) {
@@ -1441,6 +1513,208 @@ class D3D11Backend : public GPUBackend {
     }
   }
 
+  /// The CPU path: the whole source read back and box-sampled here. Only for a
+  /// source the scaler can't sample.
+  std::vector<uint8_t> readbackTextureScaledCpu(int32_t textureHandle,
+                                                uint32_t srcW, uint32_t srcH,
+                                                uint32_t dstW, uint32_t dstH) {
+    auto full = readbackTexture(textureHandle, srcW, srcH);
+    if (full.empty() || !dstW || !dstH) return {};
+    Resource* r = get(textureHandle, Kind::Texture);
+    const DXGI_FORMAT fmt = r ? r->format : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const uint32_t bpp = bytesPerPixel(fmt);
+    std::vector<uint8_t> out((size_t)dstW * dstH * 4);
+    for (uint32_t y = 0; y < dstH; ++y) {
+      const uint32_t sy = srcH ? (y * srcH / dstH) : 0;
+      for (uint32_t x = 0; x < dstW; ++x) {
+        const uint32_t sx = srcW ? (x * srcW / dstW) : 0;
+        const uint8_t* src = full.data() + ((size_t)sy * srcW + sx) * bpp;
+        uint8_t* dst = out.data() + ((size_t)y * dstW + x) * 4;
+        toRgba8(fmt, src, dst);
+      }
+    }
+    return out;
+  }
+
+  // --- The preview scaler ---------------------------------------------------
+  //
+  // One full-screen triangle whose pixel shader averages a grid of bilinear
+  // taps over each output pixel's footprint in the source: exact at 1:1 (one
+  // tap at the texel centre), a true 2x2 box at 2:1, and never more than 8x8
+  // taps however far it shrinks. Metal uses MPSImageLanczosScale; there is no
+  // D3D equivalent, and a preview wants "not aliased", not Lanczos. Writing
+  // through an RTV also does the RGBA -> BGRA a shared surface needs.
+  bool ensureScaler() {
+    if (scalePs_) return true;
+    if (scalerFailed_ || !compile_) return false;
+    scalerFailed_ = true;  // until everything below succeeds
+    static const char* kSrc =
+        "Texture2D<float4> src : register(t0);\n"
+        "SamplerState samp : register(s0);\n"
+        "cbuffer Scale : register(b0) { float2 uvScale; float2 footprint; int2 taps; int2 pad; };\n"
+        "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+        "V vs(uint id : SV_VertexID) {\n"
+        "  V o; float2 t = float2((id << 1) & 2, id & 2);\n"
+        "  o.uv = t; o.pos = float4(t * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+        "  return o;\n"
+        "}\n"
+        "float4 ps(V i) : SV_Target {\n"
+        "  float4 acc = 0;\n"
+        "  [loop] for (int y = 0; y < taps.y; y++)\n"
+        "    [loop] for (int x = 0; x < taps.x; x++) {\n"
+        "      float2 o = ((float2(x, y) + 0.5) / float2(taps) - 0.5) * footprint;\n"
+        "      acc += src.SampleLevel(samp, (i.uv + o) * uvScale, 0);\n"
+        "    }\n"
+        "  return acc / float(taps.x * taps.y);\n"
+        "}\n";
+    Com<ID3DBlob> vb, pb;
+    if (!compile(kSrc, "vs", "vs_5_0", vb) || !compile(kSrc, "ps", "ps_5_0", pb)) return false;
+    HRESULT hr = device_->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(),
+                                             nullptr, scaleVs_.put());
+    if (FAILED(hr)) { hrFail("CreateVertexShader(scaler)", hr); return false; }
+    hr = device_->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr,
+                                    scalePs_.put());
+    if (FAILED(hr)) { hrFail("CreatePixelShader(scaler)", hr); scalePs_.reset(); return false; }
+    D3D11_BUFFER_DESC bd{};
+    bd.ByteWidth = 32;
+    bd.Usage = D3D11_USAGE_DEFAULT;
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    hr = device_->CreateBuffer(&bd, nullptr, scaleCb_.put());
+    if (FAILED(hr)) { hrFail("CreateBuffer(scaler)", hr); scalePs_.reset(); return false; }
+    D3D11_SAMPLER_DESC sd{};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    hr = device_->CreateSamplerState(&sd, scaleSampler_.put());
+    if (FAILED(hr)) { hrFail("CreateSamplerState(scaler)", hr); scalePs_.reset(); return false; }
+    scalerFailed_ = false;
+    return true;
+  }
+
+  /// A 2D colour texture the scaler can filter (its SRV exists, and the format
+  /// supports linear sampling — RGBA32F need not).
+  bool canScaleFrom(const Resource& r) {
+    if (!r.texSrv || r.depth != 1 || r.layers != 1) return false;
+    UINT support = 0;
+    if (FAILED(device_->CheckFormatSupport(r.format, &support))) return false;
+    return (support & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0;
+  }
+
+  /// Draw `src`'s top-left srcW x srcH, scaled, into `rtv` (dstW x dstH).
+  bool scaleInto(Resource& src, uint32_t srcW, uint32_t srcH,
+                 ID3D11RenderTargetView* rtv, uint32_t dstW, uint32_t dstH) {
+    if (!rtv || !src.texSrv || !ensureScaler()) return false;
+    struct { float uvScale[2]; float footprint[2]; int32_t taps[2]; int32_t pad[2]; } p{};
+    p.uvScale[0] = (float)srcW / (float)src.width;
+    p.uvScale[1] = (float)srcH / (float)src.height;
+    p.footprint[0] = 1.0f / (float)dstW;
+    p.footprint[1] = 1.0f / (float)dstH;
+    // Each bilinear tap averages 2 texels per axis.
+    auto taps = [](uint32_t s, uint32_t d) {
+      const int32_t n = (int32_t)std::ceil((double)s / (double)d / 2.0);
+      return n < 1 ? 1 : (n > 8 ? 8 : n);
+    };
+    p.taps[0] = taps(srcW, dstW);
+    p.taps[1] = taps(srcH, dstH);
+    ctx_->UpdateSubresource(scaleCb_.get(), 0, nullptr, &p, 0, 0);
+
+    unbindCompute();
+    ctx_->OMSetRenderTargets(1, &rtv, nullptr);
+    ctx_->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
+    ctx_->OMSetDepthStencilState(nullptr, 0);
+    if (raster_) ctx_->RSSetState(raster_.get());
+    setViewport(dstW, dstH);
+    ctx_->IASetInputLayout(nullptr);
+    ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx_->VSSetShader(scaleVs_.get(), nullptr, 0);
+    ctx_->PSSetShader(scalePs_.get(), nullptr, 0);
+    ID3D11ShaderResourceView* srv = src.texSrv.get();
+    ctx_->PSSetShaderResources(0, 1, &srv);
+    ID3D11SamplerState* samp = scaleSampler_.get();
+    ctx_->PSSetSamplers(0, 1, &samp);
+    ID3D11Buffer* cb = scaleCb_.get();
+    ctx_->PSSetConstantBuffers(0, 1, &cb);
+    ctx_->Draw(3, 0);
+    unbindRender();
+    ID3D11Buffer* noCb = nullptr;
+    ctx_->PSSetConstantBuffers(0, 1, &noCb);
+    return true;
+  }
+
+  /// An RGBA8 render target at (w, h) for readbackTextureScaled, kept for
+  /// reuse — a monitor asks for the same size every frame. Outside the handle
+  /// table, like Metal's scratch pools, so it never reads as a leak.
+  struct Scratch { Com<ID3D11Texture2D> tex; Com<ID3D11RenderTargetView> rtv; };
+  Scratch* scaleScratch(uint32_t w, uint32_t h) {
+    const uint64_t key = ((uint64_t)w << 32) | h;
+    if (auto it = scaleScratch_.find(key); it != scaleScratch_.end()) return &it->second;
+    if (scaleScratch_.size() >= 16) scaleScratch_.clear();  // a resizing monitor churns sizes
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w; td.Height = h;
+    td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    Scratch sc;
+    HRESULT hr = device_->CreateTexture2D(&td, nullptr, sc.tex.put());
+    if (FAILED(hr)) { hrFail("CreateTexture2D(scale scratch)", hr); return nullptr; }
+    hr = device_->CreateRenderTargetView(sc.tex.get(), nullptr, sc.rtv.put());
+    if (FAILED(hr)) { hrFail("CreateRenderTargetView(scale scratch)", hr); return nullptr; }
+    return &(scaleScratch_[key] = std::move(sc));
+  }
+
+  /// Copy a texture's top-left w x h out through a staging copy, tightly
+  /// packed at `bpp` bytes per pixel.
+  std::vector<uint8_t> readbackRaw(ID3D11Texture2D* tex, uint32_t bpp, uint32_t w, uint32_t h) {
+    D3D11_TEXTURE2D_DESC td{};
+    tex->GetDesc(&td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.MiscFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    Com<ID3D11Texture2D> staging;
+    HRESULT hr = device_->CreateTexture2D(&td, nullptr, staging.put());
+    if (FAILED(hr)) { hrFail("CreateTexture2D(staging)", hr); return {}; }
+
+    ctx_->CopyResource(staging.get(), tex);
+    ctx_->Flush();
+    D3D11_MAPPED_SUBRESOURCE m{};
+    hr = ctx_->Map(staging.get(), 0, D3D11_MAP_READ, 0, &m);
+    if (FAILED(hr)) { hrFail("Map(staging texture)", hr); return {}; }
+    std::vector<uint8_t> out((size_t)w * h * bpp);
+    for (uint32_t y = 0; y < h; ++y) {
+      std::memcpy(out.data() + (size_t)y * w * bpp,
+                  (const uint8_t*)m.pData + (size_t)y * m.RowPitch, (size_t)w * bpp);
+    }
+    ctx_->Unmap(staging.get(), 0);
+    return out;
+  }
+
+  // The fence thread: waits on each blit's fence value in order, then runs its
+  // `done`. ID3D11Fence is free-threaded; the immediate context is not, which
+  // is why completion is a fence and not a polled event query.
+  void fenceLoop() {
+    HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    std::unique_lock<std::mutex> lk(fenceMu_);
+    for (;;) {
+      fenceCv_.wait(lk, [this] { return fenceStop_ || !fenceQ_.empty(); });
+      if (fenceQ_.empty()) break;  // stopping, and nothing left to finish
+      FenceWait w = std::move(fenceQ_.front());
+      fenceQ_.pop_front();
+      fenceBusy_ = true;
+      lk.unlock();
+      bool completed = fence_->GetCompletedValue() >= w.value;
+      if (!completed && ev && SUCCEEDED(fence_->SetEventOnCompletion(w.value, ev)))
+        completed = WaitForSingleObject(ev, 5000) == WAIT_OBJECT_0;
+      if (completed) w.done();  // else: a hung or lost device — never announce it
+      lk.lock();
+      fenceBusy_ = false;
+      fenceCv_.notify_all();
+    }
+    if (ev) CloseHandle(ev);
+  }
+
   bool ensureFormatCopyPso() {
     if (formatCopyCs_) return true;
     if (!compile_) return false;
@@ -1489,6 +1763,26 @@ class D3D11Backend : public GPUBackend {
   Com<ID3D11Device> device_;
   Com<ID3D11DeviceContext> ctx_;
   Com<ID3D11ComputeShader> formatCopyCs_;
+  // The preview scaler (ensureScaler) and its per-size RGBA8 scratch targets.
+  Com<ID3D11VertexShader> scaleVs_;
+  Com<ID3D11PixelShader> scalePs_;
+  Com<ID3D11Buffer> scaleCb_;
+  Com<ID3D11SamplerState> scaleSampler_;
+  bool scalerFailed_ = false;
+  std::unordered_map<uint64_t, Scratch> scaleScratch_;
+  // Shared surfaces: the serial in each name, and the fence that says when a
+  // blit into one has finished (null without ID3D11Device5 — no sharing).
+  uint32_t surfaceSerial_ = 0;
+  Com<ID3D11Fence> fence_;
+  Com<ID3D11DeviceContext4> ctx4_;
+  uint64_t fenceValue_ = 0;
+  struct FenceWait { uint64_t value; std::function<void()> done; };
+  std::mutex fenceMu_;
+  std::condition_variable fenceCv_;
+  std::deque<FenceWait> fenceQ_;
+  bool fenceBusy_ = false;
+  bool fenceStop_ = false;
+  std::thread fenceThread_;
   // One rasterizer state for every render pass — see bindTargets for why the
   // default is wrong (D3D11 culls back faces; Metal culls nothing).
   Com<ID3D11RasterizerState> raster_;

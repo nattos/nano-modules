@@ -1,18 +1,18 @@
 #!/bin/bash
 # Build the desktop app's native addon(s) into the shared resource root:
 #   <repo>/build/native/<platform>-<arch>/nano_shared_surface.node
-# which electron/main.cjs loads, and the remote package ships (resources/nano/native).
+# which electron/main.cjs loads, and the packages ship (resources/nano/native).
 #
-# macOS only for now: the Windows side of nano_shared_surface (named D3D11
-# NT handles) is not written yet, and the app falls back to the socket
-# transport there. Needs clang and Node's headers (node_api.h) — Homebrew's
-# node has them; NODE_INCLUDE overrides.
+# Built on macOS, for both platforms: darwin-<arch> with clang, and win32-x64
+# cross-compiled with zig (the same toolchain as native/build-win) when zig is
+# on PATH — the Windows package is built from a Mac too. Needs Node's headers
+# (node_api.h) — Homebrew's node has them; NODE_INCLUDE overrides.
 set -euo pipefail
 cd "$(dirname "$0")"
 repo="$(cd ../.. && pwd)"
 
 if [ "$(uname)" != "Darwin" ]; then
-  echo "native addon: skipped (only macOS is implemented)"
+  echo "native addon: skipped (built from macOS)"
   exit 0
 fi
 
@@ -33,3 +33,17 @@ clang -O2 -shared -undefined dynamic_lookup -I"$inc" \
   -framework IOSurface -framework CoreFoundation \
   nano_shared_surface/nano_shared_surface.c -o "$out/nano_shared_surface.node"
 echo "built $out/nano_shared_surface.node"
+
+# Windows: the addon resolves napi_* from the host executable at run time (see
+# the .c), so there is no node.lib to link; the name/open scheme is the
+# producer's own header.
+if command -v zig >/dev/null 2>&1; then
+  wout="$repo/build/native/win32-x64"
+  mkdir -p "$wout"
+  zig cc -target x86_64-windows-gnu -O2 -shared -I"$inc" -I"$repo/native/src" \
+    nano_shared_surface/nano_shared_surface.c -o "$wout/nano_shared_surface.node"
+  rm -f "$wout"/nano_shared_surface.lib "$wout"/nano_shared_surface.pdb
+  echo "built $wout/nano_shared_surface.node"
+else
+  echo "note: zig not found — no Windows addon (a Windows package keeps the socket transport)"
+fi
