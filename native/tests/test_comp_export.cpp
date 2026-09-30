@@ -112,7 +112,6 @@ Rgb centreOf(gpu::GPUBackend& g, nano_media::FrameSource& src, int idx) {
 }  // namespace
 
 TEST_CASE("export: the timeline, frame by frame, with the backdrop in the gaps", "[comp_export][gpu]") {
-  NANO_REQUIRE_VIDEO_ENCODE();
   Harness hx;
   if (!hx.init()) SKIP("no GPU / core.wasm");
   const std::string path = tempPath("timeline.mp4");
@@ -141,17 +140,19 @@ TEST_CASE("export: the timeline, frame by frame, with the backdrop in the gaps",
 
   const auto near = [](int v, int want) { return std::abs(v - want) <= 12; };
   const Rgb red = centreOf(*hx.backend, *out, 10);      // beat 2
+  INFO("red = " << red.r << "," << red.g << "," << red.b);
   CHECK((near(red.r, 255) && near(red.g, 0) && near(red.b, 0)));
   const Rgb gap = centreOf(*hx.backend, *out, 30);      // beat 6: the backdrop
+  INFO("gap = " << gap.r << "," << gap.g << "," << gap.b);
   CHECK((near(gap.r, 0) && near(gap.g, 0) && near(gap.b, 255)));
   const Rgb green = centreOf(*hx.backend, *out, 50);    // beat 10
+  INFO("green = " << green.r << "," << green.g << "," << green.b);
   CHECK((near(green.r, 0) && near(green.g, 255) && near(green.b, 0)));
   if (std::getenv("NANO_KEEP_EXPORT")) WARN("kept " << path);   // inspect with ffprobe
   else unlink(path.c_str());
 }
 
 TEST_CASE("export: a cancel leaves no file", "[comp_export][gpu]") {
-  NANO_REQUIRE_VIDEO_ENCODE();
   Harness hx;
   if (!hx.init()) SKIP("no GPU / core.wasm");
   const std::string path = tempPath("canceled.mp4");

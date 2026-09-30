@@ -498,18 +498,23 @@ works. Order:
      async pump cases, on the Ally; the web suites' H.264 cases run there too.
    - Still to do: skip the RGB32 conversion of frames a seek decodes past (read native NV12, convert
      only the wanted one) — the remaining 3x on seeks.
-5. **Media Foundation encode** (`VideoEncoder`'s Windows twin).
-   - `IMFSinkWriter` → H.264 in MP4 with `MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`.
-   - Tag `MF_MT_VIDEO_PRIMARIES` / `MF_MT_TRANSFER_FUNCTION` / `MF_MT_YUV_MATRIX` as BT.709. Untagged
-     output comes back dull, as it did on macOS.
-   - Rational frame rate via `MF_MT_FRAME_RATE`.
-   - `test_comp_export` is the contract: red, backdrop gap, green, decoded back.
+5. **Media Foundation encode — DONE (2026-09-30)** (`src/media/video_encoder_win.cpp`).
+   - `IMFSinkWriter` → H.264 High in MP4, the requested/derived bitrate, rational frame times,
+     tagged BT.709 (primaries, transfer, matrix, TV range). A keyframe about every two seconds via
+     `CODECAPI_AVEncMPVGOPSize` in `SetInputMediaType`'s encoding parameters (the output type's
+     `MF_MT_MAX_KEYFRAME_SPACING` is ignored).
+   - Frames go in as NV12 converted by US with the BT.709 matrix: fed RGB32, the sink writer's
+     inserted converter uses BT.601 whatever the tags say (decoded back, green came out 216).
+   - `test_comp_export` is the contract and passes on the Ally; a Windows export decodes to the
+     same colours under AVFoundation. The web export e2e is a remote gap only because its output
+     path is checked on the harness's machine.
 6. **Outputs on Windows.**
    - A DXGI flip-model present into a borderless HWND per display, identified by the monitor's
      device path, not its index.
    - **Spout** via SpoutDX (BSD), on our D3D11 device.
 7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
-   steps 1–5 hold. Step 4, general formats, is the gate.
+   steps 1–5 hold (they do as of 2026-09-30, in the test harness; the packaged Windows app still has
+   to be run with it). Step 4, general formats, was the gate.
 
 ---
 

@@ -20,6 +20,7 @@
 //     undefined), and upload() is one writeTexture.
 
 #include "mf_source.h"
+#include "mf_util.h"
 
 #include <initguid.h>  // first: the MF GUIDs are defined here, not in an mfuuid lib
 #include <windows.h>
@@ -73,20 +74,7 @@ std::string hr(const char* what, HRESULT h) {
   return buf;
 }
 
-/// COM + MF for the process, once, and never torn down (like the runtime
-/// itself). open() and prepare() run on the pump's decode threads, which come
-/// and go: CoIncrementMTAUsage keeps the multithreaded apartment alive for all
-/// of them without a per-thread init — and a per-thread teardown is exactly
-/// what can't be done, since thread-exit destructors run under the loader lock
-/// and MFShutdown/CoUninitialize there deadlock.
-bool ensureMf() {
-  static const bool ok = [] {
-    CO_MTA_USAGE_COOKIE cookie{};
-    CoIncrementMTAUsage(&cookie);
-    return SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
-  }();
-  return ok;
-}
+bool ensureMf() { return ensureMediaFoundation(); }
 
 /// The D3D11 device MF decodes on, shared by every source, or null (software
 /// MF). Its own device on the default adapter — the one the engine takes too —
@@ -411,6 +399,21 @@ std::unique_ptr<FrameSource> openMfVideoSource(const std::string& path, std::str
   if (s->open(path)) return s;
   if (error) *error = s->error();
   return nullptr;
+}
+
+/// COM + MF for the process, once, and never torn down (like the runtime
+/// itself). open() and prepare() run on the pump's decode threads, which come
+/// and go: CoIncrementMTAUsage keeps the multithreaded apartment alive for all
+/// of them without a per-thread init — and a per-thread teardown is exactly
+/// what can't be done, since thread-exit destructors run under the loader lock
+/// and MFShutdown/CoUninitialize there deadlock.
+bool ensureMediaFoundation() {
+  static const bool ok = [] {
+    CO_MTA_USAGE_COOKIE cookie{};
+    CoIncrementMTAUsage(&cookie);
+    return SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
+  }();
+  return ok;
 }
 
 }  // namespace nano_media

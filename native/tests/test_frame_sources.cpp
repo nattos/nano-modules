@@ -181,3 +181,31 @@ TEST_CASE("decode timing on a real clip", "[.bench]") {
                   << seqSum / n << " ms (max " << seqMax << "), seek mean " << seekSum / seeks
                   << " ms (max " << seekMax << ")");
 }
+
+// A probe, not a gate: the centre pixel of frames of any file —
+// `NANO_PROBE_MEDIA=/path NANO_PROBE_FRAMES=10,30,50 ./test_frame_sources "[.probe]"`.
+TEST_CASE("centre pixels of a clip", "[.probe]") {
+  const char* path = std::getenv("NANO_PROBE_MEDIA");
+  if (!path) SKIP("set NANO_PROBE_MEDIA");
+  Gpu g;
+  if (!g.ok()) SKIP("No GPU device available");
+  std::string why;
+  auto s = openFrameSource(path, &why);
+  INFO(why);
+  REQUIRE(s);
+  const int32_t tex = g.backend->createTexture(s->width(), s->height(), s->formatCode());
+  std::string frames = std::getenv("NANO_PROBE_FRAMES") ? std::getenv("NANO_PROBE_FRAMES") : "0";
+  for (size_t at = 0; at < frames.size();) {
+    const size_t comma = frames.find(',', at);
+    const int idx = std::atoi(frames.substr(at, comma - at).c_str());
+    at = comma == std::string::npos ? frames.size() : comma + 1;
+    REQUIRE(s->decode(g.backend.get(), idx, tex));
+    g.backend->submit();
+    const auto px = g.backend->readbackTexture(tex, s->width(), s->height());
+    const size_t o = ((s->height() / 2) * s->width() + s->width() / 2) * 4;
+    // formatCode 0 is BGRA, 1 is RGBA.
+    const bool bgra = s->formatCode() == 0;
+    WARN(s->codec() << " frame " << idx << " centre rgb " << (int)px[o + (bgra ? 2 : 0)] << ","
+                    << (int)px[o + 1] << "," << (int)px[o + (bgra ? 0 : 2)]);
+  }
+}

@@ -86,15 +86,9 @@ inline std::string nanoMediaPath(const char* name) {
 }
 #endif
 
-// What this platform's media layer covers. Windows has no MP4 encoder until
-// Media Foundation's lands (COMPOSITOR.md M4 step 5): the export cases SKIP by
-// name there, and flip when this does.
+// The platform's video decoder, as openFrameSource names it in a refusal.
 #ifdef _WIN32
-constexpr bool kPlatformEncodesVideo = false;
 constexpr const char* kPlatformVideoDecoder = "mediafoundation";
 #else
-constexpr bool kPlatformEncodesVideo = true;
 constexpr const char* kPlatformVideoDecoder = "avfoundation";
 #endif
-#define NANO_REQUIRE_VIDEO_ENCODE() \
-  do { if (!kPlatformEncodesVideo) SKIP("no MP4 encode on this platform yet (M4 step 5)"); } while (0)

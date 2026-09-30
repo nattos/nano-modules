@@ -354,8 +354,7 @@ endif()
 #
 # A portable core (DXV, the blitter, routing, the pump) plus one platform layer:
 # stills, url fetch and the encoder (AVFoundation/ImageIO on macOS; WIC and
-# WinHTTP and Media Foundation decode on Windows, whose encode is still to come
-# — see COMPOSITOR.md M4).
+# WinHTTP and Media Foundation on Windows — see COMPOSITOR.md M4).
 if(APPLE OR WIN32)
   set(MEDIA_SHADER_DIR "${CMAKE_SOURCE_DIR}/src/media/shaders")
   set(MEDIA_SHADER_HEADERS
