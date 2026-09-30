@@ -23,8 +23,10 @@
 
 #include <windows.h>
 #include <d3d11_4.h>
+#include <dxgi1_3.h>
 #include <d3dcompiler.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
@@ -257,6 +259,8 @@ class D3D11Backend : public GPUBackend {
       fenceCv_.notify_all();
     }
     if (fenceThread_.joinable()) fenceThread_.join();
+    for (auto& [h, t] : presentTargets_) if (t.waitable) CloseHandle(t.waitable);
+    presentTargets_.clear();
     for (auto& r : resources_) if (r.shared) CloseHandle(r.shared);
     resources_.clear();
     for (auto& kv : blobCache_) if (kv.second) kv.second->Release();
@@ -1013,19 +1017,187 @@ class D3D11Backend : public GPUBackend {
         !scaleInto(*s, s->width, s->height, d->texRtv.get(), d->width, d->height)) {
       return false;
     }
-    const uint64_t value = ++fenceValue_;
-    ctx4_->Signal(fence_.get(), value);
-    ctx_->Flush();  // the blit must actually reach the GPU for the fence to pass
-    std::lock_guard<std::mutex> lk(fenceMu_);
-    if (!fenceThread_.joinable()) fenceThread_ = std::thread([this] { fenceLoop(); });
-    fenceQ_.push_back({value, std::move(done)});
-    fenceCv_.notify_all();
+    afterGpu(std::move(done));
     return true;
   }
 
   void drainPreviewReadbacks() override {
     std::unique_lock<std::mutex> lk(fenceMu_);
     fenceCv_.wait(lk, [this] { return fenceQ_.empty() && !fenceBusy_; });
+  }
+
+  // --- Present targets (display devices; see gpu_backend.h) ----------------
+  //
+  // A WINDOW target is a flip-model swap chain on an HWND the process's window
+  // code made (tools/compositor/display_windows_win.cpp). It is created,
+  // resized and presented from THIS thread — the render thread, which owns
+  // the device context; the window's own thread only pumps its messages. BGRA8
+  // (as previews are), three buffers, and a frame-latency waitable object at a
+  // latency of two: a present that finds it unsignalled is SKIPPED — the
+  // screen is behind — never waited on. The buffers follow the window's client
+  // size, checked at each present.
+  //
+  // An OFFSCREEN target is a BGRA8 texture in the handle table (tests,
+  // headless). A SHARED target is a texture another API made and shared by a
+  // legacy handle — a Spout sender's — opened on this device; it must be on
+  // this device's adapter, or the open fails and the target is never made.
+  int32_t createPresentTarget(void* nativeLayer) override {
+    HWND hwnd = (HWND)nativeLayer;
+    if (!device_ || !hwnd || !IsWindow(hwnd) || !ensureScaler()) return -1;
+    Com<IDXGIDevice> dxgiDevice;
+    Com<IDXGIAdapter> adapter;
+    Com<IDXGIFactory2> factory;
+    HRESULT hr = device_->QueryInterface(__uuidof(IDXGIDevice), (void**)dxgiDevice.put());
+    if (SUCCEEDED(hr)) hr = dxgiDevice->GetAdapter(adapter.put());
+    if (SUCCEEDED(hr)) hr = adapter->GetParent(__uuidof(IDXGIFactory2), (void**)factory.put());
+    if (FAILED(hr)) { hrFail("IDXGIFactory2 (present)", hr); return -1; }
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    PresentTarget t;
+    t.hwnd = hwnd;
+    t.w = (uint32_t)std::max<LONG>(1, rc.right - rc.left);
+    t.h = (uint32_t)std::max<LONG>(1, rc.bottom - rc.top);
+    DXGI_SWAP_CHAIN_DESC1 d{};
+    d.Width = t.w;
+    d.Height = t.h;
+    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.SampleDesc.Count = 1;
+    d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    d.BufferCount = 3;
+    d.Scaling = DXGI_SCALING_STRETCH;
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    d.Flags = kSwapFlags;
+    hr = factory->CreateSwapChainForHwnd(device_.get(), hwnd, &d, nullptr, nullptr, t.swap.put());
+    if (FAILED(hr)) {  // FLIP_DISCARD is Windows 10; 8.1 has only SEQUENTIAL
+      d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+      hr = factory->CreateSwapChainForHwnd(device_.get(), hwnd, &d, nullptr, nullptr, t.swap.put());
+    }
+    if (FAILED(hr)) { hrFail("CreateSwapChainForHwnd", hr); return -1; }
+    // The window is ours, not DXGI's: no Alt+Enter, no message hooks.
+    factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+    Com<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(t.swap->QueryInterface(__uuidof(IDXGISwapChain2), (void**)sc2.put()))) {
+      sc2->SetMaximumFrameLatency(2);
+      t.waitable = sc2->GetFrameLatencyWaitableObject();
+    }
+    const int32_t handle = nextPresentTarget_++;
+    presentTargets_[handle] = std::move(t);
+    return handle;
+  }
+
+  int32_t createOffscreenPresentTarget(uint32_t w, uint32_t h) override {
+    if (!device_ || !w || !h || !ensureScaler()) return -1;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w; td.Height = h;
+    td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    Com<ID3D11Texture2D> tex;
+    HRESULT hr = device_->CreateTexture2D(&td, nullptr, tex.put());
+    if (FAILED(hr)) { hrFail("CreateTexture2D(offscreen present)", hr); return -1; }
+    return presentTargetOver(std::move(tex));
+  }
+
+  int32_t createSurfacePresentTarget(void* sharedHandle) override {
+    if (!device_ || !sharedHandle || !ensureScaler()) return -1;
+    Com<ID3D11Texture2D> tex;
+    HRESULT hr = device_->OpenSharedResource((HANDLE)sharedHandle, __uuidof(ID3D11Texture2D),
+                                             (void**)tex.put());
+    if (FAILED(hr)) { hrFail("OpenSharedResource(present target)", hr); return -1; }
+    return presentTargetOver(std::move(tex));
+  }
+
+  int32_t presentTargetTexture(int32_t target) override {
+    auto it = presentTargets_.find(target);
+    return it == presentTargets_.end() ? -1 : it->second.texHandle;
+  }
+
+  bool presentScaled(int32_t target, int32_t src, PresentFit fit,
+                     std::function<void()> done) override {
+    auto it = presentTargets_.find(target);
+    if (it == presentTargets_.end()) return false;
+    PresentTarget& t = it->second;
+    ID3D11RenderTargetView* rtv = nullptr;
+    uint32_t dw = 0, dh = 0;
+    if (t.swap) {
+      if (!IsWindow(t.hwnd)) return false;
+      RECT rc{};
+      GetClientRect(t.hwnd, &rc);
+      const uint32_t cw = (uint32_t)std::max<LONG>(0, rc.right - rc.left);
+      const uint32_t ch = (uint32_t)std::max<LONG>(0, rc.bottom - rc.top);
+      if (!cw || !ch) return false;  // minimised
+      if (cw != t.w || ch != t.h) {
+        t.backRtv.reset();
+        unbindRender();
+        HRESULT hr = t.swap->ResizeBuffers(0, cw, ch, DXGI_FORMAT_UNKNOWN, kSwapFlags);
+        if (FAILED(hr)) { hrFail("ResizeBuffers", hr); return false; }
+        t.w = cw;
+        t.h = ch;
+      }
+      if (!t.backRtv) {
+        // D3D11's flip model rotates the buffers behind buffer 0: one view
+        // stays valid until the next resize.
+        Com<ID3D11Texture2D> back;
+        HRESULT hr = t.swap->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)back.put());
+        if (SUCCEEDED(hr)) hr = device_->CreateRenderTargetView(back.get(), nullptr, t.backRtv.put());
+        if (FAILED(hr)) { hrFail("swap chain back buffer", hr); return false; }
+      }
+      // Last, so a present that bails above never takes a slot it won't use.
+      if (t.waitable && WaitForSingleObjectEx(t.waitable, 0, FALSE) != WAIT_OBJECT_0) return false;
+      rtv = t.backRtv.get();
+      dw = t.w;
+      dh = t.h;
+    } else {
+      Resource* r = get(t.texHandle, Kind::Texture);
+      if (!r || !r->texRtv) return false;
+      rtv = r->texRtv.get();
+      dw = r->width;
+      dh = r->height;
+    }
+
+    const float black[4] = {0, 0, 0, 1};
+    ctx_->ClearRenderTargetView(rtv, black);
+    Resource* s = src > 0 ? get(src, Kind::Texture) : nullptr;
+    if (s && s->width && s->height && canScaleFrom(*s)) {
+      const double sw = s->width, sh = s->height;
+      double x = 0, y = 0, w = dw, h = dh;
+      if (fit != PresentFit::Stretch) {
+        // Fit: the picture's rect, and the bars keep the clear's black. Fill:
+        // a viewport larger than the target, clipped to it by the scissor.
+        const double k = fit == PresentFit::Fill ? std::max(dw / sw, dh / sh)
+                                                 : std::min(dw / sw, dh / sh);
+        w = sw * k;
+        h = sh * k;
+        x = (dw - w) / 2.0;
+        y = (dh - h) / 2.0;
+      }
+      scaleIntoRect(*s, s->width, s->height, rtv, (float)x, (float)y, (float)w, (float)h, dw, dh);
+    }
+    if (t.swap) {
+      // Sync interval 1: flip at the vblank. With the latency slot taken
+      // above, this never blocks. DXGI_STATUS_OCCLUDED is a success code.
+      HRESULT hr = t.swap->Present(1, 0);
+      if (FAILED(hr)) { hrFail("Present", hr); return false; }
+    }
+    if (done) afterGpu(std::move(done));
+    return true;
+  }
+
+  void releasePresentTarget(int32_t target) override {
+    auto it = presentTargets_.find(target);
+    if (it == presentTargets_.end()) return;
+    PresentTarget& t = it->second;
+    if (t.texHandle > 0) release(t.texHandle);
+    if (t.swap) {
+      t.backRtv.reset();
+      unbindRender();
+      ctx_->Flush();
+    }
+    if (t.waitable) CloseHandle(t.waitable);
+    presentTargets_.erase(it);
   }
 
   // Adopt a texture created OUTSIDE the backend — the FFGL barrel's interop
@@ -1603,19 +1775,26 @@ class D3D11Backend : public GPUBackend {
   /// Draw `src`'s top-left srcW x srcH, scaled, into `rtv` (dstW x dstH).
   bool scaleInto(Resource& src, uint32_t srcW, uint32_t srcH,
                  ID3D11RenderTargetView* rtv, uint32_t dstW, uint32_t dstH) {
-    if (!rtv || !src.texSrv || !ensureScaler()) return false;
+    return scaleIntoRect(src, srcW, srcH, rtv, 0, 0, (float)dstW, (float)dstH, dstW, dstH);
+  }
+
+  /// The same, into the rect (x, y, w, h) of a targetW x targetH target —
+  /// which may overhang it (a display's Fill): the scissor clips to the target.
+  bool scaleIntoRect(Resource& src, uint32_t srcW, uint32_t srcH, ID3D11RenderTargetView* rtv,
+                     float x, float y, float w, float h, uint32_t targetW, uint32_t targetH) {
+    if (!rtv || !src.texSrv || !ensureScaler() || w <= 0 || h <= 0) return false;
     struct { float uvScale[2]; float footprint[2]; int32_t taps[2]; int32_t pad[2]; } p{};
     p.uvScale[0] = (float)srcW / (float)src.width;
     p.uvScale[1] = (float)srcH / (float)src.height;
-    p.footprint[0] = 1.0f / (float)dstW;
-    p.footprint[1] = 1.0f / (float)dstH;
+    p.footprint[0] = 1.0f / w;
+    p.footprint[1] = 1.0f / h;
     // Each bilinear tap averages 2 texels per axis.
-    auto taps = [](uint32_t s, uint32_t d) {
-      const int32_t n = (int32_t)std::ceil((double)s / (double)d / 2.0);
+    auto taps = [](double s, double d) {
+      const int32_t n = (int32_t)std::ceil(s / d / 2.0);
       return n < 1 ? 1 : (n > 8 ? 8 : n);
     };
-    p.taps[0] = taps(srcW, dstW);
-    p.taps[1] = taps(srcH, dstH);
+    p.taps[0] = taps(srcW, w);
+    p.taps[1] = taps(srcH, h);
     ctx_->UpdateSubresource(scaleCb_.get(), 0, nullptr, &p, 0, 0);
 
     unbindCompute();
@@ -1623,7 +1802,10 @@ class D3D11Backend : public GPUBackend {
     ctx_->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
     ctx_->OMSetDepthStencilState(nullptr, 0);
     if (raster_) ctx_->RSSetState(raster_.get());
-    setViewport(dstW, dstH);
+    D3D11_VIEWPORT vp{x, y, w, h, 0.0f, 1.0f};
+    ctx_->RSSetViewports(1, &vp);
+    D3D11_RECT sc{0, 0, (LONG)targetW, (LONG)targetH};
+    ctx_->RSSetScissorRects(1, &sc);
     ctx_->IASetInputLayout(nullptr);
     ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx_->VSSetShader(scaleVs_.get(), nullptr, 0);
@@ -1689,6 +1871,51 @@ class D3D11Backend : public GPUBackend {
     }
     ctx_->Unmap(staging.get(), 0);
     return out;
+  }
+
+  /// Run `done` once the GPU has finished everything submitted so far: a
+  /// fence signalled here and waited on by the fence thread (Metal's
+  /// completion handler). Without fences, after a flush — the best there is.
+  void afterGpu(std::function<void()> done) {
+    if (!fence_ || !ctx4_) {
+      ctx_->Flush();
+      done();
+      return;
+    }
+    const uint64_t value = ++fenceValue_;
+    ctx4_->Signal(fence_.get(), value);
+    ctx_->Flush();  // the work must actually reach the GPU for the fence to pass
+    std::lock_guard<std::mutex> lk(fenceMu_);
+    if (!fenceThread_.joinable()) fenceThread_ = std::thread([this] { fenceLoop(); });
+    fenceQ_.push_back({value, std::move(done)});
+    fenceCv_.notify_all();
+  }
+
+  /// A present target over a BGRA8 / RGBA8 texture that can be a render target.
+  int32_t presentTargetOver(Com<ID3D11Texture2D> tex) {
+    D3D11_TEXTURE2D_DESC td{};
+    tex->GetDesc(&td);
+    if (!(td.BindFlags & D3D11_BIND_RENDER_TARGET) || td.ArraySize != 1 ||
+        (td.Format != DXGI_FORMAT_B8G8R8A8_UNORM && td.Format != DXGI_FORMAT_R8G8B8A8_UNORM)) {
+      std::fprintf(stderr, "[d3d11] present target: not a BGRA8/RGBA8 render target\n");
+      return -1;
+    }
+    Resource r;
+    r.kind = Kind::Texture;
+    r.format = td.Format;
+    r.width = td.Width;
+    r.height = td.Height;
+    r.depth = 1;
+    r.bindFlags = td.BindFlags;
+    r.texture.p = tex.p;
+    tex.p = nullptr;
+    makeTextureViews(r);
+    if (!r.texRtv) return -1;
+    PresentTarget t;
+    t.texHandle = store(std::move(r));
+    const int32_t handle = nextPresentTarget_++;
+    presentTargets_[handle] = std::move(t);
+    return handle;
   }
 
   // The fence thread: waits on each blit's fence value in order, then runs its
@@ -1783,6 +2010,18 @@ class D3D11Backend : public GPUBackend {
   bool fenceBusy_ = false;
   bool fenceStop_ = false;
   std::thread fenceThread_;
+  // Display present targets (createPresentTarget and friends).
+  static constexpr UINT kSwapFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+  struct PresentTarget {
+    HWND hwnd = nullptr;             // a window target: its swap chain
+    Com<IDXGISwapChain1> swap;
+    HANDLE waitable = nullptr;       // the frame-latency object (closed on release)
+    Com<ID3D11RenderTargetView> backRtv;
+    uint32_t w = 0, h = 0;           // the swap chain's buffers
+    int32_t texHandle = -1;          // offscreen / shared: the texture presented into
+  };
+  std::unordered_map<int32_t, PresentTarget> presentTargets_;
+  int32_t nextPresentTarget_ = 1;
   // One rasterizer state for every render pass — see bindTargets for why the
   // default is wrong (D3D11 culls back faces; Metal culls nothing).
   Com<ID3D11RasterizerState> raster_;

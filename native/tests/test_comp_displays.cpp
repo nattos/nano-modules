@@ -187,7 +187,7 @@ TEST_CASE("displays: screen binding never picks the main screen on its own", "[c
 TEST_CASE("displays: Fit letterboxes, Fill crops, Stretch fills", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
+  REQUIRE(hx.presents());
   bridge::OffscreenDisplays screens(fakeScreens());  // outlives the host
   auto h = hx.host();
   h->displays().setSurfaces(&screens);
@@ -224,7 +224,7 @@ TEST_CASE("displays: Fit letterboxes, Fill crops, Stretch fills", "[comp_display
 TEST_CASE("displays: a routed display shows its track; switched off, it closes", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
+  REQUIRE(hx.presents());
   bridge::OffscreenDisplays screens(fakeScreens());
   auto h = hx.host();
   h->displays().setSurfaces(&screens);
@@ -253,7 +253,7 @@ TEST_CASE("displays: a routed display shows its track; switched off, it closes",
 TEST_CASE("displays: no screen is an unplugged cable; a window opens anyway", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
+  REQUIRE(hx.presents());
   bridge::OffscreenDisplays laptop({{"MAIN", "Built-in", 1440, 900, 60, true}});
   auto h = hx.host();
   h->displays().setSurfaces(&laptop);
@@ -281,7 +281,7 @@ TEST_CASE("displays: no screen is an unplugged cable; a window opens anyway", "[
 TEST_CASE("displays: presenting never waits on the screen", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
+  REQUIRE(hx.presents());
   const int32_t t = hx.backend->createOffscreenPresentTarget(256, 256);
   REQUIRE(t > 0);
   CHECK(hx.backend->presentTargetTexture(t) > 0);
@@ -300,7 +300,8 @@ TEST_CASE("displays: presenting never waits on the screen", "[comp_displays]") {
 }
 
 namespace {
-/// Fake screens + counts Syphon publishes (the real server is the process's).
+/// Fake screens + counts shared-frame publishes (the real Syphon server /
+/// Spout sender is the process's).
 struct CountingDisplays : bridge::OffscreenDisplays {
   using bridge::OffscreenDisplays::OffscreenDisplays;
   std::atomic<int> published{0};
@@ -308,16 +309,17 @@ struct CountingDisplays : bridge::OffscreenDisplays {
 };
 }  // namespace
 
-TEST_CASE("displays: a Syphon output is the render size, needs no screen, publishes each frame",
+TEST_CASE("displays: a shared (Syphon / Spout) output is the render size, needs no screen, publishes each frame",
           "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
+  REQUIRE(hx.presents());
   CountingDisplays none(std::vector<DisplayScreen>{});  // no screens at all
   auto h = hx.host();
   h->displays().setSurfaces(&none);
   h->loadDocument(mkDoc(false));
-  h->displays().setPlan(mkPlan("fit", true, "syphon"));
+  const std::string share = bridge::platformShareMode();
+  h->displays().setPlan(mkPlan("fit", true, share));
   // The frame is published only once the GPU has written it.
   REQUIRE(hx.framesUntil(*h, [&] {
     const int32_t tex = h->displays().targetTexture("d1");
@@ -329,10 +331,57 @@ TEST_CASE("displays: a Syphon output is the render size, needs no screen, publis
   // Every completed present publishes (a busy one is skipped, not queued).
   CHECK(hx.framesUntil(*h, [&] { return none.published.load() >= 3; }));
   auto st = h->displays().status()["d1"];
-  CHECK(st["state"] == "syphon");
+  CHECK(st["state"] == share);
   CHECK(st["width"] == kW);
   CHECK(st["height"] == kH);
-  // Identify has nothing to paint a Syphon output on.
-  h->displays().identify({{"label", "Display 1"}, {"mode", "syphon"}});
+  // Identify has nothing to paint a shared output on.
+  h->displays().identify({{"label", "Display 1"}, {"mode", share}});
   CHECK(h->displays().takeEvents().empty());
 }
+
+#ifdef _WIN32
+#include <windows.h>
+
+#include <thread>
+
+// A window target: a flip-model swap chain on an HWND. The window is never
+// SHOWN (nothing appears on a real screen), so DWM may never retire a frame:
+// what this pins is that the swap chain is made, presents, follows a resize,
+// and never blocks the render loop — the pixels are the offscreen cases' (the
+// same scaler draws both).
+TEST_CASE("displays: a window target presents through a swap chain, never blocking",
+          "[comp_displays]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No GPU device available");
+  WNDCLASSW wc{};
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.lpszClassName = L"nano_test_present";
+  RegisterClassW(&wc);
+  HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 320, 200,
+                              nullptr, nullptr, wc.hInstance, nullptr);
+  REQUIRE(hwnd);
+  const int32_t t = hx.backend->createPresentTarget(hwnd);
+  REQUIRE(t > 0);
+  CHECK(hx.backend->presentTargetTexture(t) == -1);
+  auto burst = [&] {
+    int shown = 0;
+    for (int i = 0; i < 20; i++) {
+      MSG m;
+      while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
+      if (hx.backend->presentScaled(t, -1, gpu::GPUBackend::PresentFit::Fit)) shown++;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return shown;
+  };
+  const auto t0 = std::chrono::steady_clock::now();
+  CHECK(burst() >= 1);
+  SetWindowPos(hwnd, nullptr, 0, 0, 640, 360, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  burst();  // resizes the buffers; may skip, must not fail or block
+  const double ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ms < 2000);
+  hx.backend->releasePresentTarget(t);
+  DestroyWindow(hwnd);
+}
+#endif

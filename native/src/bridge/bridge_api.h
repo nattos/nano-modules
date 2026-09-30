@@ -153,16 +153,18 @@ typedef struct NanoDisplayProvider {
   /// Bumps whenever the screens change (hotplug).
   uint64_t (*screens_version)(void* ctx);
   /// JSON [{placementId, slotId, name, screenUuid, mode: "fullscreen" |
-  /// "window" | "syphon", windowFrame, w, h}]: the outputs that should be up
-  /// (a Syphon one at w × h); everything else closes. Latest wins.
+  /// "window" | "syphon" | "spout", windowFrame, w, h}]: the outputs that
+  /// should be up (a shared one at w × h); everything else closes. Latest
+  /// wins. A mode the provider can't do (Spout on macOS) stays down.
   void (*reconcile)(void* ctx, const char* wants_json);
-  /// A placement's surface once it is up, else NULL: a window's CAMetalLayer*
-  /// (*kind 0) or a Syphon server's IOSurfaceRef (*kind 1); *w/*h its size in
-  /// pixels.
+  /// A placement's surface once it is up, else NULL: a window (*kind 0 — a
+  /// CAMetalLayer* / an HWND) or a texture shared with other apps (*kind 1 —
+  /// a Syphon server's IOSurfaceRef / a Spout sender's D3D11 share handle, on
+  /// the engine's adapter); *w/*h its size in pixels.
   void* (*surface_for)(void* ctx, const char* placement_id, int32_t* w, int32_t* h,
                        int32_t* kind);
-  /// A frame of `placement_id`'s Syphon server is complete (the GPU is done
-  /// writing its IOSurface): tell its clients. Called off the render thread.
+  /// A frame of `placement_id`'s shared texture is complete (the GPU is done
+  /// writing it): tell its clients. Called off the render thread.
   void (*publish)(void* ctx, const char* placement_id);
   /// Paint `label` over a screen (or in the placement's window) for a moment.
   void (*identify)(void* ctx, const char* label, const char* screen_uuid, int32_t window);

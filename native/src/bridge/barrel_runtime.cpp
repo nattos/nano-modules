@@ -2243,7 +2243,7 @@ class CallbackDisplays : public DisplaySurfaces {
     void* native = p_.surface_for(p_.ctx, placementId.c_str(), &w, &h, &kind);
     if (!native) return {};
     Surface s;
-    s.kind = kind == 1 ? Surface::IOSurface : Surface::Layer;
+    s.kind = kind == 1 ? Surface::Shared : Surface::Window;
     s.native = native;
     s.width = w;
     s.height = h;
@@ -2562,6 +2562,7 @@ int BarrelRuntime::renderComp(const std::string& key, double dt, bool dirty) {
         if (pe.compResync || sv != pe.lastScreensVersion) {
           pe.lastScreensVersion = sv;
           rep["screens"] = dr.screensJson();
+          rep["shareMode"] = platformShareMode();
         }
         auto st = dr.status();
         auto bare = st;

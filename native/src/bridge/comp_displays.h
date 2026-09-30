@@ -15,14 +15,17 @@
 //     headless runs (NANO_DISPLAY_REDIRECT=offscreen). Nothing opens on a
 //     real screen.
 //
-// Screen binding (resolveScreen): the slot's remembered screen by UUID; else
-// Display N takes the Nth screen that is NOT the main one, so a fresh machine
-// never covers the editor; else there's no screen and the display is inert (an
-// unplugged cable). A window-mode or Syphon display ignores screens.
+// Screen binding (resolveScreen): the slot's remembered screen by its id (a
+// CGDisplay UUID on macOS, a monitor device path on Windows); else Display N
+// takes the Nth screen that is NOT the main one, so a fresh machine never
+// covers the editor; else there's no screen and the display is inert (an
+// unplugged cable). A window-mode or shared (Syphon / Spout) display ignores
+// screens.
 //
-// Modes: FULLSCREEN on a screen, WINDOW (rehearsal), SYPHON (a Syphon server
-// the provider runs; its frame is the render size, and the provider publishes
-// each one once the GPU has finished writing it).
+// Modes: FULLSCREEN on a screen, WINDOW (rehearsal), or SHARED with other apps
+// — SYPHON on macOS, SPOUT on Windows (platformShareMode): a server/sender the
+// provider runs; its frame is the render size, and the provider publishes each
+// one once the GPU has finished writing it.
 //
 // Owned by CompHost; driven on the render thread only.
 
@@ -54,9 +57,15 @@ struct DisplayScreen {
 std::vector<DisplayScreen> parseDisplayScreens(const nlohmann::json& j);
 nlohmann::json displayScreensJson(const std::vector<DisplayScreen>& screens);
 
-enum class DisplayMode { Fullscreen, Window, Syphon };
+enum class DisplayMode { Fullscreen, Window, Syphon, Spout };
 DisplayMode parseDisplayMode(const std::string& s);
 const char* displayModeName(DisplayMode m);
+/// Syphon / Spout: the frame goes to other apps, not onto a screen.
+inline bool displayModeShares(DisplayMode m) {
+  return m == DisplayMode::Syphon || m == DisplayMode::Spout;
+}
+/// The share mode this platform's compositor provides ("syphon" / "spout").
+const char* platformShareMode();
 
 /// One output of the page's plan (display-plan.ts DisplayPlan.outputs).
 struct DisplayOutput {
@@ -84,7 +93,7 @@ struct DisplayWant {
   std::string screenUuid;  // resolved (fullscreen only)
   DisplayMode mode = DisplayMode::Fullscreen;
   nlohmann::json windowFrame;
-  int width = 0, height = 0;  // Syphon: the frame size (the render size)
+  int width = 0, height = 0;  // shared: the frame size (the render size)
   bool operator==(const DisplayWant& o) const {
     return placementId == o.placementId && slotId == o.slotId && name == o.name &&
            screenUuid == o.screenUuid && mode == o.mode && windowFrame == o.windowFrame &&
@@ -101,19 +110,22 @@ class DisplaySurfaces {
   /// The outputs that should be up now; everything else closes. Latest wins,
   /// and may apply later (windows open on the main thread).
   virtual void reconcile(const std::vector<DisplayWant>& wants) = 0;
-  /// A placement's surface once it is up: a window's `CAMetalLayer*`, a
-  /// Syphon server's `IOSurfaceRef`, or (native null) an offscreen target of
-  /// width × height. Width/height zero and native null: not (yet) there.
+  /// A placement's surface once it is up: a WINDOW (a `CAMetalLayer*`, an
+  /// `HWND`), a texture SHARED with other apps (a Syphon server's
+  /// `IOSurfaceRef`, a Spout sender's D3D11 share handle), or (native null) an
+  /// offscreen target of width × height. Width/height zero and native null:
+  /// not (yet) there.
   struct Surface {
-    enum Kind { Offscreen, Layer, IOSurface };
+    enum Kind { Offscreen, Window, Shared };
     Kind kind = Offscreen;
     void* native = nullptr;
     int width = 0;
     int height = 0;
   };
   virtual Surface surfaceFor(const std::string& placementId) = 0;
-  /// A frame for `placementId`'s Syphon server is complete (the GPU is done
-  /// writing its IOSurface): tell its clients. Any thread.
+  /// A frame for `placementId`'s shared texture is complete (the GPU is done
+  /// writing it): tell the other apps (Syphon's publish, Spout's frame
+  /// count). Any thread.
   virtual void publish(const std::string& placementId) { (void)placementId; }
   /// Paint `label` over a screen (or in a window) for a few seconds.
   virtual void identify(const std::string& label, const std::string& screenUuid, bool window) = 0;
@@ -168,7 +180,7 @@ class DisplayRunner {
   void identify(const nlohmann::json& m);
 
   /// placementId → {state, screen?, width, height, fps[, probe]}. `state`:
-  /// 'showing' | 'window' | 'syphon' | 'opening' | 'no-screen' | 'off' | 'disarmed'
+  /// 'showing' | 'window' | 'syphon' | 'spout' | 'opening' | 'no-screen' | 'off' | 'disarmed'
   /// (the master switch is off) | 'no-output'.
   /// `probe` (offscreen targets only): 16×16 RGB of what was presented, for
   /// tests.

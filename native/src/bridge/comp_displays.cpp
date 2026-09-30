@@ -53,13 +53,23 @@ std::string base64(const std::vector<uint8_t>& bytes) {
 DisplayMode parseDisplayMode(const std::string& s) {
   if (s == "window") return DisplayMode::Window;
   if (s == "syphon") return DisplayMode::Syphon;
+  if (s == "spout") return DisplayMode::Spout;
   return DisplayMode::Fullscreen;
+}
+
+const char* platformShareMode() {
+#ifdef _WIN32
+  return "spout";
+#else
+  return "syphon";
+#endif
 }
 
 const char* displayModeName(DisplayMode m) {
   switch (m) {
     case DisplayMode::Window: return "window";
     case DisplayMode::Syphon: return "syphon";
+    case DisplayMode::Spout: return "spout";
     default: return "fullscreen";
   }
 }
@@ -140,7 +150,7 @@ void OffscreenDisplays::reconcile(const std::vector<DisplayWant>& wants) {
   std::map<std::string, Surface> next;
   for (const auto& w : wants) {
     Surface s;
-    if (w.mode == DisplayMode::Syphon) {
+    if (displayModeShares(w.mode)) {
       s.width = w.width;
       s.height = w.height;
     } else if (w.mode == DisplayMode::Window) {
@@ -236,7 +246,7 @@ void DisplayRunner::identify(const nlohmann::json& m) {
   o.screenUuid = m.value("screenUuid", std::string());
   o.ordinal = std::max(1, m.value("ordinal", 1));
   const DisplayMode mode = parseDisplayMode(m.value("mode", std::string("fullscreen")));
-  if (mode == DisplayMode::Syphon) return;  // no screen to paint on
+  if (displayModeShares(mode)) return;  // no screen to paint on
   const bool window = mode == DisplayMode::Window;
   std::string uuid;
   if (!window) {
@@ -271,7 +281,7 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, int wi
       const int si = resolveDisplayScreen(o, screens_);
       if (si < 0) continue;  // no screen: an unplugged cable
       w.screenUuid = screens_[si].uuid;
-    } else if (o.mode == DisplayMode::Syphon) {
+    } else if (displayModeShares(o.mode)) {
       w.width = width;
       w.height = height;
     }
@@ -300,8 +310,8 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, int wi
         (s.native ? t.native == s.native : t.width == s.width && t.height == s.height);
     if (t.handle <= 0 || !same) {
       releaseTarget(t);
-      t.handle = s.kind == DisplaySurfaces::Surface::Layer ? gpu_->createPresentTarget(s.native)
-          : s.kind == DisplaySurfaces::Surface::IOSurface ? gpu_->createSurfacePresentTarget(s.native)
+      t.handle = s.kind == DisplaySurfaces::Surface::Window ? gpu_->createPresentTarget(s.native)
+          : s.kind == DisplaySurfaces::Surface::Shared ? gpu_->createSurfacePresentTarget(s.native)
           : gpu_->createOffscreenPresentTarget((uint32_t)s.width, (uint32_t)s.height);
       t.kind = s.kind;
       t.native = s.native;
@@ -316,9 +326,9 @@ void DisplayRunner::afterFrame(comp::CompExecutor& cx, int32_t composite, int wi
       bool routed = false;
       int32_t src = cx.deviceSourceTexture(o.placementId, &routed);
       if (!routed) src = hasContent ? composite : -1;
-      // A Syphon frame is published once the GPU has finished writing it.
+      // A shared frame is published once the GPU has finished writing it.
       std::function<void()> done;
-      if (o.mode == DisplayMode::Syphon) {
+      if (displayModeShares(o.mode)) {
         DisplaySurfaces* surfaces = surfaces_;
         const std::string pid = o.placementId;
         done = [surfaces, pid] { surfaces->publish(pid); };

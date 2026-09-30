@@ -248,6 +248,7 @@ class MacDisplayWindows final : public DisplayWindows {
         x.name = w.value("name", std::string());
         x.screenUuid = w.value("screenUuid", std::string());
         const std::string mode = w.value("mode", std::string("fullscreen"));
+        if (mode == "spout") continue;  // Windows' share: nothing to do here
         x.window = mode == "window";
         x.syphon = mode == "syphon";
         x.w = w.value("w", 0);
