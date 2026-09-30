@@ -156,6 +156,15 @@ std::string httpGet(const std::string& abs, std::vector<char>& out) {
     // A dev server answers an unknown path with its index page.
     return "served an HTML page, not media";
   }
+  // The body's promised length, when the server says: a connection that drops
+  // early otherwise reads as a complete (truncated) file.
+  wchar_t lenBuf[32] = {0};
+  DWORD lenSz = sizeof lenBuf;
+  long long expected = -1;
+  if (WinHttpQueryHeaders(req.h, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, lenBuf,
+                          &lenSz, WINHTTP_NO_HEADER_INDEX)) {
+    expected = _wtoi64(lenBuf);
+  }
   out.clear();
   for (;;) {
     DWORD avail = 0;
@@ -166,6 +175,9 @@ std::string httpGet(const std::string& abs, std::vector<char>& out) {
     DWORD got = 0;
     if (!WinHttpReadData(req.h, out.data() + at, avail, &got)) return "read failed";
     out.resize(at + got);
+  }
+  if (expected >= 0 && (long long)out.size() != expected) {
+    return "truncated: got " + std::to_string(out.size()) + " of " + std::to_string(expected) + " bytes";
   }
   return "";
 }
@@ -195,8 +207,14 @@ std::string localMediaPath(const std::string& url, const std::string& base, std:
   std::lock_guard<std::mutex> lock(gMutex);
   if (auto it = gFetched.find(abs); it != gFetched.end()) return it->second;
   if (cacheDir().empty()) { if (error) *error = "no cache directory"; return ""; }
+  // A dropped connection (now detected: the body's Content-Length) is worth a
+  // retry or two before the clip is named undecodable for the whole session.
   std::vector<char> data;
-  const std::string why = httpGet(abs, data);
+  std::string why;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    why = httpGet(abs, data);
+    if (why.empty() || why.rfind("HTTP ", 0) == 0 || why.rfind("served an HTML", 0) == 0) break;
+  }
   if (!why.empty()) {
     if (error) *error = "fetch " + abs + ": " + why;
     return "";

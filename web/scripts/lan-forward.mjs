@@ -10,6 +10,7 @@
 // done: it serves whatever the dev server serves to anyone on the network.
 
 import net from 'node:net';
+import { pipeline } from 'node:stream';
 
 const [host, listen = '5174', target = '5173'] = process.argv.slice(2);
 if (!host) {
@@ -17,27 +18,26 @@ if (!host) {
   process.exit(2);
 }
 
-const connectTarget = () => {
-  // Vite binds ::1 or 127.0.0.1 depending on the resolver: try both.
-  const s = net.connect({ host: '::1', port: Number(target) });
-  s.once('error', () => {});
-  return s;
-};
+/** The dev server binds ::1 or 127.0.0.1 depending on the resolver: try both. */
+function connectUpstream(cb) {
+  const tryHost = (hosts) => {
+    const s = net.connect({ host: hosts[0], port: Number(target) });
+    s.once('connect', () => cb(s));
+    s.once('error', (e) => (hosts.length > 1 ? tryHost(hosts.slice(1)) : cb(null, e)));
+  };
+  tryHost(['::1', '127.0.0.1']);
+}
 
 net.createServer((client) => {
-  let upstream = connectTarget();
-  upstream.once('error', () => {
-    upstream = net.connect({ host: '127.0.0.1', port: Number(target) });
-    upstream.once('error', () => client.destroy());
-    wire(upstream);
+  client.pause();
+  connectUpstream((up) => {
+    if (!up) { client.destroy(); return; }
+    // pipeline() ends each side only after the other's data is flushed — a
+    // destroy-on-close here truncated responses (a half-downloaded .mov).
+    pipeline(client, up, () => {});
+    pipeline(up, client, () => {});
+    client.resume();
   });
-  const wire = (u) => {
-    u.once('connect', () => { client.pipe(u); u.pipe(client); });
-    client.once('error', () => u.destroy());
-    client.once('close', () => u.destroy());
-    u.once('close', () => client.destroy());
-  };
-  wire(upstream);
 }).listen(Number(listen), host, () => {
   console.log(`forwarding ${host}:${listen} -> localhost:${target}`);
 });

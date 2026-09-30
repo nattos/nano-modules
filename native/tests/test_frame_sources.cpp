@@ -143,11 +143,12 @@ TEST_CASE("decode timing on a real clip", "[.bench]") {
   Gpu g;
   if (!g.ok()) SKIP("No GPU device available");
   std::string why;
-  double openMs = 0;
-  for (int k = 0; k < 3; k++) {  // the first open pays one-time setup; report the last
+  double openMs = 0, firstOpenMs = 0;
+  for (int k = 0; k < 3; k++) {  // the first open pays one-time setup; report it and the last
     const auto t0 = std::chrono::steady_clock::now();
     auto probe = openFrameSource(path, &why);
     openMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (k == 0) firstOpenMs = openMs;
     REQUIRE(probe);
   }
   auto s = openFrameSource(path, &why);
@@ -174,7 +175,8 @@ TEST_CASE("decode timing on a real clip", "[.bench]") {
     seekSum += ms;
     seekMax = std::max(seekMax, ms);
   }
-  WARN(s->codec() << " " << s->width() << "x" << s->height() << ": open " << openMs
+  WARN(s->codec() << " " << s->width() << "x" << s->height() << ": first open " << firstOpenMs
+                  << " ms, open " << openMs
                   << " ms, sequential mean "
                   << seqSum / n << " ms (max " << seqMax << "), seek mean " << seekSum / seeks
                   << " ms (max " << seekMax << ")");

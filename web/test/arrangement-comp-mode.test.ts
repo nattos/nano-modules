@@ -27,7 +27,7 @@
  */
 
 import { CENTER, gridUVs, luma, sampleMonitor, waitForMonitor } from './arr-test-helpers';
-import { arrangementUrl, forEachCompBackend } from './comp-backend';
+import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 
@@ -147,7 +147,7 @@ describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
     expect(a).not.toEqual(before); // ...and visibly different from the boot render
   });
 
-  it('play start is smooth: no hold-then-pop on the mirrored playhead', async () => {
+  windowsGap(backend, 'its 250 ms / 0.2-beat budget assumes a LOCAL compositor, not a LAN round trip')('play start is smooth: no hold-then-pop on the mirrored playhead', async () => {
     await renderAndSample(URL);
     const samples = await page.evaluate(async () => {
       const store = (window as any).arrangementStore;
