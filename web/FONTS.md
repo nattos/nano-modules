@@ -101,3 +101,11 @@ be reproduced pixel-for-pixel by the simulator. Prefer the bundled families (or
 explicitly uploaded faces) for parity-critical work; treat Local-Font-Access
 faces as best-effort. Font bytes are content-addressed, so a host can detect a
 mismatch and surface it as a non-parity state.
+
+## The UI font (not the text engine)
+
+The app's own UI is set in **JetBrains Mono** (v2.304, SIL OFL — `public/fonts/jetbrains-mono/OFL.txt`),
+shipped as WOFF2 for the weights the UI uses (400/500/600/700, 400/700 italic) and declared in
+`src/style.css`. Unlike the text-engine faces above these ARE committed: they're small, and an
+app that assumed the font installed drew with the system's generic monospace instead (MS Gothic on
+a Japanese Windows, backslashes as ¥). They take no part in text-effect parity.
