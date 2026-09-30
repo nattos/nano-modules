@@ -27,7 +27,7 @@
  */
 
 import { CENTER, gridUVs, luma, sampleMonitor, waitForMonitor } from './arr-test-helpers';
-import { arrangementUrl, forEachCompBackend } from './comp-backend';
+import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 
@@ -389,7 +389,7 @@ describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
     expect(after!).toBeLessThan(40);       // structurally dropped past it (black bg)
   });
 
-  it('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
+  windowsGap(backend, 'H.264 decode (M4 step 4)')('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
     // Regression: loading an arrangement leaves DEAD blob URLs in the doc until
     // relinkMedia() re-mints them — an update that deliberately bypasses
     // mutate() (not undoable). The comp-mode pump is fed from the WORKER's
@@ -450,7 +450,7 @@ describe(`Arrangement composition executor (GPU, ${backend} engine)`, () => {
     }
   });
 
-  it('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
+  windowsGap(backend, 'H.264 decode (M4 step 4)')('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
     // Regression: readiness edges for the native gate must flow on an
     // UNCONDITIONAL cadence. They used to ride the monitor's reactive
     // showComposite — which never fires while a hold freezes the beat — so

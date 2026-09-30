@@ -8,7 +8,7 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest arrangement-follow
  */
 
-import { arrangementUrl, forEachCompBackend } from './comp-backend';
+import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -146,7 +146,7 @@ describe('Follow actions (GPU)', () => {
     expect(delta!).toBeLessThan(1.7);
   });
 
-  it('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
+  windowsGap(backend, 'H.264 decode (M4 step 4)')('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
     // The user-visible artifact this pins: with warm-only precache the follow
     // launch always DEFERRED (warm pumps never inject → readiness can't latch
     // pre-request), and the 2-4 frame commit round-trip rendered the outgoing
@@ -221,7 +221,7 @@ describe('Follow actions (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
+  windowsGap(backend, 'H.264 decode (M4 step 4)')('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
     // Six scenes; the follower on A picks LAST (ordinal 5) — beyond the
     // 4-nearest heuristic, so only the effect's announce can prime it. The
     // pin: the announced target ships primed and the hop commits with zero

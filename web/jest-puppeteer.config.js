@@ -9,6 +9,17 @@ const args = [
 ];
 if (process.platform !== 'win32') args.push('--enable-features=Vulkan');
 
+// A dev server reached by LAN address (a remote compositor has to fetch the
+// page's media from it: test/comp-backend.ts REMOTE) isn't a secure context
+// over plain http, which would cost the page WebGPU. Vouch for that one origin.
+const base = process.env.GPU_TEST_BASE_URL;
+if (base) {
+  const { hostname, origin } = new URL(base);
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(hostname)) {
+    args.push(`--unsafely-treat-insecure-origin-as-secure=${origin}`);
+  }
+}
+
 module.exports = {
   launch: {
     headless: 'new',

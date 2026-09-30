@@ -454,10 +454,20 @@ works. Order:
      (`NANO_REQUIRE_VIDEO_DECODE` / `_ENCODE` in `tests/wasm_paths.h`, and the present API in
      `test_comp_displays`), so flipping `kPlatformDecodesVideo` is what turns step 4's tests on.
      `NANO_WASM_DIR` / `NANO_TEST_MEDIA_DIR` point a staged run at its copies.
-2. **Run the native legs of the arrangement suites on Windows,** with previews on the **lanes**
-   (NBPC). The shared-surface path isn't there yet, and the web side already falls back.
-   - `compositor.cjs` already names `nano_compositor.exe`.
-   - `test/comp-backend.ts` must spawn the `.exe` from the Windows build dir.
+2. **Run the native legs of the arrangement suites on Windows — DONE (2026-09-30),** with previews
+   on the lanes (NBPC), against the real machine over the LAN:
+   - `native/tools/win_remote.sh push` cross-builds and stages the compositor there;
+     `NANO_REMOTE_COMPOSITOR=user@host` makes `test/comp-backend.ts` start it over SSH (port 8091,
+     lanes 8092–8099); `web/scripts/lan-forward.mjs` puts the dev server on the LAN, since the
+     compositor fetches media from the page's origin (`GPU_TEST_BASE_URL=http://<lan-ip>:5174`).
+   - Every engine suite's native leg passes there. What Windows can't do yet is skipped BY NAME
+     (`windowsGap`): H.264 decode (step 4), MP4 encode (step 5), present + Syphon/Spout (step 6), and
+     the lights suite's DMX listener (its redirect is the remote machine's loopback).
+   - What it found, all fixed: FXC made a cold start 26 s (a DXBC disk cache, `<dataRoot>/Cache/
+     Shaders` — warm start 1 s); ixwebsocket's Windows poll could stop READING a connection for
+     good after one oversized reply (patched to its level-triggered path,
+     `cmake/patch-ixwebsocket-windows.sh`); and the harness raced the engine's effect catalog,
+     which only showed across a LAN.
 3. **Shared preview surfaces on D3D11.** This also lifts Remote Control off the lanes on Windows.
    - `createSharedSurface`: a BGRA texture with `D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
      D3D11_RESOURCE_MISC_SHARED`, and `IDXGIResource1::CreateSharedHandle` with a **name**

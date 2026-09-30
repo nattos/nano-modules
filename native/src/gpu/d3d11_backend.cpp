@@ -1285,7 +1285,7 @@ class D3D11Backend : public GPUBackend {
   // shader compiles that source six times. Cache on (source, entry, target) —
   // the compiler is a pure function of exactly those three.
   //
-  // And across runs, on disk (<dataRoot>/Cache/Shaders): a cold start compiles
+  // And across runs, on disk (<dataRoot>/Cache/Shaders, or NANO_CACHE_DIR): a cold start compiles
   // every effect's shaders, and a few take seconds each in FXC — the
   // compositor took 26 s to come up on real hardware, 25 of them here.
   bool compile(const std::string& src, const std::string& entry,
@@ -1321,11 +1321,17 @@ class D3D11Backend : public GPUBackend {
   // the DXBC. Written atomically; anything unreadable is a miss.
   static constexpr char kCacheMagic[8] = {'N', 'D', 'X', 'B', 'C', '0', '0', '1'};
 
+  // NANO_CACHE_DIR names the cache root outright: tests give every run a
+  // fresh data root, and shouldn't pay FXC again for each one.
   const std::string& shaderCacheDir() {
     if (!cacheDirResolved_) {
       cacheDirResolved_ = true;
+      const char* over = std::getenv("NANO_CACHE_DIR");
       const std::string root = nano_paths::dataRootPath();
-      if (!root.empty()) {
+      if (over && *over) {
+        const std::string dir = nano_paths::joinPath(over, "Shaders");
+        if (nano_paths::ensureDir(over) && nano_paths::ensureDir(dir)) cacheDir_ = dir;
+      } else if (!root.empty()) {
         const std::string cache = nano_paths::joinPath(root, "Cache");
         const std::string dir = nano_paths::joinPath(cache, "Shaders");
         if (nano_paths::ensureDir(root) && nano_paths::ensureDir(cache) && nano_paths::ensureDir(dir)) {

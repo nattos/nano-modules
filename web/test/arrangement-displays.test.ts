@@ -16,7 +16,7 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest -i arrangement-displays
  */
 
-import { arrangementUrl, FAKE_SCREENS, forEachCompBackend, nativeOnly } from './comp-backend';
+import { arrangementUrl, FAKE_SCREENS, forEachCompBackend, nativeOnly, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = '';
@@ -325,7 +325,7 @@ describe('Arrangement displays (GPU)', () => {
     await page.evaluate(() => (window as any).arrangementStore.setTransportMode('live'));
   });
 
-  nativeOnly(backend, 'a page can’t publish Syphon')(
+  windowsGap(backend, 'Syphon is macOS (Spout: M4 step 6)', nativeOnly(backend, 'a page can’t publish Syphon'))(
     'Syphon: a display published at the show’s full resolution, no screen needed', async () => {
       await resetShow([1, 0, 0], [0, 1, 0]);
       await page.evaluate(() => (window as any).displayController.setMode('display.2', 'syphon'));
@@ -341,7 +341,7 @@ describe('Arrangement displays (GPU)', () => {
       await page.evaluate(() => (window as any).displayController.setMode('display.2', 'fullscreen'));
     });
 
-  nativeOnly(backend, 'a page can’t open screens')(
+  windowsGap(backend, 'D3D11 present (M4 step 6)', nativeOnly(backend, 'a page can’t open screens'))(
     'presents: Display 1 on the projector — Fit letterboxes, Stretch fills, routed, off', async () => {
       const { t2 } = await resetShow([1, 0, 0], [0, 1, 0]);
       // The compositor reports the (fake) screens: the main one and a projector.

@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { arrangementUrl, forEachCompBackend } from './comp-backend';
+import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
@@ -102,7 +102,7 @@ forEachCompBackend((backend) => {
     jest.setTimeout(180_000);
 
     // (The worker engine exports through export-renderer.ts — the case above.)
-    (backend === 'native' ? it : it.skip)('renders and encodes an MP4 to a path, beside the live comp', async () => {
+    windowsGap(backend, 'MP4 encode (M4 step 5)', backend === 'native' ? it : it.skip)('renders and encodes an MP4 to a path, beside the live comp', async () => {
       const errors: string[] = [];
       await setUp(arrangementUrl(BASE), errors);
       const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'nano-export-')), 'native.mp4');

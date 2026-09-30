@@ -15,7 +15,7 @@
  */
 
 import * as dgram from 'dgram';
-import { arrangementUrl, artnetRedirectPort, forEachCompBackend, nativeOnly } from './comp-backend';
+import { arrangementUrl, artnetRedirectPort, forEachCompBackend, nativeOnly, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = '';
@@ -324,7 +324,7 @@ describe('Arrangement lights (GPU)', () => {
     });
   });
 
-  nativeOnly(backend, 'no UDP in a browser')(
+  windowsGap(backend, 'the DMX redirect is the remote machine’s loopback', nativeOnly(backend, 'no UDP in a browser'))(
     'transmits: the picture, a routed track, a test pattern — to the redirect port', async () => {
       // Listen where the harness redirects every light's DMX.
       const sock = dgram.createSocket('udp4');

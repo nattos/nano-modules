@@ -25,6 +25,11 @@ npm run test:e2e     # Jest+Puppeteer e2e (web/test/**/*.test.ts); needs the dev
 # GPU e2e against a running dev server (point at whatever port it's on, e.g. 5174):
 GPU_TEST_BASE_URL=http://localhost:5174 npx jest <name>   # gpu-pipeline, platform-features, particles, ...
 
+# Native legs on a Windows machine over SSH (M4): stage it, put the dev server on the LAN, point the harness at both
+NANO_WIN_HOST=user@host native/tools/win_remote.sh push
+node web/scripts/lan-forward.mjs <this-mac-lan-ip>          # :5174 → the dev server
+NANO_REMOTE_COMPOSITOR=user@host COMP_BACKENDS=native GPU_TEST_BASE_URL=http://<lan-ip>:5174 npx jest arrangement- -i
+
 # Native (run from native/)
 cmake --build build              # build the barrel lib + executor.wasm + tests
 ctest --test-dir build           # run Catch2 tests

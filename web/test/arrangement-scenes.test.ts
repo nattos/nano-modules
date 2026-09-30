@@ -10,7 +10,7 @@
 
 import { gridUVs, sampleMonitor } from './arr-test-helpers';
 
-import { arrangementUrl, forEachCompBackend } from './comp-backend';
+import { arrangementUrl, forEachCompBackend, windowsGap } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = ''; // the live backend's arrangement URL — set per suite (comp-backend.ts)
@@ -182,7 +182,7 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
+  windowsGap(backend, 'H.264 decode (M4 step 4)')('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
     const { ids, errors } = await boot();
     await page.waitForFunction(
       () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
@@ -237,7 +237,7 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
+  windowsGap(backend, 'H.264 decode (M4 step 4)')('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
     const { ids, errors } = await boot();
     await page.waitForFunction(
       () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
