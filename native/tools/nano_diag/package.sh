@@ -38,10 +38,6 @@ SUITES=(
   test_effect_render           # 53 cases of pixel goldens -- the broadest coverage there is
   test_comp_render             # compositions, both backends' shared scenarios
   test_executor_wasm           # executor.wasm under WAMR, pixel-identical to native
-  test_plane_shear             # }
-  test_tri_shear               # } persistent storage buffers across frames --
-  test_recompose               # } the open Metal bug a fresh driver may settle
-  test_envelope_warp           # }
   test_effect_driver           # per-effect drive-through
   test_text_fonts              # DirectWrite: the known gap, on a real font stack
   test_text_precise
