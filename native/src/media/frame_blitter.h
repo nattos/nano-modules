@@ -82,6 +82,7 @@ class FrameBlitter {
   int32_t shader_ = -1;
   int32_t pso_ = -1;
   int32_t placeBuf_ = -1;
+  int32_t sampler_ = -1;
 };
 
 }  // namespace nano_media

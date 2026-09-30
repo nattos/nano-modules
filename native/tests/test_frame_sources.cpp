@@ -14,6 +14,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "wasm_paths.h"
+
 #include <cmath>
 #include <cstdlib>
 #include <memory>
@@ -28,7 +30,7 @@ using nano_media::openFrameSource;
 
 namespace {
 
-std::string mediaPath(const char* name) { return std::string(TEST_MEDIA_DIR) + "/" + name; }
+std::string mediaPath(const char* name) { return nanoMediaPath(name); }
 
 std::unique_ptr<FrameSource> open(const char* name) {
   std::string why;
@@ -49,7 +51,7 @@ int rampFrame(const std::vector<uint8_t>& px) {
 
 struct Gpu {
   std::unique_ptr<gpu::GPUBackend> backend = gpu::createBackend();
-  bool ok() const { return backend && backend->getBackend() == 0; }
+  bool ok() const { return backend && backend->getBackend() != 1; }  // native: Metal or D3D11
 
   int decoded(FrameSource& s, int idx, int32_t tex) {
     REQUIRE(s.decode(backend.get(), idx, tex));
@@ -62,8 +64,10 @@ struct Gpu {
 
 TEST_CASE("openFrameSource routes each file to its decoder", "[frame_source]") {
   CHECK(open("test_dxv.mov")->codec().substr(0, 2) == "DX");
-  CHECK(open("test_h264.mp4")->codec() == "avc1");
-  CHECK(open("test_image_rgba.png")->codec() == "image:public.png");
+  if (kPlatformDecodesVideo) CHECK(open("test_h264.mp4")->codec() == "avc1");
+  const std::string png = open("test_image_rgba.png")->codec();  // image:public.png / image:png
+  CHECK(png.rfind("image:", 0) == 0);
+  CHECK(png.find("png") != std::string::npos);
 
   std::string why;
   CHECK_FALSE(openFrameSource(mediaPath("nope.mov"), &why));
@@ -71,10 +75,11 @@ TEST_CASE("openFrameSource routes each file to its decoder", "[frame_source]") {
   // Every decoder's refusal is named, not just the last one's.
   CHECK(why.find("dxv:") != std::string::npos);
   CHECK(why.find("image:") != std::string::npos);
-  CHECK(why.find("avfoundation:") != std::string::npos);
+  if (kPlatformDecodesVideo) CHECK(why.find("avfoundation:") != std::string::npos);
 }
 
 TEST_CASE("an AVFoundation source reports the container's shape", "[frame_source]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   auto s = open("test_h264_ramp.mp4");
   CHECK(s->width() == 64);
   CHECK(s->height() == 64);
@@ -84,6 +89,7 @@ TEST_CASE("an AVFoundation source reports the container's shape", "[frame_source
 }
 
 TEST_CASE("AVFoundation frames are exact: forward, backward, mid-GOP", "[frame_source][gpu]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   Gpu g;
   if (!g.ok()) SKIP("No GPU device available");
   auto s = open("test_h264_ramp.mp4");

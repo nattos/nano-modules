@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iterator>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -262,6 +263,31 @@ inline std::string settingsDir() {
     ensureDir(dir);
   }
   return dir;
+}
+
+/// fopen for a UTF-8 path (the A APIs would read it in the ANSI code page).
+inline FILE* openFile(const std::string& p, const char* mode) {
+#ifdef _WIN32
+  return _wfopen(widen(p).c_str(), widen(mode).c_str());
+#else
+  return fopen(p.c_str(), mode);
+#endif
+}
+
+/// 64-bit seek / tell: `long` is 32 bits on Windows, and footage passes 2 GB.
+inline bool seekFile(FILE* f, uint64_t offset, int whence = SEEK_SET) {
+#ifdef _WIN32
+  return _fseeki64(f, (__int64)offset, whence) == 0;
+#else
+  return fseeko(f, (off_t)offset, whence) == 0;
+#endif
+}
+inline uint64_t tellFile(FILE* f) {
+#ifdef _WIN32
+  return (uint64_t)_ftelli64(f);
+#else
+  return (uint64_t)ftello(f);
+#endif
 }
 
 /// A whole file as bytes; false when it can't be opened. UTF-8 path.

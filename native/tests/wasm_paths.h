@@ -75,3 +75,28 @@ inline const char* const kExecutorWasm = nanoWasmPath(EXECUTOR_WASM_PATH);
 #ifdef BRIDGE_DYLIB_PATH
 inline const char* const kBridgeLib = nanoStagedPath(BRIDGE_DYLIB_PATH, "NANO_LIB_DIR");
 #endif
+
+// Media fixtures (web/public/media), baked the same way: NANO_TEST_MEDIA_DIR
+// names where a staged run copied them.
+#ifdef TEST_MEDIA_DIR
+inline std::string nanoMediaPath(const char* name) {
+  const char* dir = std::getenv("NANO_TEST_MEDIA_DIR");
+  if (dir && *dir) return std::string(dir) + "\\" + name;
+  return std::string(TEST_MEDIA_DIR) + "/" + name;
+}
+#endif
+
+// What this platform's media layer covers. Windows decodes DXV and stills
+// only until Media Foundation lands (COMPOSITOR.md M4 steps 4 and 5): the
+// cases that need more SKIP by name there, and flip when these do.
+#ifdef _WIN32
+constexpr bool kPlatformDecodesVideo = false;
+constexpr bool kPlatformEncodesVideo = false;
+#else
+constexpr bool kPlatformDecodesVideo = true;
+constexpr bool kPlatformEncodesVideo = true;
+#endif
+#define NANO_REQUIRE_VIDEO_DECODE() \
+  do { if (!kPlatformDecodesVideo) SKIP("no general video decode on this platform yet (M4 step 4)"); } while (0)
+#define NANO_REQUIRE_VIDEO_ENCODE() \
+  do { if (!kPlatformEncodesVideo) SKIP("no MP4 encode on this platform yet (M4 step 5)"); } while (0)

@@ -1,4 +1,5 @@
-// avf_source.h — macOS frame sources over AVFoundation and ImageIO.
+// avf_source.h — the macOS video source over AVFoundation (stills: image_source.h,
+// which avf_source.mm implements over ImageIO).
 //
 // The classes live in avf_source.mm (their members are Objective-C objects);
 // these factories are the plain-C++ way in. See frame_source.h.
@@ -9,14 +10,9 @@
 #include <string>
 
 #include "frame_source.h"
+#include "image_source.h"
 
 namespace nano_media {
-
-/// A still image (anything ImageIO reads) as a 1-frame, straight-alpha RGBA8
-/// source — the twin of web's ImageFrameSource (createImageBitmap +
-/// copyExternalImageToTexture, which un-premultiplies). Null + `*error` when
-/// ImageIO doesn't recognise the file.
-std::unique_ptr<FrameSource> openImageFrameSource(const std::string& path, std::string* error);
 
 /// A video track AVFoundation can decode (H.264, HEVC, ProRes, ...), decoded
 /// to BGRA8. `open` decodes the first frame, so a file AVFoundation parses but

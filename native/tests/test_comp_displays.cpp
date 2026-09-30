@@ -108,6 +108,14 @@ struct Harness {
     return bundles.loadBundleFile(kCoreWasm, *registry, backend.get(), nullptr) > 1;
   }
 
+  /// The backend's present API (display outputs) exists.
+  bool presents() {
+    const int32_t t = backend->createOffscreenPresentTarget(4, 4);
+    if (t < 0) return false;
+    backend->releasePresentTarget(t);
+    return true;
+  }
+
   std::unique_ptr<bridge::CompHost> host() {
     bridge::CompHost::Config cfg;
     cfg.width = kW;
@@ -179,6 +187,7 @@ TEST_CASE("displays: screen binding never picks the main screen on its own", "[c
 TEST_CASE("displays: Fit letterboxes, Fill crops, Stretch fills", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
+  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
   bridge::OffscreenDisplays screens(fakeScreens());  // outlives the host
   auto h = hx.host();
   h->displays().setSurfaces(&screens);
@@ -215,6 +224,7 @@ TEST_CASE("displays: Fit letterboxes, Fill crops, Stretch fills", "[comp_display
 TEST_CASE("displays: a routed display shows its track; switched off, it closes", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
+  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
   bridge::OffscreenDisplays screens(fakeScreens());
   auto h = hx.host();
   h->displays().setSurfaces(&screens);
@@ -243,6 +253,7 @@ TEST_CASE("displays: a routed display shows its track; switched off, it closes",
 TEST_CASE("displays: no screen is an unplugged cable; a window opens anyway", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
+  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
   bridge::OffscreenDisplays laptop({{"MAIN", "Built-in", 1440, 900, 60, true}});
   auto h = hx.host();
   h->displays().setSurfaces(&laptop);
@@ -270,6 +281,7 @@ TEST_CASE("displays: no screen is an unplugged cable; a window opens anyway", "[
 TEST_CASE("displays: presenting never waits on the screen", "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
+  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
   const int32_t t = hx.backend->createOffscreenPresentTarget(256, 256);
   REQUIRE(t > 0);
   CHECK(hx.backend->presentTargetTexture(t) > 0);
@@ -300,6 +312,7 @@ TEST_CASE("displays: a Syphon output is the render size, needs no screen, publis
           "[comp_displays]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
+  if (!hx.presents()) SKIP("this backend can't present yet (D3D11: COMPOSITOR.md M4 step 6)");
   CountingDisplays none(std::vector<DisplayScreen>{});  // no screens at all
   auto h = hx.host();
   h->displays().setSurfaces(&none);

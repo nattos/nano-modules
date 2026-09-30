@@ -11,6 +11,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 
@@ -22,8 +24,17 @@ using json = nlohmann::json;
 
 namespace {
 
-/// A file that exists but no decoder takes — this source file.
-const std::string kNotMedia = __FILE__;
+/// A file that exists but no decoder takes.
+const std::string kNotMedia = [] {
+  const auto p = std::filesystem::temp_directory_path() / "nano_pump_not_media.mov";
+  std::ofstream(p) << "not a movie";
+  return p.string();
+}();
+
+/// Every decoder that refused is named (the last one differs per platform).
+bool namesEveryDecoder(const std::string& why) {
+  return why.find("dxv:") != std::string::npos && why.find("image:") != std::string::npos;
+}
 
 json desc(const std::string& clipId, const std::string& url) {
   return json{{"clipId", clipId}, {"instanceKey", clipId + "_v"}, {"url", url},
@@ -44,7 +55,7 @@ TEST_CASE("an undecodable clip is named AND reported ready", "[video_pump]") {
   p.pump.pump(1.0, 120);
 
   REQUIRE(p.pump.skipped().count("v1"));
-  CHECK(p.pump.skipped().at("v1").find("avfoundation:") != std::string::npos);
+  CHECK(namesEveryDecoder(p.pump.skipped().at("v1")));
   CHECK(p.ready["v1"] == true);
 
   // Re-reported every pump: the executor prunes its ready set on a set change.
@@ -78,5 +89,5 @@ TEST_CASE("a skipped clip whose source changes gets a fresh attempt", "[video_pu
   REQUIRE(p.pump.skipped().at("v1").find("no locatable media") != std::string::npos);
   // Relinked: the same clip id, a new source — tried again, not remembered.
   p.pump.setActiveClips(json::array({desc("v1", kNotMedia)}));
-  CHECK(p.pump.skipped().at("v1").find("avfoundation:") != std::string::npos);
+  CHECK(namesEveryDecoder(p.pump.skipped().at("v1")));
 }

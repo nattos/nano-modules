@@ -7,10 +7,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -75,6 +81,7 @@ struct Harness {
 
 std::string tempPath(const char* name) {
   const char* tmp = std::getenv("TMPDIR");
+  if (!tmp) tmp = std::getenv("TEMP");
   return std::string(tmp ? tmp : "/tmp") + "/nano_export_" + std::to_string(getpid()) + "_" + name;
 }
 
@@ -105,6 +112,7 @@ Rgb centreOf(gpu::GPUBackend& g, nano_media::FrameSource& src, int idx) {
 }  // namespace
 
 TEST_CASE("export: the timeline, frame by frame, with the backdrop in the gaps", "[comp_export][gpu]") {
+  NANO_REQUIRE_VIDEO_ENCODE();
   Harness hx;
   if (!hx.init()) SKIP("no GPU / core.wasm");
   const std::string path = tempPath("timeline.mp4");
@@ -143,6 +151,7 @@ TEST_CASE("export: the timeline, frame by frame, with the backdrop in the gaps",
 }
 
 TEST_CASE("export: a cancel leaves no file", "[comp_export][gpu]") {
+  NANO_REQUIRE_VIDEO_ENCODE();
   Harness hx;
   if (!hx.init()) SKIP("no GPU / core.wasm");
   const std::string path = tempPath("canceled.mp4");
@@ -153,5 +162,5 @@ TEST_CASE("export: a cancel leaves no file", "[comp_export][gpu]") {
   job.cancel();
   CHECK_FALSE(job.step(5));
   CHECK_FALSE(job.finished());
-  CHECK(access(path.c_str(), F_OK) != 0);
+  CHECK_FALSE(std::ifstream(path).good());
 }

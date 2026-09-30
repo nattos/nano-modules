@@ -4,37 +4,18 @@
 #include <cstring>
 
 #include "gpu/gpu_backend.h"
+#include "platform/paths.h"
+#include "media_dxv_blit_spv.h"  // DXV_BLIT_SPV — shaders/build_shaders.sh
+#include "runtime/shader_from_spv.h"
 #include "dxv_demux.h"
 #include "dxv_lz.h"
 
 namespace nano_media {
 namespace {
 
-/// STILL MSL-ONLY, for the same reason as frame_blitter.cpp: nano_media is
-/// Apple-gated and has no D3D11 path yet. Note for whoever ports it — HLSL
-/// cannot `Load` a block-compressed texture, so the sampler here stops being an
-/// inline `constexpr sampler` and becomes a real binding.
-///
-/// BC1 staging → RGBA8. `read()` isn't defined for block-compressed textures in
-/// MSL, so this SAMPLES with pixel coordinates instead; the hardware BC1 unit
-/// decompresses on the way out. Raw MSL because this is host-only code that
-/// never enters a wasm bundle (the same route host_impls_text.cpp takes).
-/// MSL doesn't encode a threadgroup shape, so the backend reads the
-/// `nano_threadgroup` hint below (and warns when a raw kernel omits it). 8×8
-/// matches both the dispatch here and the web blit's @workgroup_size.
-constexpr const char* kBlitMSL = R"MSL(
-// nano_threadgroup: 8 8 1
-#include <metal_stdlib>
-using namespace metal;
-
-kernel void dxv_blit(texture2d<float, access::sample> src [[texture(0)]],
-                     texture2d<float, access::write>  dst [[texture(1)]],
-                     uint2 gid [[thread_position_in_grid]]) {
-  if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
-  constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_edge);
-  dst.write(src.sample(s, float2(gid) + 0.5f), gid);
-}
-)MSL";
+// BC1 staging → RGBA8 is shaders/dxv_blit.hlsl (SPIR-V, translated for the
+// live backend at PSO-build). It SAMPLES — Metal has no read() on a
+// block-compressed texture — so it carries a nearest sampler.
 
 /// TextureFormat::BC1 (gpu.h) — host-only staging format.
 constexpr int32_t kFmtBC1 = 8;
@@ -49,7 +30,7 @@ uint64_t readBE64(const uint8_t* p) {
 }
 
 bool readAt(std::FILE* f, uint64_t offset, void* dst, size_t len) {
-  if (std::fseek(f, (long)offset, SEEK_SET) != 0) return false;
+  if (!nano_paths::seekFile(f, offset)) return false;
   return std::fread(dst, 1, len, f) == len;
 }
 
@@ -149,8 +130,9 @@ void DxvSource::close() {
     // release them too so a re-open doesn't leak one per file.
     if (blitPso_ >= 0) backend_->release(blitPso_);
     if (blitShader_ >= 0) backend_->release(blitShader_);
+    if (blitSampler_ >= 0) backend_->release(blitSampler_);
   }
-  blitPso_ = blitShader_ = -1;
+  blitPso_ = blitShader_ = blitSampler_ = -1;
   backend_ = nullptr;
   if (file_) { std::fclose(file_); file_ = nullptr; }
   frameOffsets_.clear();
@@ -160,10 +142,10 @@ void DxvSource::close() {
 
 bool DxvSource::open(const std::string& path) {
   close();
-  file_ = std::fopen(path.c_str(), "rb");
+  file_ = nano_paths::openFile(path, "rb");
   if (!file_) { error_ = "cannot open " + path; return false; }
-  std::fseek(file_, 0, SEEK_END);
-  fileSize_ = (uint64_t)std::ftell(file_);
+  nano_paths::seekFile(file_, 0, SEEK_END);
+  fileSize_ = nano_paths::tellFile(file_);
 
   uint64_t moovOff = 0, moovSize = 0;
   if (!findMoov(file_, fileSize_, &moovOff, &moovSize)) {
@@ -225,10 +207,17 @@ bool DxvSource::ensurePipeline(gpu::GPUBackend* backend) {
   }
   backend_ = backend;
   if (blitPso_ < 0) {
-    blitShader_ = backend->createShaderModule(kBlitMSL);
+    blitShader_ = effect_runtime::createShaderModuleFromSpv(backend, DXV_BLIT_SPV, DXV_BLIT_SPV_SIZE,
+                                                            "dxv_blit");
     if (blitShader_ < 0) { error_ = "BC1 blit shader failed to compile"; return false; }
-    blitPso_ = backend->createComputePSO(blitShader_, "dxv_blit");
+    blitPso_ = backend->createComputePSO(blitShader_, "main");
     if (blitPso_ < 0) { error_ = "BC1 blit PSO failed"; return false; }
+  }
+  if (blitSampler_ < 0) {
+    gpu::GPUBackend::SamplerDesc d;
+    d.minFilter = d.magFilter = d.mipFilter = 0;  // nearest: texel centres, exact
+    blitSampler_ = backend->createSampler(d);
+    if (blitSampler_ < 0) { error_ = "BC1 blit sampler failed"; return false; }
   }
   return true;
 }
@@ -277,7 +266,8 @@ bool DxvSource::upload(gpu::GPUBackend* backend, const DecodedFrame& frame, int3
   const int32_t pass = backend->beginComputePass();
   backend->computeSetPSO(pass, blitPso_);
   backend->computeSetTexture(pass, staging, 0, /*access=*/0);   // read
-  backend->computeSetTexture(pass, outTexHandle, 1, /*access=*/1);  // write
+  backend->computeSetSampler(pass, blitSampler_, 1);
+  backend->computeSetTexture(pass, outTexHandle, 2, /*access=*/1);  // write
   backend->computeDispatch(pass, (info_.width + 7) / 8, (info_.height + 7) / 8, 1);
   backend->endComputePass(pass);
   backend->release(staging);

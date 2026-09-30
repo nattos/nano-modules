@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "dxv_source.h"
+#include "image_source.h"
 #ifdef __APPLE__
 #include "avf_source.h"
 #endif
@@ -24,10 +25,10 @@ std::unique_ptr<FrameSource> openFrameSource(const std::string& path, std::strin
   auto dxv = std::make_unique<DxvSource>();
   if (dxv->open(path)) return dxv;
   std::string why = "dxv: " + dxv->error();
-#ifdef __APPLE__
   std::string e;
   if (auto img = openImageFrameSource(path, &e)) return img;
   why += "; image: " + e;
+#ifdef __APPLE__
   e.clear();
   if (auto vid = openAvfVideoSource(path, &e)) return vid;
   why += "; avfoundation: " + e;

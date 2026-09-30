@@ -12,6 +12,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "wasm_paths.h"
+
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -27,11 +29,11 @@ struct GpuHarness {
   std::unique_ptr<gpu::GPUBackend> backend;
   bool init() {
     backend = gpu::createBackend();
-    return backend && backend->getBackend() == 0;
+    return backend && backend->getBackend() != 1;  // native: Metal or D3D11
   }
 };
 
-std::string mediaPath(const char* name) { return std::string(TEST_MEDIA_DIR) + "/" + name; }
+std::string mediaPath(const char* name) { return nanoMediaPath(name); }
 
 /// Mean of a channel over the frame — enough to tell "real picture" from
 /// "black" or "garbage" without pinning exact pixels.

@@ -113,6 +113,7 @@ class DxvSource : public FrameSource {
   gpu::GPUBackend* backend_ = nullptr;
   int32_t blitShader_ = -1;
   int32_t blitPso_ = -1;
+  int32_t blitSampler_ = -1;
 };
 
 }  // namespace nano_media

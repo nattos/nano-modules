@@ -25,7 +25,9 @@
 // PACING. While any output is up, the first one's display link paces the
 // render loop (waitVsync); otherwise the caller keeps its own clock.
 //
-// macOS only; create() returns null elsewhere.
+// macOS only so far (display_windows_mac.mm); display_windows_none.cpp
+// returns null elsewhere, and the compositor runs headless — Windows outputs
+// are COMPOSITOR.md M4 step 6.
 
 #pragma once
 

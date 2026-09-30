@@ -14,6 +14,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "wasm_paths.h"
+
 #include <chrono>
 #include <cmath>
 #include <map>
@@ -29,7 +31,7 @@ using json = nlohmann::json;
 
 namespace {
 
-std::string mediaPath(const char* name) { return std::string(TEST_MEDIA_DIR) + "/" + name; }
+std::string mediaPath(const char* name) { return nanoMediaPath(name); }
 
 constexpr int kW = 32, kH = 32;
 
@@ -46,7 +48,7 @@ struct Harness {
   int32_t bound = -1;
   std::map<std::string, bool> ready;
 
-  bool ok() const { return backend && backend->getBackend() == 0; }
+  bool ok() const { return backend && backend->getBackend() != 1; }  // native: Metal or D3D11
 
   void make(bool async) {
     nano_media::VideoPump::Config cfg;
@@ -82,6 +84,7 @@ struct Harness {
 }  // namespace
 
 TEST_CASE("async: not ready while opening, then the exact frame", "[video_pump][gpu]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -97,6 +100,7 @@ TEST_CASE("async: not ready while opening, then the exact frame", "[video_pump][
 }
 
 TEST_CASE("async: playback binds every frame exactly, ready only when it is", "[video_pump][gpu]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -124,6 +128,7 @@ TEST_CASE("async: playback binds every frame exactly, ready only when it is", "[
 }
 
 TEST_CASE("async: a backward seek lands exactly", "[video_pump][gpu]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -149,6 +154,7 @@ TEST_CASE("async: a failed open is skipped and ready", "[video_pump][gpu]") {
 }
 
 TEST_CASE("async: a clip leaving mid-decode tears down without blocking", "[video_pump][gpu]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/true);
@@ -161,6 +167,7 @@ TEST_CASE("async: a clip leaving mid-decode tears down without blocking", "[vide
 }
 
 TEST_CASE("sync mode is unchanged: the frame is bound on the first pump", "[video_pump][gpu]") {
+  NANO_REQUIRE_VIDEO_DECODE();
   Harness h;
   if (!h.ok()) SKIP("No GPU device available");
   h.make(/*async=*/false);
@@ -168,4 +175,51 @@ TEST_CASE("sync mode is unchanged: the frame is bound on the first pump", "[vide
   h.pump->pump(2.0, 120);
   CHECK(h.ready["v1"] == true);
   CHECK(h.boundFrame() == 30);
+}
+
+// The placement blit (frame_blitter.cpp → shaders/frame_blit.hlsl) with the
+// sources every platform decodes — so it runs where H.264 doesn't yet.
+TEST_CASE("the placement blit fits a still: the frame placed, the bars transparent", "[video_pump][gpu]") {
+  Harness h;
+  if (!h.ok()) SKIP("No GPU device available");
+  h.make(/*async=*/false);
+  json d = rampDesc(mediaPath("test_image_rgba.png"));  // 4x2: red, green, blue, orange
+  d["durationFrames"] = 1;
+  d["scaleMode"] = "fit";
+  h.pump->setActiveClips(json::array({d}));
+  h.pump->pump(0.5, 120);
+  REQUIRE(h.ready["v1"] == true);
+  REQUIRE(h.bound >= 0);
+  h.backend->submit();
+  const auto px = h.backend->readbackTexture(h.bound, kW, kH);
+  const auto at = [&](int x, int y, int c) { return (int)px[((size_t)y * kW + x) * 4 + c]; };
+  // 2:1 into 32x32 fits as 32x16, rows 8..23.
+  CHECK(at(16, 2, 3) == 0);    // top bar
+  CHECK(at(16, 29, 3) == 0);   // bottom bar
+  CHECK(at(2, 16, 0) == 255);  // the red texel's column
+  CHECK(at(2, 16, 3) == 255);
+  CHECK(at(29, 16, 0) >= 199);  // the orange one (200,100,50)
+  CHECK(at(29, 16, 2) <= 51);
+}
+
+TEST_CASE("a DXV clip binds real pixels through the placement blit", "[video_pump][gpu]") {
+  Harness h;
+  if (!h.ok()) SKIP("No GPU device available");
+  h.make(/*async=*/false);
+  json d = rampDesc(mediaPath("test_dxv.mov"));
+  d["scaleMode"] = "stretch";
+  h.pump->setActiveClips(json::array({d}));
+  h.pump->pump(1.0, 120);
+  REQUIRE(h.ready["v1"] == true);
+  REQUIRE(h.bound >= 0);
+  h.backend->submit();
+  const auto px = h.backend->readbackTexture(h.bound, kW, kH);
+  uint64_t rgb = 0;
+  int opaque = 0;
+  for (size_t i = 0; i < px.size(); i += 4) {
+    rgb += px[i] + px[i + 1] + px[i + 2];
+    opaque += px[i + 3] == 255;
+  }
+  CHECK(rgb > 0);                  // a picture, not black
+  CHECK(opaque == kW * kH);        // stretch covers the frame
 }

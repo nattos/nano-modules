@@ -341,34 +341,68 @@ if(APPLE)
     "-framework QuartzCore"
   )
 
-  # --- Media (host-side video decode + cache policy) ---
-  # NEVER link this into anything that also builds for wasm: it touches the
-  # filesystem and the GPU backend, and src/sketch/comp/ is dual-compiled into
-  # executor.wasm. The DXV demuxer/LZ sources are the SAME portable C++ the
-  # dxv_decoder wasm module compiles — reused, not ported.
+endif()
+
+# --- Media (host-side video decode + cache policy) ---
+# NEVER link this into anything that also builds for wasm: it touches the
+# filesystem and the GPU backend, and src/sketch/comp/ is dual-compiled into
+# executor.wasm. The DXV demuxer/LZ sources are the SAME portable C++ the
+# dxv_decoder wasm module compiles — reused, not ported.
+#
+# A portable core (DXV, the blitter, routing, the pump) plus one platform layer:
+# stills, url fetch and the encoder (AVFoundation/ImageIO on macOS; WIC and
+# WinHTTP on Windows, whose video decode and encode are still to come — see
+# COMPOSITOR.md M4).
+if(APPLE OR WIN32)
+  set(MEDIA_SHADER_DIR "${CMAKE_SOURCE_DIR}/src/media/shaders")
+  set(MEDIA_SHADER_HEADERS
+      "${CMAKE_SOURCE_DIR}/build/tmp/media_frame_blit_spv.h"
+      "${CMAKE_SOURCE_DIR}/build/tmp/media_dxv_blit_spv.h")
+  add_custom_command(
+    OUTPUT ${MEDIA_SHADER_HEADERS}
+    COMMAND "${MEDIA_SHADER_DIR}/build_shaders.sh" "${CMAKE_SOURCE_DIR}/build/tmp"
+    DEPENDS "${MEDIA_SHADER_DIR}/build_shaders.sh"
+            "${MEDIA_SHADER_DIR}/frame_blit.hlsl"
+            "${MEDIA_SHADER_DIR}/dxv_blit.hlsl"
+            "${CMAKE_SOURCE_DIR}/cmake/spv_bake.sh"
+    COMMENT "Baking media shaders (DXC: frame_blit + dxv_blit)"
+    VERBATIM)
+
   add_library(nano_media STATIC
-    src/media/avf_source.mm
     src/media/dxv_source.cpp
     src/media/frame_blitter.cpp
     src/media/frame_source.cpp
-    src/media/media_fetch.mm
-    src/media/video_encoder.mm
     src/media/video_pump.cpp
     wasm_modules/dxv_decoder/dxv_demux.cpp
     wasm_modules/dxv_decoder/dxv_lz.cpp
+    ${MEDIA_SHADER_HEADERS}
   )
   target_include_directories(nano_media PUBLIC
     ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/wasm_modules/dxv_decoder)
-  target_link_libraries(nano_media PUBLIC gpu_backend nlohmann_json::nlohmann_json
-    "-framework AVFoundation"
-    "-framework CoreMedia"
-    "-framework CoreVideo"
-    "-framework CoreGraphics"
-    "-framework Foundation"
-    "-framework ImageIO")
-  set_source_files_properties(src/media/avf_source.mm src/media/media_fetch.mm
-    src/media/video_encoder.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    ${CMAKE_SOURCE_DIR}/wasm_modules/dxv_decoder
+    PRIVATE ${CMAKE_SOURCE_DIR}/build/tmp)
+  target_link_libraries(nano_media PUBLIC gpu_backend spv_translate nlohmann_json::nlohmann_json)
+  if(APPLE)
+    target_sources(nano_media PRIVATE
+      src/media/avf_source.mm
+      src/media/media_fetch.mm
+      src/media/video_encoder.mm)
+    target_link_libraries(nano_media PUBLIC
+      "-framework AVFoundation"
+      "-framework CoreMedia"
+      "-framework CoreVideo"
+      "-framework CoreGraphics"
+      "-framework Foundation"
+      "-framework ImageIO")
+    set_source_files_properties(src/media/avf_source.mm src/media/media_fetch.mm
+      src/media/video_encoder.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  else()
+    target_sources(nano_media PRIVATE
+      src/media/wic_source.cpp
+      src/media/media_fetch_win.cpp
+      src/media/video_encoder_win.cpp)
+    target_link_libraries(nano_media PUBLIC windowscodecs ole32 winhttp)
+  endif()
 endif()
 
 # --- WASM Host library ---
@@ -1371,8 +1405,8 @@ if(NANO_HAS_GPU_BACKEND)
   # Everything around comp::CompExecutor a native process needs: catalog
   # seeding, the streams table, the decode pump, the frame order. Shared by
   # comp_test_runner and the shared runtime's comp instance (nano_compositor),
-  # so the parity runner exercises what ships. Needs the decode pump, which is
-  # Apple-only for now. NANO_COMP_HOST=1 tells barrel_runtime.cpp it exists.
+  # so the parity runner exercises what ships. Needs the decode pump (macOS and
+  # Windows). NANO_COMP_HOST=1 tells barrel_runtime.cpp it exists.
   if(TARGET nano_media)
     add_library(comp_host STATIC src/bridge/comp_host.cpp src/bridge/comp_export.cpp
       src/bridge/comp_lights.cpp src/bridge/comp_displays.cpp)
@@ -1485,6 +1519,16 @@ if(NANO_HAS_GPU_BACKEND)
   # the engine (process-global runtime state). The editor reaches it over the
   # bridge WebSocket (tools/nano_compositor.cpp has the protocol).
   if(TARGET comp_host)
+    add_executable(nano_compositor tools/nano_compositor.cpp)
+    target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src
+      ${CMAKE_SOURCE_DIR}/tools)
+    target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json)
+    if(NOT APPLE)
+      # No display windows yet (M4 step 6): headless.
+      target_sources(nano_compositor PRIVATE tools/compositor/display_windows_none.cpp)
+    endif()
+  endif()
+  if(TARGET comp_host AND APPLE)
     # Syphon's protocol core (third_party/syphon, vendored, BSD): the process
     # publishes display outputs as Syphon servers. Never in libbridge_server —
     # Resolume loads that next to its own Syphon.framework.
@@ -1497,22 +1541,18 @@ if(NANO_HAS_GPU_BACKEND)
       -include ${CMAKE_SOURCE_DIR}/third_party/syphon/Syphon_Prefix.pch)
     target_link_libraries(syphon_core PUBLIC "-framework Cocoa" "-framework IOSurface")
 
-    add_executable(nano_compositor tools/nano_compositor.cpp
-      tools/compositor/display_windows_mac.mm tools/compositor/syphon_outputs_mac.mm)
-    target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src
-      ${CMAKE_SOURCE_DIR}/tools)
     # The display windows are AppKit, under ARC; they live in the PROCESS, never
     # in libbridge_server (the barrel inside Resolume must not open windows).
+    target_sources(nano_compositor PRIVATE
+      tools/compositor/display_windows_mac.mm tools/compositor/syphon_outputs_mac.mm)
     set_source_files_properties(tools/compositor/display_windows_mac.mm
       tools/compositor/syphon_outputs_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-    target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json syphon_core
+    target_link_libraries(nano_compositor PRIVATE syphon_core
       "-framework AppKit" "-framework QuartzCore" "-framework CoreGraphics" "-framework Carbon")
     # Staged (web/scripts/stage_resources.sh → <root>/bin/) with its own
     # libbridge_server beside it: find that one, not the build tree's.
-    if(APPLE)
-      set_target_properties(nano_compositor PROPERTIES
-        BUILD_RPATH "@executable_path;${CMAKE_BINARY_DIR}")
-    endif()
+    set_target_properties(nano_compositor PROPERTIES
+      BUILD_RPATH "@executable_path;${CMAKE_BINARY_DIR}")
 
     # Syphon outputs end to end in one process (server → client → pixels).
     if(TARGET Catch2::Catch2WithMain)

@@ -17,8 +17,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <filesystem>
 
 #include <nlohmann/json.hpp>
 
@@ -34,12 +33,12 @@ namespace {
 struct TempLibrary {
   std::string root;
   TempLibrary() {
-    const char* tmp = getenv("TMPDIR");
-    root = std::string(tmp ? tmp : "/tmp");
-    if (!root.empty() && root.back() == '/') root.pop_back();
-    root += "/nano_mediaref_" + std::to_string(::getpid());
-    ::mkdir(root.c_str(), 0755);
-    ::mkdir((root + "/footage").c_str(), 0755);
+    namespace fs = std::filesystem;
+    root = (fs::temp_directory_path() /
+            ("nano_mediaref_" + std::to_string(std::hash<std::string>{}(
+                                    std::to_string((uintptr_t)this) + std::to_string(std::rand())))))
+               .generic_string();
+    fs::create_directories(root + "/footage");
     std::ofstream(root + "/footage/a.mov") << "x";
     nano_assets::LibraryPaths::instance().setRoots(json::array({
         {{"id", "L1"}, {"label", "Footage"}, {"absolutePath", root}},
@@ -47,9 +46,8 @@ struct TempLibrary {
   }
   ~TempLibrary() {
     nano_assets::LibraryPaths::instance().setRoots(json::array());
-    ::remove((root + "/footage/a.mov").c_str());
-    ::rmdir((root + "/footage").c_str());
-    ::rmdir(root.c_str());
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
   }
   std::string media() const { return root + "/footage/a.mov"; }
 };

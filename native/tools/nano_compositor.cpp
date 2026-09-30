@@ -46,7 +46,11 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "bridge/bridge_api.h"
 #include "compositor/display_windows.h"
@@ -95,6 +99,14 @@ bool parseArgs(int argc, char** argv, Args& a) {
   return a.width > 0 && a.height > 0 && a.hz > 0;
 }
 
+void setEnv(const char* name, const char* value) {
+#ifdef _WIN32
+  _putenv_s(name, value);
+#else
+  setenv(name, value, 1);
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -105,14 +117,16 @@ int main(int argc, char** argv) {
     return 2;
   }
   // Before bridge_init: the server reads both while it starts.
-  setenv("NANO_NO_RESOLUME", "1", 1);
-  if (args.port > 0) setenv("NANO_BRIDGE_PORT", std::to_string(args.port).c_str(), 1);
+  setEnv("NANO_NO_RESOLUME", "1");
+  if (args.port > 0) setEnv("NANO_BRIDGE_PORT", std::to_string(args.port).c_str());
   const char* portEnv = getenv("NANO_BRIDGE_PORT");
   const int port = portEnv && std::atoi(portEnv) > 0 ? std::atoi(portEnv) : 8081;
 
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
+#ifdef SIGPIPE
   std::signal(SIGPIPE, SIG_IGN);
+#endif
 
   BridgeHandle h = bridge_init();
   if (!h) {
@@ -127,10 +141,17 @@ int main(int argc, char** argv) {
   if (!displayRedirect || !*displayRedirect) windows = compositor::DisplayWindows::create(args.hz);
 
   // A parent that goes away closes our stdin: go with it.
+#ifdef _WIN32
+  if (!_isatty(_fileno(stdin))) {
+    std::thread([] {
+      char buf[256];
+      while (_read(_fileno(stdin), buf, sizeof(buf)) > 0) {}
+#else
   if (!isatty(STDIN_FILENO)) {
     std::thread([] {
       char buf[256];
       while (read(STDIN_FILENO, buf, sizeof(buf)) > 0) {}
+#endif
       g_stop.store(true);
     }).detach();
   }

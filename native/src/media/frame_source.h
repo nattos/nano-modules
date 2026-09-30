@@ -7,7 +7,8 @@
 //   DxvSource        (dxv_source.h)  DXV3 via the reused wasm demuxer + BC1 blit
 //   AvfVideoSource   (avf_source.mm) everything AVFoundation decodes (H.264,
 //                                    HEVC, ProRes, ...)
-//   ImageFrameSource (avf_source.mm) a still (PNG, JPEG, ...) as a 1-frame video
+//   ImageFrameSource (image_source.h: avf_source.mm over ImageIO, wic_source.cpp
+//                    over WIC) a still (PNG, JPEG, ...) as a 1-frame video
 //
 // Every source here is RANDOM ACCESS — there is no `streaming` flavour as on
 // web. A browser <video> can't seek a sparse-keyframe clip in real time, so the

@@ -4,51 +4,14 @@
 #include <cmath>
 
 #include "gpu/gpu_backend.h"
+#include "media_frame_blit_spv.h"  // FRAME_BLIT_SPV — shaders/build_shaders.sh
+#include "runtime/shader_from_spv.h"
 
 namespace nano_media {
 namespace {
 
-/// STILL MSL-ONLY: the whole nano_media target is Apple-gated, so there is no
-/// D3D11 path for this to be wrong on yet. When the video pipeline comes to
-/// Windows this wants the same HLSL→SPIR-V treatment the executor's shaders got
-/// (src/sketch/shaders/), and the bindings below have to move: `place` sits at
-/// buffer slot 0, which collides with texture slot 0 once they share SPIR-V's
-/// one binding namespace.
-///
-/// The MSL twin of frame-blitter.ts's BLIT_SHADER. Web runs it as a
-/// full-screen-triangle fragment pass; here it's a compute kernel, which lands
-/// on the same pixel centres: the fragment's interpolated uv at pixel p is
-/// (p + 0.5)/size, and `gid` addresses the same top-left-origin grid.
-constexpr const char* kBlitMSL = R"MSL(
-// nano_threadgroup: 8 8 1
-#include <metal_stdlib>
-using namespace metal;
-
-struct Place { float4 rect; float4 rotFlip; };
-
-kernel void frame_blit(texture2d<float, access::sample> src [[texture(0)]],
-                       texture2d<float, access::write>  dst [[texture(1)]],
-                       constant Place& place [[buffer(0)]],
-                       uint2 gid [[thread_position_in_grid]]) {
-  const uint w = dst.get_width();
-  const uint h = dst.get_height();
-  if (gid.x >= w || gid.y >= h) return;
-  const float2 uv = (float2(gid) + 0.5f) / float2(w, h);
-  const float2 r = (uv - place.rect.xy) / place.rect.zw;   // rect-local [0,1]
-  const int rot = int(place.rotFlip.x + 0.5f);
-  float2 s;
-  if (rot == 1)      { s = float2(r.y, 1.0f - r.x); }      // 90 CW
-  else if (rot == 2) { s = float2(1.0f - r.x, 1.0f - r.y); }
-  else if (rot == 3) { s = float2(1.0f - r.y, r.x); }      // 270 CW
-  else               { s = r; }
-  if (place.rotFlip.y > 0.5f) { s.x = 1.0f - s.x; }
-  if (place.rotFlip.z > 0.5f) { s.y = 1.0f - s.y; }
-  // Sample unconditionally, then mask outside-source pixels to transparent.
-  const float inside = (s.x >= 0.0f && s.x <= 1.0f && s.y >= 0.0f && s.y <= 1.0f) ? 1.0f : 0.0f;
-  constexpr sampler samp(coord::normalized, filter::linear, address::clamp_to_edge);
-  dst.write(src.sample(samp, clamp(s, float2(0.0f), float2(1.0f))) * inside, gid);
-}
-)MSL";
+// The shader is shaders/frame_blit.hlsl, baked to SPIR-V and translated for
+// the live backend at PSO-build — the twin of frame-blitter.ts's BLIT_SHADER.
 
 /// gpu.h BufferUsage::Uniform.
 constexpr int32_t kBufferUsageUniform = 2;
@@ -101,6 +64,7 @@ PlaceGeom placeGeom(int sw, int sh, int W, int H, BlitFit mode, const BlitTransf
 FrameBlitter::~FrameBlitter() {
   if (!backend_) return;
   if (placeBuf_ >= 0) backend_->release(placeBuf_);
+  if (sampler_ >= 0) backend_->release(sampler_);
   if (pso_ >= 0) backend_->release(pso_);
   if (shader_ >= 0) backend_->release(shader_);
 }
@@ -109,10 +73,16 @@ bool FrameBlitter::ensurePipeline(gpu::GPUBackend* backend) {
   if (backend_ && backend_ != backend) return false;
   backend_ = backend;
   if (pso_ < 0) {
-    shader_ = backend->createShaderModule(kBlitMSL);
+    shader_ = effect_runtime::createShaderModuleFromSpv(backend, FRAME_BLIT_SPV, FRAME_BLIT_SPV_SIZE,
+                                                        "frame_blit");
     if (shader_ < 0) return false;
-    pso_ = backend->createComputePSO(shader_, "frame_blit");
+    pso_ = backend->createComputePSO(shader_, "main");
     if (pso_ < 0) return false;
+  }
+  if (sampler_ < 0) {
+    gpu::GPUBackend::SamplerDesc d;  // linear, clamp to edge
+    sampler_ = backend->createSampler(d);
+    if (sampler_ < 0) return false;
   }
   if (placeBuf_ < 0) {
     placeBuf_ = backend->createBuffer(32, kBufferUsageUniform);
@@ -137,8 +107,9 @@ bool FrameBlitter::blit(gpu::GPUBackend* backend, int32_t srcTex, int srcW, int 
   const int32_t pass = backend->beginComputePass();
   backend->computeSetPSO(pass, pso_);
   backend->computeSetTexture(pass, srcTex, 0, /*access=*/0);
-  backend->computeSetTexture(pass, dstTex, 1, /*access=*/1);
-  backend->computeSetBuffer(pass, placeBuf_, 0, /*slot=*/0);
+  backend->computeSetSampler(pass, sampler_, 1);
+  backend->computeSetTexture(pass, dstTex, 2, /*access=*/1);
+  backend->computeSetBuffer(pass, placeBuf_, 0, /*slot=*/3);
   backend->computeDispatch(pass, (W + 7) / 8, (H + 7) / 8, 1);
   backend->endComputePass(pass);
   return true;

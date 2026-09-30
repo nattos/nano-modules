@@ -428,30 +428,32 @@ Still open:
 
 ### M4 — Windows
 
-The Windows environment is being set up now. `WINDOWS.md` and memory (`project_windows_d3d11_port`)
-record what already runs on D3D11:
+Windows runs on real hardware now: an ROG Ally (one AMD GPU), reached over SSH, with the binaries
+cross-built on the Mac (`native/build-win`, the zig toolchain) and copied across. `WINDOWS.md` and
+memory (`project_windows_d3d11_port`) record what already ran on D3D11 before the compositor:
 - the executor, comp render and FFGL plugin build;
-- the executor under WAMR, pixel-identical.
-
-The compositor itself doesn't build there yet, for one structural reason: **`nano_media` is
-Apple-only, and `comp_host` is gated on it** (`native/CMakeLists.txt`, the `if(TARGET nano_media)`
-around `comp_host`).
+- the executor under WAMR, pixel-identical;
+- the GL↔D3D share in the plugin.
 
 **Decided: general video formats are required.** A DXV-only compositor is a stepping stone for
 running the tests, NOT a milestone to ship. Windows goes native only once Media Foundation decode
 works. Order:
 
-1. **Split `nano_media` into a portable core plus a platform layer.**
-   - Portable: `dxv_source`, `frame_blitter`, `frame_source` routing, `video_pump`, the DXV demux/LZ.
-   - Apple: `avf_source.mm`, `media_fetch.mm`, `video_encoder.mm`.
-   - At this step Windows decodes **DXV and stills only**, as an internal checkpoint. `openFrameSource`
-     already names each refusal, and a refused clip reports ready and transparent, so H.264 clips
-     simply don't show; nothing hangs.
-   - Stills via WIC (`IWICBitmapDecoder` → premultiplied → un-premultiply, matching
-     `openImageFrameSource`'s straight-alpha output).
-   - `media_fetch` via WinHTTP, or refuse URLs on Windows at first: it only matters for dev-server
-     test fixtures.
-   - This builds `comp_host` + `nano_compositor.exe`.
+1. **`nano_media` split into a portable core plus a platform layer — DONE (2026-09-30).**
+   - Portable: `dxv_source`, `frame_blitter`, `frame_source` routing, `video_pump`, the DXV
+     demux/LZ. The two blits are HLSL now (`src/media/shaders/`, baked to SPIR-V, translated per
+     backend like the executor's), each with a real sampler binding.
+   - Apple: `avf_source.mm` (stills + AVFoundation video), `media_fetch.mm`, `video_encoder.mm`.
+   - Windows: `wic_source.cpp` (stills, straight-alpha RGBA8 straight out of WIC),
+     `media_fetch_win.cpp` (WinHTTP, so the dev server's fixtures load), `video_encoder_win.cpp`
+     (refuses at open: "MP4 export isn't available on Windows yet").
+   - `comp_host` + `nano_compositor.exe` build and run: D3D11 on the AMD GPU, 157 effects, a comp
+     instance, a clean exit on stdin EOF. No display windows yet (`display_windows_none.cpp`).
+   - Tests: DXV decode, stills, the pump (incl. the placement blit, on DXV and a still), comp host,
+     lights and media refs pass on Windows. What Windows can't do yet SKIPs BY NAME
+     (`NANO_REQUIRE_VIDEO_DECODE` / `_ENCODE` in `tests/wasm_paths.h`, and the present API in
+     `test_comp_displays`), so flipping `kPlatformDecodesVideo` is what turns step 4's tests on.
+     `NANO_WASM_DIR` / `NANO_TEST_MEDIA_DIR` point a staged run at its copies.
 2. **Run the native legs of the arrangement suites on Windows,** with previews on the **lanes**
    (NBPC). The shared-surface path isn't there yet, and the web side already falls back.
    - `compositor.cjs` already names `nano_compositor.exe`.
