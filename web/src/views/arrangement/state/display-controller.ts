@@ -20,7 +20,7 @@ import { makeObservable, observable, action, runInAction, toJS } from 'mobx';
 import {
   displayMode, displayOrdinal, displaySlotId, librarySlot, librarySlots, resolveDisplayScreen,
   BUILTIN_DISPLAY_COUNT, type DisplayIdentify, type DisplayMode, type DisplayScreen, type DisplaySlot,
-  type WindowFrame,
+  type ShareMode, type WindowFrame,
 } from '../../../displays/display-types';
 import { buildDisplayPlan, type DisplayPlan } from '../../../displays/display-plan';
 import { loadDisplayLibrary, saveDisplayRow, watchDisplayLibrary } from '../../../state/display-device-store';
@@ -31,7 +31,7 @@ const SAVE_DEBOUNCE_MS = 300;
 
 /** One display's state, as the native compositor reports it. */
 export interface DisplayStatus {
-  /** 'showing' | 'window' | 'syphon' | 'opening' | 'no-screen' | 'off' | 'disarmed'
+  /** 'showing' | 'window' | 'syphon' | 'spout' | 'opening' | 'no-screen' | 'off' | 'disarmed'
    *  (the master output switch is off) | 'no-output'. */
   state: string;
   screen?: DisplayScreen;
@@ -62,6 +62,9 @@ export class DisplayController {
   library: DisplaySlot[] = [];
   /** The screens the native compositor sees (null: this engine can't say). */
   screens: DisplayScreen[] | null = null;
+  /** How the engine shares a frame with other apps (null until it says;
+   *  then the page's own platform is the guess). */
+  shareMode: ShareMode | null = null;
   /** placementId → its state (native compositor only). */
   status: Record<string, DisplayStatus> = {};
   /** The last identify the engine carried out (tests, and the UI's echo). */
@@ -76,6 +79,7 @@ export class DisplayController {
     makeObservable<DisplayController, never>(this, {
       library: observable,
       screens: observable.ref,
+      shareMode: observable.ref,
       status: observable.ref,
       lastIdentified: observable.ref,
       setTelemetry: action,
@@ -131,8 +135,9 @@ export class DisplayController {
    *  closed turns that display off (an undoable edit, like the toggle); a
    *  moved window is remembered. */
   setTelemetry(screens: DisplayScreen[] | undefined, status: Record<string, DisplayStatus> | undefined,
-               events: DisplayEvent[] | undefined): void {
+               events: DisplayEvent[] | undefined, shareMode?: ShareMode): void {
     if (screens) this.screens = screens;
+    if (shareMode) this.shareMode = shareMode;
     if (status) this.status = status;
     for (const e of events ?? []) {
       if (e.type === 'closed') {
@@ -156,6 +161,12 @@ export class DisplayController {
 
   slot(id: string): DisplaySlot | undefined {
     return librarySlot(this.library, id);
+  }
+
+  /** How this machine shares a frame with other apps: what the engine says,
+   *  else the page's platform (the worker engine shares nothing either way). */
+  get share(): ShareMode {
+    return this.shareMode ?? (/Win/i.test(navigator.platform || '') ? 'spout' : 'syphon');
   }
 
   /** Where a slot lands now: a connected screen, or null (a window, or no
@@ -199,7 +210,7 @@ export class DisplayController {
     });
   }
 
-  /** Fullscreen on its screen, a rehearsal window, or a Syphon server. */
+  /** Fullscreen on its screen, a rehearsal window, or shared (Syphon / Spout). */
   setMode(id: string, mode: DisplayMode): void {
     this.edit(id, (r) => {
       if (mode === 'fullscreen') delete r.mode; else r.mode = mode;

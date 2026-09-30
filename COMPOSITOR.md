@@ -236,8 +236,8 @@ As built (the design notes follow, below):
   screen list) presents offscreen — ctest, `comp-backend.ts`, and hidden Electron launches set it.
   `test_comp_displays` (fit/fill/stretch pixels, routes, binding), `test_compositor_protocol`,
   e2e `arrangement-displays`.
-- Not yet: Windows (D3D11 swap chains, M4), a crop / usable region per projector, per-output
-  colour.
+- Windows: M4 step 6 below (swap chains, Win32 windows, Spout).
+- Not yet: a crop / usable region per projector, per-output colour.
 
 #### The present API (`GPUBackend`) — design notes
 
@@ -461,8 +461,8 @@ works. Order:
      lanes 8092–8099); `web/scripts/lan-forward.mjs` puts the dev server on the LAN, since the
      compositor fetches media from the page's origin (`GPU_TEST_BASE_URL=http://<lan-ip>:5174`).
    - Every engine suite's native leg passes there. What Windows can't do yet is skipped BY NAME
-     (`windowsGap`): H.264 decode (step 4), MP4 encode (step 5), present + Syphon/Spout (step 6), and
-     the lights suite's DMX listener (its redirect is the remote machine's loopback).
+     (`windowsGap`): H.264 decode (step 4), MP4 encode (step 5), present + Syphon/Spout (step 6) —
+     all three since done and un-gapped — and the lights suite's DMX listener (its redirect is the remote machine's loopback).
    - What it found, all fixed: FXC made a cold start 26 s (a DXBC disk cache, `<dataRoot>/Cache/
      Shaders` — warm start 1 s); ixwebsocket's Windows poll could stop READING a connection for
      good after one oversized reply (patched to its level-triggered path,
@@ -530,10 +530,42 @@ works. Order:
    - `test_comp_export` is the contract and passes on the Ally; a Windows export decodes to the
      same colours under AVFoundation. The web export e2e is a remote gap only because its output
      path is checked on the harness's machine.
-6. **Outputs on Windows.**
-   - A DXGI flip-model present into a borderless HWND per display, identified by the monitor's
-     device path, not its index.
-   - **Spout** via SpoutDX (BSD), on our D3D11 device.
+6. **Outputs on Windows — DONE (2026-09-30).**
+   - **Present** (`d3d11_backend.cpp`): a window target is a flip-model swap chain on the
+     provider's HWND — BGRA8, 3 buffers, a frame-latency waitable object at 2 (a present that finds
+     it unsignalled is SKIPPED, never waited on, like Metal's two-in-flight rule), buffers resized
+     to the client size at each present, `Present(1, 0)`. Offscreen targets are BGRA8 textures;
+     a shared target opens another API's legacy share handle. Fit / Fill / Stretch are viewports
+     on the preview scaler (`scaleIntoRect`; the scissor clips a Fill's overhang).
+   - **Windows** (`tools/compositor/display_windows_win.cpp`): screens from `QueryDisplayConfig`,
+     one per source, identified by the monitor's DEVICE PATH, named by EDID (an internal panel is
+     "Built-in Display" — its EDID name is a part number), physical pixels under per-monitor DPI
+     awareness v2, hotplug via `WM_DISPLAYCHANGE` (broadcast to top-level windows only — the
+     control window is a hidden top-level one). Fullscreen = a topmost `WS_POPUP` over the monitor,
+     `WS_EX_NOACTIVATE` (never takes focus), not in Alt+Tab; window mode, identify and
+     Ctrl+Shift+D (`RegisterHotKey` while any output is up) as on macOS; no quit chord. A closed
+     window is hidden at once and destroyed 2 s later (the render thread may still present to it
+     for a frame), and the main thread keeps pumping while the render thread shuts down.
+   - **Pacing**: a thread waits on the first output's `IDXGIOutput::WaitForVBlank` and ticks the
+     render thread at most `--hz` times a second.
+   - **Spout** (`tools/compositor/spout_outputs_win.cpp`): the vendored SENDER core
+     (`third_party/spout`: names, sender info, frame count — not SpoutDX, whose model is "copy
+     your texture in"). The sender's BGRA8 legacy-shared texture is made on a device of the
+     process's own, on the engine's adapter (`gpu/d3d11_adapter_win.h` — `NANO_D3D_ADAPTER`'s
+     matcher, now shared), and the engine presents straight into it; `publish` bumps Spout's frame
+     count (a no-op unless SpoutSettings turned counting on — receivers poll otherwise). The
+     page offers `spout` instead of `syphon` because the engine says so (`comp_report.shareMode`).
+   - **Linking**: the Windows compositor links libbridge_server through an import library of
+     `bridge_api.h`'s functions only. The DLL auto-exports everything, dllcrt2's `atexit` included
+     (zig names the CRT objects `.obj`, so MinGW's by-name exclusion misses them), and once Spout's
+     static destructors referenced `atexit` the exe got two.
+   - Verified on the Ally: `test_comp_displays` (all 7, incl. a swap chain on a never-shown window —
+     desktop session; session 0 has no DWM: `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`),
+     `test_spout_outputs` (a receiver finds the sender through Spout's registry and reads the
+     engine's pixels), `arrangement-displays` e2e remote (all 8), and the real provider in the
+     desktop session with no window opened (screens report; a Spout display at 59 fps, read back
+     by a separate receiver). NOT yet seen: a fullscreen or rehearsal window on a real screen, and
+     vblank pacing under one.
 7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
    steps 1–5 hold (they do as of 2026-09-30, in the test harness). The packaged Windows app now
    carries `nano_compositor.exe` (`build/bin-win` → `nano/bin`) and has run with

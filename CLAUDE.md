@@ -181,15 +181,16 @@ picks what it samples, else the main output). The page resolves them into a flat
 Tests redirect every light's DMX to loopback with `NANO_ARTNET_REDIRECT`; never let one reach the LAN.
 **Displays** (D3): portable slots (`display.<n>`, `web/src/displays/`) placed per show (kind `display`,
 `fit`; routes as for lights — `deviceSources`); which screen fills a slot is this machine's
-(`display-devices.json`: a CGDisplay UUID, automatic = the Nth NON-main screen, or a rehearsal
-window). The page sends the plan (`comp_displays`); CompHost's `DisplayRunner` presents
-(`GPUBackend::presentScaled`) onto surfaces the compositor PROCESS provides
-(`native/tools/compositor/display_windows_mac.mm`, via `bridge_comp_set_display_provider` — never
-AppKit in the dylib). `nano_compositor`'s render thread owns the runtime (WAMR: wasm runs only on the
+(`display-devices.json`: a CGDisplay UUID / a Windows monitor device path, automatic = the Nth
+NON-main screen, or a rehearsal window). The page sends the plan (`comp_displays`); CompHost's
+`DisplayRunner` presents (`GPUBackend::presentScaled`: a CAMetalLayer, or a flip-model swap chain on
+D3D11) onto surfaces the compositor PROCESS provides (`native/tools/compositor/display_windows_mac.mm`
+/ `display_windows_win.cpp`, via `bridge_comp_set_display_provider` — never windows in the dylib). `nano_compositor`'s render thread owns the runtime (WAMR: wasm runs only on the
 thread that brought it up) and the main thread owns the windows. Tests never open a window:
-`NANO_DISPLAY_REDIRECT=offscreen` + `NANO_FAKE_SCREENS`. A slot's mode can be `syphon`: a Syphon
-server in the process, on the VENDORED protocol core (`native/third_party/syphon` → `syphon_core`,
-process-only — never the dylib, which Resolume loads beside its own Syphon).
+`NANO_DISPLAY_REDIRECT=offscreen` + `NANO_FAKE_SCREENS`. A slot's mode can be SHARED — whichever the
+engine reports as `shareMode`: `syphon` (macOS) or `spout` (Windows), a server/sender in the process
+on a VENDORED protocol core (`native/third_party/syphon` → `syphon_core`, `native/third_party/spout`
+→ `spout_core`; process-only — never the dylib, which hosts load beside their own).
 
 ### Cross-platform shader pipeline (HLSL → SPV → {MSL, WGSL})
 

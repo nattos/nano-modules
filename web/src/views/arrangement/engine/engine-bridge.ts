@@ -441,7 +441,7 @@ export class EngineBridge {
   private handleCompInfo(info: CompFrameInfo) {
     this.lastCompInfo = info;
     if (info.screens || info.displayStatus || info.displayEvents) {
-      displayController.setTelemetry(info.screens, info.displayStatus, info.displayEvents);
+      displayController.setTelemetry(info.screens, info.displayStatus, info.displayEvents, info.shareMode);
     }
     if (info.lights || info.lightStatus || info.netIfaces) {
       lightController.setTelemetry(info.lights, info.lightStatus, info.netIfaces);

@@ -341,6 +341,9 @@ export interface CompFrameInfo {
   /** Display devices (the native compositor): the screens it sees — on
    *  connect and on a hotplug (displays/display-types.ts DisplayScreen). */
   screens?: { uuid: string; name: string; w: number; h: number; hz: number; main: boolean }[];
+  /** …with how it shares a frame with other apps: Syphon (macOS) or Spout
+   *  (Windows). */
+  shareMode?: 'syphon' | 'spout';
   /** …each placed display's state (display-controller.ts DisplayStatus), on
    *  a change, else once a second. */
   displayStatus?: Record<string, { state: string; screen?: { uuid: string; name: string; w: number; h: number; hz: number; main: boolean };

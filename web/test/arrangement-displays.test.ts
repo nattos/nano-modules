@@ -16,7 +16,7 @@
  *   GPU_TEST_BASE_URL=http://localhost:5173 npx jest -i arrangement-displays
  */
 
-import { arrangementUrl, FAKE_SCREENS, forEachCompBackend, nativeOnly, windowsGap } from './comp-backend';
+import { arrangementUrl, FAKE_SCREENS, forEachCompBackend, nativeOnly } from './comp-backend';
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 let URL = '';
@@ -260,8 +260,16 @@ describe('Arrangement displays (GPU)', () => {
     expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBe('window');
     expect(await page.evaluate(() => (window as any).displayController.lastPlan.outputs))
       .toMatchObject([{ placementId: pid, slotId: 'display.1', mode: 'window', fit: 'fit', enabled: true }]);
-    await clickDeep('[data-display-mode="syphon"]');
-    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBe('syphon');
+    // The share mode is the engine's (Syphon on macOS, Spout on Windows); the
+    // worker engine reports none, and the page's platform stands in.
+    if (backend === 'native') {
+      await page.waitForFunction(() => (window as any).displayController.shareMode !== null, { timeout: 10_000 });
+    }
+    const share = await page.evaluate(() => (window as any).displayController.share as string);
+    const other = share === 'spout' ? 'syphon' : 'spout';
+    expect(await deepCentre(`[data-display-mode="${other}"]`)).toBeNull();  // never both
+    await clickDeep(`[data-display-mode="${share}"]`);
+    expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBe(share);
     await clickDeep('[data-display-mode="fullscreen"]');
     expect(await page.evaluate(() => (window as any).displayController.slot('display.1').mode)).toBeUndefined();
   });
@@ -325,23 +333,27 @@ describe('Arrangement displays (GPU)', () => {
     await page.evaluate(() => (window as any).arrangementStore.setTransportMode('live'));
   });
 
-  windowsGap(backend, 'Syphon is macOS (Spout: M4 step 6)', nativeOnly(backend, 'a page can’t publish Syphon'))(
-    'Syphon: a display published at the show’s full resolution, no screen needed', async () => {
+  nativeOnly(backend, 'a page can’t publish Syphon or Spout')(
+    'shared (Syphon / Spout): a display published at the show’s full resolution, no screen needed', async () => {
       await resetShow([1, 0, 0], [0, 1, 0]);
-      await page.evaluate(() => (window as any).displayController.setMode('display.2', 'syphon'));
+      // The engine says how it shares: Syphon on macOS, Spout on Windows.
+      await page.waitForFunction(() => (window as any).displayController.shareMode !== null, { timeout: 10_000 });
+      const share = await page.evaluate(() => (window as any).displayController.share as string);
+      expect(share).toBe(process.env.NANO_REMOTE_COMPOSITOR ? 'spout' : 'syphon');
+      await page.evaluate((m: string) => (window as any).displayController.setMode('display.2', m), share);
       const pid = await page.evaluate(() => (window as any).arrangementStore.includeDevice(
         'display.2', { kind: 'display', label: 'Display 2' }));
       await page.evaluate(() => (window as any).outputMaster.set(true));
-      await page.waitForFunction((p: string) => {
+      await page.waitForFunction((p: string, m: string) => {
         const st = (window as any).displayController.status[p];
-        return st?.state === 'syphon' && st.width === 1920 && st.height === 1080;
-      }, { timeout: 10_000 }, pid);
+        return st?.state === m && st.width === 1920 && st.height === 1080;
+      }, { timeout: 10_000 }, pid, share);
       // The frame IS the show's: no bars.
-      await waitProbe(pid, (p) => red(p.mid) && red(p.top), 'syphon frame');
+      await waitProbe(pid, (p) => red(p.mid) && red(p.top), 'shared frame');
       await page.evaluate(() => (window as any).displayController.setMode('display.2', 'fullscreen'));
     });
 
-  windowsGap(backend, 'D3D11 present (M4 step 6)', nativeOnly(backend, 'a page can’t open screens'))(
+  nativeOnly(backend, 'a page can’t open screens')(
     'presents: Display 1 on the projector — Fit letterboxes, Stretch fills, routed, off', async () => {
       const { t2 } = await resetShow([1, 0, 0], [0, 1, 0]);
       // The compositor reports the (fake) screens: the main one and a projector.

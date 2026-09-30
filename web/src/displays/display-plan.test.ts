@@ -4,7 +4,8 @@ import type { Composition } from '../views/arrangement/model/composition';
 import { buildDisplayPlan } from './display-plan';
 import { validDisplayRows } from '../state/display-device-store';
 import {
-  librarySlot, librarySlots, resolveDisplayScreen, type DisplayScreen, type DisplaySlot,
+  displayModeShares, displayModesFor, librarySlot, librarySlots, resolveDisplayScreen,
+  type DisplayScreen, type DisplaySlot,
 } from './display-types';
 
 const screens: DisplayScreen[] = [
@@ -40,6 +41,17 @@ describe('display slots', () => {
     expect(resolveDisplayScreen({ ...d1, screen: { uuid: 'Z', name: 'Old' } }, screens)).toBe(1);
     // A laptop alone: nowhere to go.
     expect(resolveDisplayScreen(d1, [screens[0]])).toBe(-1);
+  });
+});
+
+describe('display modes', () => {
+  it('offers the share the engine has: Syphon on macOS, Spout on Windows', () => {
+    expect(displayModesFor('syphon').map((m) => m.id)).toEqual(['fullscreen', 'window', 'syphon']);
+    expect(displayModesFor('spout').map((m) => m.id)).toEqual(['fullscreen', 'window', 'spout']);
+  });
+  it('a shared mode has no screen (and no fit)', () => {
+    expect(['fullscreen', 'window', 'syphon', 'spout'].map((m) => displayModeShares(m as never)))
+      .toEqual([false, false, true, true]);
   });
 });
 

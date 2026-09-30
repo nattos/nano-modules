@@ -36,6 +36,8 @@ export function displayWhere(slot: DisplaySlot, placementId?: string): DisplayWh
         return { text: `window · ${st.width}×${st.height}`, state: 'live' };
       case 'syphon':
         return { text: `Syphon · “${slot.name}” · ${st.width}×${st.height}`, state: 'live' };
+      case 'spout':
+        return { text: `Spout · “Nano Modules - ${slot.name}” · ${st.width}×${st.height}`, state: 'live' };
       case 'no-screen':
         return { text: 'no screen for it', state: 'none' };
       case 'no-output':
@@ -46,6 +48,7 @@ export function displayWhere(slot: DisplaySlot, placementId?: string): DisplayWh
   }
   if (displayMode(slot) === 'window') return { text: 'rehearses in a window', state: 'idle' };
   if (displayMode(slot) === 'syphon') return { text: `Syphon server “${slot.name}”`, state: 'idle' };
+  if (displayMode(slot) === 'spout') return { text: `Spout sender “Nano Modules - ${slot.name}”`, state: 'idle' };
   if (!displayController.screens) {
     return { text: slot.screen ? slot.screen.name : 'automatic screen', state: 'idle' };
   }

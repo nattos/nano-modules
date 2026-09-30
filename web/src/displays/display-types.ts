@@ -4,15 +4,17 @@
  * A display is a portable SLOT — "Display 1", "Display 2" — not a monitor. A
  * show places a slot (by its id, the same on every machine); each machine's
  * library says which physical screen fills it and how:
- *   - `screen`: remembered by CGDisplay UUID (never by index — indices
- *     reshuffle on hotplug). Absent = automatic: Display N takes the Nth screen
+ *   - `screen`: remembered by a stable id — the CGDisplay UUID on macOS, the
+ *     monitor's device path on Windows — never by index (indices reshuffle
+ *     on hotplug). Absent = automatic: Display N takes the Nth screen
  *     that ISN'T the main one (the menu bar's), so a fresh machine never covers
  *     the editor. A remembered screen that isn't connected falls back to the
  *     automatic binding; with no screen at all the display is inert — an
  *     unplugged cable, not an error.
  *   - `mode`: fullscreen on that screen (the default), a normal WINDOW to
- *     rehearse in (a laptop, no projector), or a SYPHON server other apps
- *     read (no screen at all).
+ *     rehearse in (a laptop, no projector), or SHARED with other apps (no
+ *     screen at all) — a SYPHON server on macOS, a SPOUT sender on Windows:
+ *     whichever the engine offers (comp_report.shareMode).
  *
  * Display 1 and Display 2 always exist (synthesised when the library has no
  * row for them); "New display" adds Display 3 and on. The native compositor
@@ -35,13 +37,31 @@ export const DISPLAY_FITS: readonly { id: DisplayFit; label: string; title: stri
 
 /** Where a display goes on this machine. Lock-step: comp_displays.h
  *  DisplayMode. */
-export type DisplayMode = 'fullscreen' | 'window' | 'syphon';
+export type DisplayMode = 'fullscreen' | 'window' | ShareMode;
+/** Sharing the frame with other apps: Syphon (macOS) or Spout (Windows). */
+export type ShareMode = 'syphon' | 'spout';
 
 export const DISPLAY_MODES: readonly { id: DisplayMode; label: string; title: string }[] = [
   { id: 'fullscreen', label: 'fullscreen', title: 'Fullscreen on its screen' },
   { id: 'window', label: 'window', title: 'A normal window to rehearse in — no projector needed' },
   { id: 'syphon', label: 'syphon', title: 'A Syphon server other apps can read (Resolume, MadMapper, OBS…) — no screen' },
+  { id: 'spout', label: 'spout', title: 'A Spout sender other apps can read (Resolume, TouchDesigner, OBS…) — no screen' },
 ];
+
+/** The modes to offer where the engine shares by `share`. */
+export function displayModesFor(share: ShareMode): typeof DISPLAY_MODES {
+  return DISPLAY_MODES.filter((m) => m.id === 'fullscreen' || m.id === 'window' || m.id === share);
+}
+
+/** Does this mode hand the frame to other apps (no screen, no fit)? */
+export function displayModeShares(mode: DisplayMode): mode is ShareMode {
+  return mode === 'syphon' || mode === 'spout';
+}
+
+/** What a shared display is called to the viewer. */
+export function shareModeLabel(mode: ShareMode): string {
+  return mode === 'spout' ? 'Spout' : 'Syphon';
+}
 
 /** What identify asks the engine for. */
 export interface DisplayIdentify { label: string; screenUuid: string; ordinal: number; mode: DisplayMode }
@@ -58,7 +78,9 @@ export interface DisplayScreen {
   main: boolean;
 }
 
-/** A window's content rect, in screen points (AppKit: origin bottom-left). */
+/** A window's content rect, as this machine's compositor measures it: macOS
+ *  in screen points, origin bottom-left; Windows in physical pixels, origin
+ *  top-left. Only ever read back on the machine that wrote it. */
 export interface WindowFrame { x: number; y: number; w: number; h: number }
 
 /** One slot in this machine's library. */
@@ -71,7 +93,7 @@ export interface DisplaySlot {
   /** This machine's screen for it; absent = automatic. */
   screen?: { uuid: string; name: string };
   /** Where it goes (absent: fullscreen on its screen). */
-  mode?: 'window' | 'syphon';
+  mode?: 'window' | ShareMode;
   /** Where that window was last (remembered when it moves). */
   windowFrame?: WindowFrame;
   updatedAt: number;

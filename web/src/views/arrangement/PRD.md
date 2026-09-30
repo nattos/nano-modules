@@ -424,10 +424,14 @@ library and used per show (plan: COMPOSITOR.md § devices).
 - **The master output switch** (the Devices panel's header) is OFF at every launch and never saved:
   nothing projects or transmits until you turn output on. **⌘⇧D** (Disable Output, as in Resolume)
   turns it off from anywhere — even with a fullscreen output covering the editor.
-- **Syphon**: instead of a screen, a display can be a Syphon server ("Nano Modules" – the slot's
-  name) that Resolume, MadMapper, OBS… read — the show's frame at full resolution.
+- **Syphon / Spout**: instead of a screen, a display can be shared with other apps — a Syphon
+  server on macOS ("Nano Modules" – the slot's name), a Spout sender on Windows ("Nano Modules -
+  <slot>") — that Resolume, MadMapper, TouchDesigner, OBS… read: the show's frame at full
+  resolution.
 - The cursor stays visible over a fullscreen output (macOS lets only the frontmost app hide it).
-- *Later:* a crop / usable region per projector; Windows.
+- **Windows**: the same, with Ctrl+Shift+D for Disable Output; a fullscreen output never takes
+  focus, and Alt+F4 on a rehearsal window closes it (turning that display off).
+- *Later:* a crop / usable region per projector.
 
 ## Automation (track-level and clip-level)
 

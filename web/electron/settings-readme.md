@@ -119,13 +119,15 @@ and where each slot samples in that show.
 
 An array of display slots, one per slot this machine has configured:
 `{"kind":"display", "id":"display.1", "name", "screen": {"uuid", "name"},
-"mode": "window" | "syphon", "windowFrame": {"x","y","w","h"}}`. `id` is the portable slot a
+"mode": "window" | "syphon" | "spout", "windowFrame": {"x","y","w","h"}}`. `id` is the portable slot a
 show places (`display.<n>`; Display 1 and 2 exist without a row). `screen` is the
-screen that fills it on THIS machine, by its CGDisplay UUID (absent: automatic —
-Display N takes the Nth screen that isn't the main one). `mode` absent is
-fullscreen on that screen; `"window"` rehearses it in a normal window, last seen
-at `windowFrame` (screen points); `"syphon"` publishes it as a Syphon server named
-after the slot. Used by the
+screen that fills it on THIS machine — its CGDisplay UUID on macOS, the monitor's
+device path on Windows (absent: automatic — Display N takes the Nth screen that
+isn't the main one). `mode` absent is fullscreen on that screen; `"window"`
+rehearses it in a normal window, last seen at `windowFrame` (macOS: screen points,
+origin bottom-left; Windows: physical pixels, origin top-left); `"syphon"` (macOS)
+publishes it as a Syphon server named after the slot, `"spout"` (Windows) as a
+Spout sender named "Nano Modules - <slot>". Used by the
 arrangement app (its Devices view) and applied live; a show stores only which
 slots it includes, their fit and what feeds them.
 
