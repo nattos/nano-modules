@@ -141,6 +141,19 @@ export class ArrEngine implements CompEngine {
     }
   }
 
+  reloadModules(bundles: readonly string[], removed: readonly string[]) {
+    // loadModule with a bundle the worker already has at a NEW url swaps it in
+    // place (the URL is effect-bundles' table, refreshed by setModulePaths).
+    for (const b of removed) {
+      this.proxy.unloadModule(b);
+      this.loadedBundles.delete(b);
+    }
+    for (const b of bundles) {
+      this.proxy.loadModule(b);
+      this.loadedBundles.add(b);
+    }
+  }
+
   private waitReady(): Promise<void> {
     return new Promise((resolve, reject) => {
       const t0 = Date.now();

@@ -42,6 +42,9 @@ import type { EditableLabel } from '../../../widgets/editable-label';
 import '../../../widgets/editable-number';
 import '../../../widgets/scalar-knob';
 import '../../../widgets/spark-chart';
+import '../../module-folders';
+import type { ModulesChangedDetail } from '../../module-folders';
+import { engineBridge } from '../engine/engine-bridge';
 
 /** Compact relative time: "just now", "5m ago", "3h ago", "2d ago", "4w ago". */
 function timeAgo(ms: number): string {
@@ -1676,10 +1679,22 @@ export class ArrInspector extends MobxLitElement {
         <div class="row"><label>Snap to grid</label><span class="val"><span class="tag">¼ beat</span></span></div>
         <div class="row"><label>Default play mode</label><span class="val">${store.composition.playMode.defaultMode}</span></div>
 
+        <div class="group-title">Modules</div>
+        <module-folders compact @modules-changed=${this.onModulesChanged}></module-folders>
+
         ${isElectron() ? this.renderWebAppCompatibility() : this.renderWebLibraries()}
       </div>
     `;
   }
+
+  /** Settings → Modules: the engine re-resolves (the worker swaps bundles; the
+   *  native compositor reloads its own resolution of the same folders). */
+  private onModulesChanged = (e: CustomEvent<ModulesChangedDetail>) => {
+    const { before, listing } = e.detail;
+    const now = new Set(listing.bundles.map((b) => b.id));
+    engineBridge.reloadModules(listing.bundles.map((b) => b.id),
+      before.map((b) => b.id).filter((id) => !now.has(id)));
+  };
 
   /**
    * Which engine composites: the browser worker, or the native compositor

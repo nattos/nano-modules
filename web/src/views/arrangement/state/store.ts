@@ -1654,10 +1654,17 @@ export class ArrangementStore {
     });
   }
 
-  /** Mirror the engine's discovered plugin schemas (keyed by effect id). */
+  /** Mirror the engine's plugin schemas (keyed by effect id). Each report is
+   *  the engine's WHOLE catalog (the worker's plugin list, the compositor's
+   *  plugin_schemas), so an effect missing from it is gone — its bundle was
+   *  unloaded (Settings → Modules). */
   setEnginePlugins(plugins: PluginInfo[]) {
     if (!plugins.length) return;
     runInAction(() => {
+      const now = new Set(plugins.map((p) => p.id));
+      for (const id of Object.keys(this.enginePlugins)) {
+        if (!now.has(id)) mobxRemove(this.enginePlugins as object, id);
+      }
       for (const p of plugins) mobxSet(this.enginePlugins as object, p.id, p);
     });
   }

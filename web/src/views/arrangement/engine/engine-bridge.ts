@@ -408,6 +408,11 @@ export class EngineBridge {
     this.engine?.identifyDisplay(msg);
   }
 
+  /** Settings → Modules changed what the module folders resolve to. */
+  reloadModules(bundles: readonly string[], removed: readonly string[]) {
+    this.engine?.reloadModules(bundles, removed);
+  }
+
   /** Does the current engine put displays on screens? */
   get outputsDisplays(): boolean {
     return this.engine?.outputsDisplays ?? false;

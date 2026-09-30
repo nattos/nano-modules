@@ -18,10 +18,9 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { availableModes } from '../product';
-import {
-  bundleLabel, listModules, setModulePaths,
-  type ModuleListing, type ModulePathRow,
-} from '../effect-bundles';
+import { bundleLabel, listModules, type ModuleListing } from '../effect-bundles';
+import './module-folders';
+import type { ModulesChangedDetail } from './module-folders';
 import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { TARGET_FPS_OPTIONS } from './gpu-headroom';
 import {
@@ -30,7 +29,7 @@ import {
   type SetupStepId, type SetupStepStatus,
 } from '../state/resolume-setup';
 import {
-  absPathOf, appResourceRoot, copyText, isElectron, revealInFolder, showDirectoryPicker,
+  appResourceRoot, copyText, isElectron, revealInFolder,
 } from '../state/paths';
 import {
   describeReload, moduleDrift, offerBarrelModuleReload, requestBarrelModuleReload,
@@ -270,11 +269,9 @@ export class AppSettings extends MobxLitElement {
   @state() private appRoot: string | null = null;
   /** Feedback for the copy-path button, cleared on a timer. */
   @state() private copied = '';
-  /** Effect bundles and module directories (null until listed). */
+  /** What this app's module folders resolve to (null until listed) — the
+   *  Resolume section compares the plug-in's against it. */
   @state() private modules: ModuleListing | null = null;
-  @state() private modulesError = '';
-  /** Browser-only: a path typed in, since the web picker yields no paths. */
-  @state() private typedModulePath = '';
   /** A module reload in Resolume is in flight / how the last one went. */
   @state() private reloadingInResolume = false;
   @state() private resolumeReloadNote = '';
@@ -365,63 +362,10 @@ export class AppSettings extends MobxLitElement {
    * hand, say).
    */
   private renderModules() {
-    const m = this.modules;
-    if (!m) return nothing;
-    const loaded = m.bundles.filter((b) => b.origin !== 'builtin');
     return html`
       <section>
         <h2>Modules</h2>
-        <div class="hint">
-          Effect bundles beyond the built-in ones load from the modules folder
-          and from any folder you add here — e.g. where you build your own
-          effects. A bundle in an added folder replaces a built-in one of the
-          same name, and reloads live when it is rebuilt.
-        </div>
-        ${m.defaultDir ? html`
-          <div class="module-row">
-            <span class="grow">Modules folder: <code>${m.defaultDir}</code></span>
-            ${isElectron() ? html`<button class="small"
-              @click=${() => { void revealInFolder(m.defaultDir!); }}>Reveal</button>` : nothing}
-          </div>` : nothing}
-        ${m.editable ? html`
-          <ul class="module-list">
-            ${m.paths.map((row, i) => html`
-              <li class="module-row">
-                <input type="checkbox" .checked=${row.enabled}
-                  title="Load bundles from this folder"
-                  @change=${(e: Event) => this.updateModulePaths(m.paths.map((r, j) =>
-                    j === i ? { ...r, enabled: (e.target as HTMLInputElement).checked } : r))}>
-                <span class="grow"><code>${row.path}</code></span>
-                ${isElectron() ? html`<button class="small"
-                  @click=${() => { void revealInFolder(row.path); }}>Reveal</button>` : nothing}
-                <button class="small"
-                  @click=${() => this.updateModulePaths(m.paths.filter((_, j) => j !== i))}>Remove</button>
-              </li>`)}
-            <li class="module-row">
-              ${isElectron() ? html`
-                <button class="small" @click=${this.onAddModuleFolder}>Add folder…</button>` : html`
-                <input type="text" placeholder="/absolute/path/to/modules"
-                  .value=${this.typedModulePath}
-                  @input=${(e: Event) => { this.typedModulePath = (e.target as HTMLInputElement).value; }}>
-                <button class="small" ?disabled=${!this.typedModulePath.trim()}
-                  @click=${() => {
-                    const p = this.typedModulePath.trim();
-                    this.typedModulePath = '';
-                    this.updateModulePaths([...m.paths, { path: p, enabled: true }]);
-                  }}>Add</button>`}
-            </li>
-          </ul>` : html`
-          <div class="note">Module folders need the desktop app (or the dev server).</div>`}
-        ${this.modulesError ? html`<div class="note">${this.modulesError}</div>` : nothing}
-        ${loaded.length ? html`
-          <ul class="module-list">
-            ${loaded.map((b) => html`
-              <li class="module-row">
-                <span>${bundleLabel(b.id)}</span>
-                <span class="grow"><code>${b.path ?? b.url}</code></span>
-                <span class="origin">${b.origin === 'mapped' ? 'added folder' : 'modules folder'}</span>
-              </li>`)}
-          </ul>` : html`<div class="hint">No extra bundles found.</div>`}
+        <module-folders @modules-changed=${this.onModulesChanged}></module-folders>
         <div class="hint">
           Changes here apply to this app at once. Resolume keeps what it loaded
           until you reload its modules (Resolume Remote, above) — the app offers
@@ -431,34 +375,19 @@ export class AppSettings extends MobxLitElement {
     `;
   }
 
-  private onAddModuleFolder = async () => {
-    const m = this.modules;
-    if (!m) return;
-    try {
-      const dir = absPathOf(await showDirectoryPicker());
-      if (!dir || m.paths.some((r) => r.path === dir)) return;
-      this.updateModulePaths([...m.paths, { path: dir, enabled: true }]);
-    } catch (e) {
-      this.modulesError = String(e);
-    }
+  /** Bring the engine in line with what the folders now resolve to: a new
+   *  bundle loads, one whose winning copy moved (a dev folder checked or
+   *  unchecked) is swapped — the worker compares URLs — and one nothing
+   *  provides any more is unloaded. Then offer the same to Resolume, which has
+   *  its own copy of everything. */
+  private onModulesChanged = (e: CustomEvent<ModulesChangedDetail>) => {
+    const { before, listing } = e.detail;
+    this.modules = listing;
+    const now = new Set(listing.bundles.map((b) => b.id));
+    for (const b of before) if (!now.has(b.id)) appController.unloadModule(b.id);
+    for (const b of listing.bundles) appController.loadModule(b.id);
+    offerBarrelModuleReload('Module folders changed', false);
   };
-
-  /** Persist the mapped folders and bring the engine in line with what they
-   *  now resolve to: a new bundle loads, one whose winning copy moved (a dev
-   *  folder checked or unchecked) is swapped — the worker compares URLs — and
-   *  one nothing provides any more is unloaded. Then offer the same to
-   *  Resolume, which has its own copy of everything. */
-  private updateModulePaths(rows: ModulePathRow[]) {
-    this.modulesError = '';
-    const before = this.modules?.bundles ?? [];
-    void setModulePaths(rows).then((listing) => {
-      this.modules = listing;
-      const now = new Set(listing.bundles.map((b) => b.id));
-      for (const b of before) if (!now.has(b.id)) appController.unloadModule(b.id);
-      for (const b of listing.bundles) appController.loadModule(b.id);
-      offerBarrelModuleReload('Module folders changed', false);
-    }).catch((e) => { this.modulesError = String(e); });
-  }
 
   private onReloadInResolume = async () => {
     this.reloadingInResolume = true;

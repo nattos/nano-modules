@@ -49,6 +49,10 @@ export interface CompEngine {
 
   /** Load every shipping bundle so all effects are reachable. */
   warmBundles(bundles: readonly string[]): Promise<void>;
+  /** The module folders changed (Settings → Modules): `removed` bundles no
+   *  longer resolve anywhere, `bundles` is everything that does now. Load new
+   *  ones, swap any whose winning copy moved, drop the removed. */
+  reloadModules(bundles: readonly string[], removed: readonly string[]): void;
   /** An effect's static field-visibility evaluator over a candidate state. */
   evaluateVisibility(moduleType: string, state: Record<string, unknown>): Promise<string[] | null>;
 

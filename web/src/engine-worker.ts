@@ -1635,6 +1635,7 @@ function unloadModule(moduleType: string) {
   post({ type: 'effectsDiscovered', bundle: moduleType, effects: [] });
   for (const id of sketches.keys()) touchSketch(id);
   markDirty();
+  broadcastState();  // the catalog loses this bundle's effects now, not on some later change
 }
 
 /**
@@ -1962,6 +1963,10 @@ function broadcastState() {
     for (const entry of globalData.plugins) {
       const id = entry?.metadata?.id ?? entry?.key ?? '';
       if (!id) continue;
+      // Bridge core can't unregister a plugin, so an UNLOADED bundle's effects
+      // (Settings → Modules, a folder removed) keep their registrations: list
+      // only effects some loaded bundle still provides.
+      if (entry?.metadata?.id && !effectRegistry.has(id)) continue;
       byId.set(id, entry);
     }
     for (const entry of byId.values()) {

@@ -180,6 +180,13 @@ export class RemoteCompEngine implements CompEngine {
     // The compositor loads every bundle it can find at startup.
   }
 
+  reloadModules(): void {
+    // It resolves the same module folders itself (bridge/module_dirs.h) and
+    // re-resolves on reload_modules, between frames; its new plugin_schemas
+    // arrive as a state diff (adoptSchemas).
+    this.client.sendAction('reload_modules', {});
+  }
+
   evaluateVisibility(moduleType: string, state: Record<string, unknown>): Promise<string[] | null> {
     return this.request('comp_visibility', { moduleType, state })
       .then((r) => (Array.isArray(r?.hidden) ? r.hidden as string[] : null))
