@@ -1525,9 +1525,63 @@ if(NANO_HAS_GPU_BACKEND)
     add_executable(nano_compositor tools/nano_compositor.cpp)
     target_include_directories(nano_compositor PRIVATE ${CMAKE_SOURCE_DIR}/src
       ${CMAKE_SOURCE_DIR}/tools)
-    target_link_libraries(nano_compositor PRIVATE bridge_server nlohmann_json::nlohmann_json)
-    if(NOT APPLE)
-      # No display windows yet (M4 step 6): headless.
+    target_link_libraries(nano_compositor PRIVATE nlohmann_json::nlohmann_json)
+    if(WIN32)
+      # On Windows the compositor links libbridge_server through an import
+      # library of bridge_api.h's functions ONLY — the C ABI, which is all it
+      # uses. The DLL itself exports EVERY symbol (MinGW's auto-export, which
+      # leaves out the CRT's startup objects by NAME — dllcrt2.o — and zig
+      # calls them dllcrt2.obj), atexit included; an exe with static
+      # destructors of its own (Spout's) then resolved atexit to the DLL as
+      # well as to its own crt2: a duplicate symbol, and zig's driver accepts
+      # no linker flag that would exclude one.
+      file(READ ${CMAKE_SOURCE_DIR}/src/bridge/bridge_api.h _bridge_api_h)
+      string(REGEX MATCHALL "bridge_[a-z0-9_]+[ \t]*\\(" _bridge_fns "${_bridge_api_h}")
+      list(TRANSFORM _bridge_fns REPLACE "[ \t]*\\($" "")
+      list(REMOVE_DUPLICATES _bridge_fns)
+      list(JOIN _bridge_fns "\n" _bridge_exports)
+      file(WRITE ${CMAKE_BINARY_DIR}/bridge_api.def
+        "LIBRARY libbridge_server.dll\nEXPORTS\n${_bridge_exports}\n")
+      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        ${CMAKE_SOURCE_DIR}/src/bridge/bridge_api.h)
+      add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/libbridge_api.dll.a
+        COMMAND ${CMAKE_SOURCE_DIR}/cmake/x86_64-w64-mingw32-dlltool -m i386:x86-64
+          -d ${CMAKE_BINARY_DIR}/bridge_api.def -l ${CMAKE_BINARY_DIR}/libbridge_api.dll.a
+        DEPENDS ${CMAKE_BINARY_DIR}/bridge_api.def)
+      add_custom_target(bridge_api_implib DEPENDS ${CMAKE_BINARY_DIR}/libbridge_api.dll.a)
+      add_dependencies(nano_compositor bridge_server bridge_api_implib)
+      target_link_libraries(nano_compositor PRIVATE ${CMAKE_BINARY_DIR}/libbridge_api.dll.a)
+    else()
+      target_link_libraries(nano_compositor PRIVATE bridge_server)
+    endif()
+    if(WIN32)
+      # Spout's protocol core (third_party/spout, vendored, BSD): the process
+      # publishes display outputs as Spout senders. Never in libbridge_server,
+      # for the same reason as Syphon: the barrel runs inside hosts with their
+      # own Spout.
+      add_library(spout_core STATIC
+        third_party/spout/SpoutUtils.cpp third_party/spout/SpoutSharedMemory.cpp
+        third_party/spout/SpoutSenderNames.cpp third_party/spout/SpoutFrameCount.cpp)
+      target_include_directories(spout_core PUBLIC ${CMAKE_SOURCE_DIR}/third_party/spout)
+      target_compile_options(spout_core PRIVATE -w)
+      target_link_libraries(spout_core PUBLIC advapi32 shell32 comctl32 winmm version)
+
+      # The display windows are Win32, in the PROCESS (never libbridge_server:
+      # the barrel inside a host must not open windows).
+      target_sources(nano_compositor PRIVATE tools/compositor/display_windows_win.cpp
+        tools/compositor/spout_outputs_win.cpp)
+      target_link_libraries(nano_compositor PRIVATE spout_core user32 gdi32)
+
+      # Spout outputs end to end in one process (sender → receiver → pixels).
+      if(TARGET Catch2::Catch2WithMain)
+        add_executable(test_spout_outputs tests/test_spout_outputs.cpp
+          tools/compositor/spout_outputs_win.cpp)
+        target_include_directories(test_spout_outputs PRIVATE ${CMAKE_SOURCE_DIR}/src
+          ${CMAKE_SOURCE_DIR}/tools)
+        target_link_libraries(test_spout_outputs PRIVATE spout_core Catch2::Catch2WithMain)
+      endif()
+    elseif(NOT APPLE)
+      # No display windows here: headless.
       target_sources(nano_compositor PRIVATE tools/compositor/display_windows_none.cpp)
     endif()
   endif()

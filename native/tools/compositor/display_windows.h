@@ -25,9 +25,11 @@
 // PACING. While any output is up, the first one's display link paces the
 // render loop (waitVsync); otherwise the caller keeps its own clock.
 //
-// macOS only so far (display_windows_mac.mm); display_windows_none.cpp
-// returns null elsewhere, and the compositor runs headless — Windows outputs
-// are COMPOSITOR.md M4 step 6.
+// macOS: display_windows_mac.mm (AppKit; shared outputs are Syphon servers).
+// Windows: display_windows_win.cpp (Win32 + flip-model swap chains; shared
+// outputs are Spout senders; the hotkey is Ctrl+Shift+D and there is no quit
+// chord). Elsewhere display_windows_none.cpp returns null, and the compositor
+// runs headless.
 
 #pragma once
 

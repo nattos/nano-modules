@@ -18,13 +18,14 @@
 //
 // Display devices open windows (tools/compositor/display_windows.h): the
 // render loop runs on its own thread — the only GPU thread — while the main
-// thread owns the windows, headless (no NSApplication, no Dock icon) until the
-// first one is wanted. While any display is up, its display link paces the
-// frames; otherwise the steady clock does.
+// thread owns the windows (on macOS headless — no NSApplication, no Dock icon —
+// until the first one is wanted). While any display is up, its screen's vsync
+// paces the frames; otherwise the steady clock does.
 //
 // Prints one line, "nano_compositor ready port=<p> key=<k>", once it listens.
 // Prints "nano_compositor quit" when the viewer presses ⌘Q in one of its output
-// windows (it has no menu): the parent app should quit (electron/compositor.cjs).
+// windows (macOS; it has no menu): the parent app should quit
+// (electron/compositor.cjs).
 // Exits on SIGINT/SIGTERM, or when stdin reaches EOF if stdin isn't a
 // terminal — so a parent that dies (Electron, a test) takes it with it.
 //
@@ -160,8 +161,13 @@ int main(int argc, char** argv) {
   // runs on the thread that brought the runtime up (WAMR's per-thread
   // environment), and it is the only thread that touches the GPU.
   std::atomic<int> exitCode{0};
+  std::atomic<bool> renderDone{false};
   const void* self = (const void*)&main;
   std::thread render([&] {
+    struct Done {
+      std::atomic<bool>& flag;
+      ~Done() { flag.store(true); }
+    } done{renderDone};
     const std::string wasmDir = nano_paths::wasmDir(self);
     const std::string fontPath = nano_paths::fontPath(self, "default.ttf");
     auto fail = [&](const char* msg, const std::string& detail) {
@@ -228,10 +234,12 @@ int main(int argc, char** argv) {
     bridge_rt_release(h);
   });
 
-  // The main thread: the windows' run loop (or just waiting, headless).
-  while (!g_stop.load()) {
-    if (windows) windows->pumpMainThread(0.05);
-    else std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  // The main thread: the windows' run loop (or just waiting, headless) —
+  // until the render thread has closed its outputs too: tearing a swap chain
+  // down can wait on its window's thread.
+  while (!g_stop.load() || !renderDone.load()) {
+    if (windows) windows->pumpMainThread(g_stop.load() ? 0.01 : 0.05);
+    else std::this_thread::sleep_for(std::chrono::milliseconds(g_stop.load() ? 10 : 50));
   }
   render.join();
   windows.reset();

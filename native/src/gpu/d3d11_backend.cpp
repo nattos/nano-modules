@@ -17,6 +17,7 @@
 // builtin one rejects valid HLSL (it has no RWByteAddressBuffer::InterlockedAdd)
 // and the failure looks exactly like a GPU fault.
 
+#include "gpu/d3d11_adapter_win.h"
 #include "gpu/gpu_backend.h"
 #include "gpu/shared_surface_win.h"
 #include "platform/paths.h"
@@ -1251,70 +1252,6 @@ class D3D11Backend : public GPUBackend {
   }
 
  private:
-  /// CreateDXGIFactory1 without an import library, matching this file's rule
-  /// that every D3D entry point is resolved at runtime (see CMakeLists).
-  static IDXGIFactory1* makeDxgiFactory() {
-    HMODULE dxgi = LoadLibraryA("dxgi.dll");
-    if (!dxgi) return nullptr;
-    using PFN = HRESULT(WINAPI*)(REFIID, void**);
-    auto fn = (PFN)GetProcAddress(dxgi, "CreateDXGIFactory1");
-    if (!fn) return nullptr;
-    IDXGIFactory1* f = nullptr;
-    return SUCCEEDED(fn(__uuidof(IDXGIFactory1), (void**)&f)) ? f : nullptr;
-  }
-
-  /// Resolve NANO_D3D_ADAPTER: a decimal DXGI index, or a case-insensitive
-  /// fragment of the adapter description. Software adapters are skipped for a
-  /// name match (nobody means WARP by "basic"), but an explicit index can
-  /// still reach one. Returns null — meaning "use the default" — if nothing
-  /// matches, and says so, because silently ignoring the variable would look
-  /// exactly like the bug it was set to work around.
-  Com<IDXGIAdapter> adapterMatching(const char* spec) {
-    Com<IDXGIAdapter> out;
-    IDXGIFactory1* factory = makeDxgiFactory();
-    if (!factory) {
-      std::fprintf(stderr, "[d3d11] NANO_D3D_ADAPTER set but DXGI is "
-                           "unavailable; using the default adapter\n");
-      return out;
-    }
-    char* end = nullptr;
-    const long index = std::strtol(spec, &end, 10);
-    const bool byIndex = end && *end == '\0' && end != spec && index >= 0;
-
-    std::string needle(spec);
-    for (char& c : needle) c = (char)std::tolower((unsigned char)c);
-
-    IDXGIAdapter1* adapter = nullptr;
-    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-      DXGI_ADAPTER_DESC1 desc{};
-      adapter->GetDesc1(&desc);
-      char name[256] = {0};
-      WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name,
-                          sizeof(name) - 1, nullptr, nullptr);
-      std::string lower(name);
-      for (char& c : lower) c = (char)std::tolower((unsigned char)c);
-
-      const bool hit = byIndex
-          ? ((long)i == index)
-          : (lower.find(needle) != std::string::npos &&
-             !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE));
-      if (hit) {
-        std::fprintf(stderr, "[d3d11] NANO_D3D_ADAPTER='%s' selected [%u] %s\n",
-                     spec, i, name);
-        adapter->QueryInterface(__uuidof(IDXGIAdapter), (void**)out.put());
-        adapter->Release();
-        break;
-      }
-      adapter->Release();
-    }
-    factory->Release();
-    if (!out.get())
-      std::fprintf(stderr, "[d3d11] NANO_D3D_ADAPTER='%s' matched no adapter; "
-                           "using the default\n", spec);
-    std::fflush(stderr);
-    return out;
-  }
-
   /// The description of the adapter the live device is actually on.
   std::string deviceAdapterName() const {
     if (!device_.get()) return "(no device)";
@@ -1368,8 +1305,7 @@ class D3D11Backend : public GPUBackend {
     // decimal DXGI index, or any case-insensitive fragment of the adapter
     // description ("nvidia", "quadro", "intel").
     Com<IDXGIAdapter> chosen;
-    if (const char* pick = std::getenv("NANO_D3D_ADAPTER"); pick && *pick)
-      chosen = adapterMatching(pick);
+    chosen.p = chosenAdapter();  // d3d11_adapter_win.h — the Spout sender's rule too
 
     // 11_1 specifically, not 11_0: feature level 11_0 caps compute UAVs at 8,
     // and line_reconstruct/features.hlsl already binds u8/u9/u10. Failing here
