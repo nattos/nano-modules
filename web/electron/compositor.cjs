@@ -105,7 +105,12 @@ class Compositor {
       if (process.env.NANO_WINDOW === 'hidden' && !env.NANO_DISPLAY_REDIRECT) {
         env.NANO_DISPLAY_REDIRECT = 'offscreen';
       }
-      const child = spawn(bin, ['--port', String(this.port)], { env, stdio: ['pipe', 'pipe', 'inherit'] });
+      // windowsHide: the compositor is a console program, and an app started
+      // from Explorer has no console to lend it — Windows would open one, and
+      // closing that kills the compositor. (Its display windows ignore the
+      // hidden show state this passes: display_windows_win.cpp.)
+      const child = spawn(bin, ['--port', String(this.port)],
+        { env, stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
       this.child = child;
       let ready = false;
       let out = '';
