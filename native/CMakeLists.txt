@@ -75,6 +75,9 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
   GIT_TAG v11.4.5
   GIT_SHALLOW TRUE
+  # Windows: take its level-triggered select() path — the WSAEventSelect one
+  # can stop reading a connection for good (see the script).
+  PATCH_COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/cmake/patch-ixwebsocket-windows.sh
 )
 
 # Catch2 (for tests)
