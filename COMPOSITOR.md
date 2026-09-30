@@ -580,11 +580,18 @@ works. Order:
      orange top-left quadrant the right way up; identify; Ctrl+Shift+D clearing it all. (A test
      injecting that chord must run elevated when an elevated window has focus: UIPI drops the
      input silently.)
-7. **Flip the default:** `arrangementEngine()` in `electron/main.cjs` → native on win32 too, once
-   steps 1–5 hold (they do as of 2026-09-30, in the test harness). The packaged Windows app now
-   carries `nano_compositor.exe` (`build/bin-win` → `nano/bin`) and has run with
-   `NANO_ARRANGEMENT_ENGINE=native` on the Ally: the compositor starts and previews arrive as
-   surfaces. Nobody has worked a real show in it yet. Step 4, general formats, was the gate.
+7. **Flip the default — DONE (2026-09-30).** `arrangementEngine()` in `electron/main.cjs` is
+   native on win32 too. Electron starts the compositor on LOOPBACK (`NANO_BRIDGE_HOST=127.0.0.1`,
+   read by `ws_server.cpp` for the main socket and the lanes): the page is its only client, and a
+   listener on every interface costs a Windows Defender Firewall prompt on first run (and macOS's,
+   with its firewall on). The FFGL barrel and a hand-started compositor still bind every
+   interface (Remote Control from another machine; the remote test harness).
+   Checked with the packaged app on the Ally, a FRESH data folder and no engine override: it
+   boots native, the compositor listens on 127.0.0.1 only, no firewall prompt; previews arrive as
+   surfaces (`surface_check` PASS, 35 fps); a display turned on from the app opens as a rehearsal
+   window in front, unfocused, and fullscreen over the taskbar (so the windowsHide launch no
+   longer hides the first output); closing the app window takes the compositor with it.
+   Nobody has worked a real show in it yet.
 
 ---
 
@@ -592,7 +599,8 @@ works. Order:
 
 The same `nano_compositor` binary on another machine, driven by an editor elsewhere.
 
-- **Auth first.** `ws_server.cpp` binds 0.0.0.0 unauthenticated. Proposal: bind loopback by default,
+- **Auth first.** `ws_server.cpp` binds 0.0.0.0 unauthenticated (the desktop app's own compositor
+  is loopback-only: `NANO_BRIDGE_HOST`). Proposal: bind loopback by default,
   with an explicit "allow remote" setting that requires a pairing token (shown on the compositor
   machine, entered once in the editor, stored per host).
 - **Discovery:** Bonjour/mDNS `_nano-comp._tcp` with key, version and name TXT records.

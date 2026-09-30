@@ -95,7 +95,10 @@ class Compositor {
 
   spawnOnce(bin) {
     return new Promise((resolve, reject) => {
-      const env = { ...process.env, NANO_BRIDGE_PORT: String(this.port) };
+      // Loopback only: the page is the one client (the lanes too), and a
+      // listener on every interface costs a firewall prompt on Windows (and
+      // on macOS with its firewall on) for nothing.
+      const env = { NANO_BRIDGE_HOST: '127.0.0.1', ...process.env, NANO_BRIDGE_PORT: String(this.port) };
       if (this.resourceRoot) env.NANO_RESOURCE_ROOT = this.resourceRoot;
       // A hidden (test / automation) launch never opens display windows either:
       // they present offscreen (for NANO_FAKE_SCREENS, if the caller set any).

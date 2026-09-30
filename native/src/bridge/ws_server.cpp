@@ -1,5 +1,7 @@
 #include "bridge/ws_server.h"
 
+#include <cstdlib>
+
 #include <ixwebsocket/IXNetSystem.h>
 #include <ixwebsocket/IXWebSocketServer.h>
 
@@ -15,7 +17,12 @@ bool WsServer::start(int port) {
   if (running_) return true;
 
   ix::initNetSystem();
-  server_ = std::make_unique<ix::WebSocketServer>(port, "0.0.0.0");
+  // Every interface by default: an editor on another machine reaches a
+  // Resolume's barrel. NANO_BRIDGE_HOST narrows it — the desktop app starts
+  // its compositor on 127.0.0.1, which only its own window dials (and a
+  // loopback listener asks no firewall for permission).
+  const char* host = std::getenv("NANO_BRIDGE_HOST");
+  server_ = std::make_unique<ix::WebSocketServer>(port, host && *host ? host : "0.0.0.0");
   // We're a localhost-only bridge carrying mostly raw RGBA pixel
   // frames — high entropy data that the deflate codec spends CPU on
   // for almost no size reduction. The cost showed up as a

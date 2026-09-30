@@ -139,7 +139,8 @@ the shared runtime (`BarrelRuntime::createComp`, driven by `bridge/comp_host.h` 
 `comp_test_runner` uses), reached over the bridge WebSocket exactly as Remote Control reaches a
 NanoBarrel: `comp_*` actions in, NBCJ `comp_report`s + NBPS/NBPV previews out
 (`remote-comp-engine.ts`). `?compositor=ws://…` or, in the desktop app, `?engine=native` /
-`NANO_ARRANGEMENT_ENGINE=native` selects it (`engine-select.ts`, `electron/compositor.cjs`).
+`NANO_ARRANGEMENT_ENGINE=native` selects it (`engine-select.ts`, `electron/compositor.cjs`); the
+desktop app's default on macOS and Windows, launched on loopback (`NANO_BRIDGE_HOST=127.0.0.1`).
 Arrangement UI suites run on both through `test/comp-backend.ts` (`forEachCompBackend`; build
 `nano_compositor` first); tests read the monitor through `engineBridge.sampleComposite`
 (`test/arr-test-helpers.ts`), never the canvas.
